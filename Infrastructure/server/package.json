@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "indexes": "node scripts/add_mongodb_indexes.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
