@@ -160,58 +160,63 @@ docker exec feedflash-backend python3 1_News/pipeline/fetch_social_to_mongo.py
 
 ---
 
-## Deploy on Railway (Cloud)
+## Deploy on Oracle Cloud (Always Free)
 
-> ⚠️ Railway deployment does NOT include Kafka by default (Kafka requires separate Railway services with persistent volumes). The dashboard still functions — News, Screener, Social, Charts, and Momentum all work via the REST API.
+Oracle Cloud offers **Always Free** VMs (2 ARM cores, 12 GB RAM) that run your full Docker stack including Kafka — **$0 forever, no credit card charges.**
 
-### What gets deployed
+### Prerequisites
+- [Oracle Cloud account](https://cloud.oracle.com/free) (credit card needed for verification, not charged)
 
-| Railway Service | What it runs | Source |
-|----------------|-------------|--------|
-| **backend** | Express API server | `Infrastructure/server/Dockerfile` |
-| **frontend** | Vite build + nginx | `app/Dockerfile` |
-| **MongoDB** | Railway plugin (managed) | — |
-| **Redis** | Railway plugin (managed) | — |
+### Step 1: Create VM
+1. Log in to [Oracle Cloud Console](https://cloud.oracle.com)
+2. Go to **Compute** → **Instances** → **Create Instance**
+3. Choose: **Ubuntu 22.04**, **VM.Standard.A1.Flex**, **2 OCPUs**, **12 GB RAM**
+4. Open port **3001** in the firewall
+5. Save the **SSH key** (generate one if needed)
+6. Note the **Public IP address**
 
-### Step 1: Push to GitHub
+### Step 2: SSH into the VM
 ```bash
-git push origin main
+ssh -i your-key.key ubuntu@YOUR_PUBLIC_IP
 ```
 
-### Step 2: Create Railway project
-1. Log in to [Railway](https://railway.app)
-2. Click **New Project** → **Deploy from GitHub repo**
-3. Select `Rybread15325/FlashFeedCapstone2026`
-4. Name the project **`integratedflashfeed`** in Railway (this sets the URL pattern)
-5. Railway will auto-detect the Dockerfiles and prompt you to configure each service
+### Step 3: Install Docker and Docker Compose
+```bash
+sudo apt update
+sudo apt install -y docker.io docker-compose-plugin
+sudo usermod -aG docker $USER
+newgrp docker
+```
 
-### Step 3: Add plugins
-1. Click **New** → **Database** → **Add MongoDB**
-2. Click **New** → **Database** → **Add Redis**
+### Step 4: Clone and run the project
+```bash
+git clone https://github.com/Rybread15325/FlashFeedCapstone2026.git
+cd FlashFeedCapstone2026/OtisMur_CurrentCode
+cp .env.example .env
+sudo docker compose up -d
+```
 
-### Step 4: Configure environment variables
+### Step 5: Access the dashboard
+Visit **http://YOUR_PUBLIC_IP:5173**
 
-**Backend service:**
-| Variable | Value |
-|----------|-------|
-| `MONGODB_URI` | MongoDB connection string from Railway plugin |
-| `REDIS_URL` | Redis connection string from Railway plugin |
-| `CORS_ORIGIN` | Your Railway frontend URL (e.g. `https://frontend.up.railway.app`) |
-| `PORT` | `3001` (Railway sets this automatically) |
+### Auto-deploy on updates
+When you push code changes, SSH in and run:
+```bash
+cd FlashFeedCapstone2026/OtisMur_CurrentCode
+git pull
+sudo docker compose up -d --build
+```
 
-**Frontend service:**
-| Variable | Value |
-|----------|-------|
-| `API_URL` | Your Railway backend URL (e.g. `https://backend.up.railway.app`) |
+### Free Tier Details
+- **Always Free** resources: 2 ARM OCPUs, 12 GB RAM, 200 GB storage
+- **No time limit** — runs forever
+- **No credit card charges** — only used for identity verification
+- **Full Docker Compose** — includes Kafka, Zookeeper, MongoDB, Redis
 
-### Step 5: Set up service domains
-1. **Backend:** Settings → Generate Domain → `https://backend.up.railway.app`
-2. **Frontend:** Settings → Generate Domain → `https://frontend.up.railway.app`
-3. Set `API_URL` on frontend to the backend domain
-4. Set `CORS_ORIGIN` on backend to the frontend domain
-
-### Auto-deploy
-Every `git push origin main` automatically redeploys both services.
+### ⚠️ Important
+- Oracle may reclaim idle Always Free instances if utilization is very low for 7+ days
+- Keep the server busy or add a small cron job to prevent reclaim
+- Open ports 3001 and 5173 in the Oracle Cloud firewall (Security Lists)
 
 ---
 
