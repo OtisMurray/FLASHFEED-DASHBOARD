@@ -12,13 +12,20 @@ RUN npm run build
 # ── Production stage ────────────────────────────────────
 FROM nginx:1.26-alpine
 
+# Install envsubst for runtime variable substitution
+RUN apk add --no-cache gettext
+
 # Copy built assets
 COPY --from=build /app/dist /usr/share/nginx/html
 
-# Copy nginx config (with /api proxy)
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# Copy nginx template (uses $API_URL placeholder)
+COPY nginx.conf /etc/nginx/conf.d/default.conf.template
 
-# Expose port 80 (Railway maps PORT to 80)
+# Copy entrypoint script
+COPY docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
 EXPOSE 80
 
+ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]
