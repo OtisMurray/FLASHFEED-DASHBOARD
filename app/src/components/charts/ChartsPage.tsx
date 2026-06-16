@@ -24,6 +24,8 @@ export function ChartsPage() {
   const [data, setData] = useState<ChartData | null>(null)
   const [loading, setLoading] = useState(false)
   const [activeTicker, setActiveTicker] = useState<string | null>(null)
+  const [showSentiment, setShowSentiment] = useState(true)
+  const [showDensity, setShowDensity] = useState(true)
 
   const loadChart = useCallback(async () => {
     if (!ticker.trim()) return
@@ -75,7 +77,39 @@ export function ChartsPage() {
       {data ? (
         <div className="space-y-3">
           <ChartCard title="Candlestick + Bollinger Bands (20,2)" height={280}>
-            <CandlestickChart candles={data.candles} bollinger={data.bollinger} />
+            {/* Toggle controls like StockTwits */}
+            <div className="flex items-center gap-2 mb-3 px-1">
+              <button
+                onClick={() => setShowSentiment(!showSentiment)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
+                  showSentiment
+                    ? 'bg-purple-500/20 border-purple-500/50 text-purple-300'
+                    : 'border-border text-neutral hover:text-white'
+                }`}
+              >
+                Sentiment {(data as any).sentiment?.length || 0}
+              </button>
+              <button
+                onClick={() => setShowDensity(!showDensity)}
+                className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
+                  showDensity
+                    ? 'bg-orange-500/20 border-orange-500/50 text-orange-300'
+                    : 'border-border text-neutral hover:text-white'
+                }`}
+              >
+                Message Volume {(data as any).density?.length || 0}
+              </button>
+            </div>
+            <CandlestickChart 
+              candles={data.candles} 
+              bollinger={data.bollinger}
+              sentiment={(data as any).sentiment}
+              density={(data as any).density}
+              showSentiment={showSentiment}
+              showDensity={showDensity}
+              onToggleSentiment={setShowSentiment}
+              onToggleDensity={setShowDensity}
+            />
           </ChartCard>
           <ChartCard title="RSI (14)" height={130}>
             <RSIChart data={data.rsi ?? []} />

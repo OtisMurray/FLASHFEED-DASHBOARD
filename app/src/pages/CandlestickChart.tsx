@@ -20,6 +20,10 @@ interface Props {
   density?: SeriesPoint[]
   sentiment?: SeriesPoint[]
   newsEvents?: NewsEvent[]
+  showSentiment?: boolean
+  showDensity?: boolean
+  onToggleSentiment?: (show: boolean) => void
+  onToggleDensity?: (show: boolean) => void
 }
 
 const WIDTH = 1000
@@ -62,7 +66,18 @@ function nearestIndex(candles: Candle[], eventTime: string | number) {
   return best
 }
 
-export function CandlestickChart({ candles, bollinger, predicted = [], density = [], sentiment = [], newsEvents = [] }: Props) {
+export function CandlestickChart({ 
+  candles, 
+  bollinger, 
+  predicted = [], 
+  density = [], 
+  sentiment = [], 
+  newsEvents = [],
+  showSentiment = true,
+  showDensity = true,
+  onToggleSentiment,
+  onToggleDensity
+}: Props) {
   const cleanCandles = candles
     .map(candle => ({
       ...candle,
@@ -107,7 +122,7 @@ export function CandlestickChart({ candles, bollinger, predicted = [], density =
   const upperPath = bollinger?.upper?.length ? pathFromPoints(bollinger.upper.map(seriesPoint)) : ''
   const lowerPath = bollinger?.lower?.length ? pathFromPoints(bollinger.lower.map(seriesPoint)) : ''
   const predictedPath = predicted.length ? pathFromPoints(predicted.map(seriesPoint)) : ''
-  const sentimentPath = sentiment.length
+  const sentimentPath = sentiment.length && showSentiment
     ? pathFromPoints(sentiment.map(point => {
       const target = timeNumber(point.time)
       let index = cleanCandles.findIndex(candle => timeNumber(candle.time) >= target)
@@ -151,7 +166,7 @@ export function CandlestickChart({ candles, bollinger, predicted = [], density =
         )
       })}
 
-      {density.map((point, index) => {
+      {showDensity && density.map((point, index) => {
         const candleIndex = nearestIndex(cleanCandles, point.time)
         const x = xAt(candleIndex) - bodyWidth / 2
         const value = finiteNumber(point.scaled ?? point.value)
@@ -163,7 +178,7 @@ export function CandlestickChart({ candles, bollinger, predicted = [], density =
             y={PRICE_BOTTOM + 34 - barHeight}
             width={bodyWidth}
             height={barHeight}
-            fill="rgba(14, 165, 233, 0.35)"
+            fill="rgba(251, 146, 60, 0.4)"
           />
         )
       })}
@@ -189,28 +204,31 @@ export function CandlestickChart({ candles, bollinger, predicted = [], density =
       {upperPath && <path d={upperPath} fill="none" stroke="rgba(167,139,250,0.7)" strokeWidth="1.5" strokeDasharray="5 5" />}
       {lowerPath && <path d={lowerPath} fill="none" stroke="rgba(167,139,250,0.7)" strokeWidth="1.5" strokeDasharray="5 5" />}
       {predictedPath && <path d={predictedPath} fill="none" stroke="#f59e0b" strokeWidth="2" strokeDasharray="7 5" />}
-      {sentimentPath && <path d={sentimentPath} fill="none" stroke="#38bdf8" strokeWidth="1.8" />}
+      {sentimentPath && <path d={sentimentPath} fill="none" stroke="#a78bfa" strokeWidth="2" />}
 
       <line x1={PAD.left} x2={WIDTH - PAD.right} y1={PRICE_BOTTOM} y2={PRICE_BOTTOM} stroke="#334155" strokeWidth="1" />
-      <text x={PAD.left} y={PRICE_BOTTOM + 27} fill="#38bdf8" fontSize="11" fontFamily="monospace">density</text>
-      <text x={PAD.left + 70} y={PRICE_BOTTOM + 27} fill="#a78bfa" fontSize="11" fontFamily="monospace">sentiment</text>
+      {showDensity && <text x={PAD.left} y={PRICE_BOTTOM + 27} fill="#fb923c" fontSize="11" fontFamily="monospace" fontWeight="600">Message Volume</text>}
+      {showSentiment && <text x={PAD.left + (showDensity ? 120 : 70)} y={PRICE_BOTTOM + 27} fill="#a78bfa" fontSize="11" fontFamily="monospace" fontWeight="600">Sentiment</text>}
 
-      {newsEvents.slice(-18).map((event, index) => {
+      {newsEvents.slice(-12).map((event, index) => {
         const candleIndex = nearestIndex(cleanCandles, event.time)
         const candle = cleanCandles[candleIndex]
         const x = xAt(candleIndex)
         const bearish = event.position === 'aboveBar' || event.shape === 'arrowDown'
         const y = bearish ? yPrice(candle.high) - 13 : yPrice(candle.low) + 15
         const color = event.color || '#f59e0b'
+        const time = shortTime(event.time)
         return (
           <g key={`${event.time}-${index}`}>
-            <title>{`${event.source || 'Event'}: ${event.title || event.text || 'matched signal'}`}</title>
+            <title>{`${event.source || 'News'}: ${event.title || event.text || 'matched signal'}\n${time}`}</title>
             {bearish ? (
               <path d={`M${x},${y + 7} L${x - 6},${y - 5} L${x + 6},${y - 5} Z`} fill={color} />
             ) : (
               <path d={`M${x},${y - 7} L${x - 6},${y + 5} L${x + 6},${y + 5} Z`} fill={color} />
             )}
-            <text x={x + 8} y={y + 4} fill={color} fontSize="9" fontFamily="monospace">{event.text || 'NEWS'}</text>
+            <text x={x + 8} y={y + 4} fill={color} fontSize="9" fontFamily="monospace" fontWeight="600">
+              {time}
+            </text>
           </g>
         )
       })}
