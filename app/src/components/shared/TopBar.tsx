@@ -5,6 +5,7 @@ import { clsx } from 'clsx'
 import { StatusBadge } from './StatusBadge'
 import { useToast } from '@/components/shared/Toast'
 import { SentimentModal } from '@/components/shared/SentimentModal'
+import { useTheme } from '@/hooks/useTheme'
 
 const fetcher = (url: string) => fetch(url).then(r => r.json())
 
@@ -26,12 +27,14 @@ export function TopBar() {
   const { pathname } = useLocation()
   const { toast } = useToast()
   const { mutate } = useSWRConfig()
+  const { theme, toggle } = useTheme()
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const { data: status, mutate: mutateStatus } = useSWR('/api/status', fetcher, { refreshInterval: 30_000 })
   const { data: stats } = useSWR('/api/stats?days=0', fetcher, { refreshInterval: 30_000 })
   const { data: marketStatus } = useSWR('/api/market/status', fetcher, { refreshInterval: 60_000 })
 
   const [fetching, setFetching] = useState(false)
-  const [fetchResult, setFetchResult] = useState<{ new_articles?: number; updated_articles?: number; unchanged_articles?: number; total_articles?: number; ms?: number } | null>(null)
+  const [fetchResult, setFetchResult] = useState<{ new_articles?: number; updated_articles?: number; refreshed_articles?: number; unchanged_articles?: number; total_articles?: number; ms?: number } | null>(null)
   const [cooldownRemaining, setCooldownRemaining] = useState(0)
   const [watching, setWatching] = useState(false)
   const [watchInterval, setWatchInterval] = useState('60')
@@ -246,6 +249,22 @@ export function TopBar() {
             Sentiment
           </button>
 
+          <button
+            onClick={toggle}
+            className="p-2 rounded border border-border text-neutral hover:text-white hover:border-accent transition-colors"
+            title="Toggle dark/light mode"
+          >
+            {theme === 'dark' ? '☀️' : '🌙'}
+          </button>
+
+          <button
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            className="xl:hidden p-2 rounded border border-border text-neutral hover:text-white hover:border-accent transition-colors"
+            title="Menu"
+          >
+            {mobileMenuOpen ? '✕' : '☰'}
+          </button>
+
           <div className="hidden sm:flex items-center gap-2">
             {(status || stats) && <StatusBadge ok={status?.ok !== false} label={`${stats?.total_all ?? status?.database?.total_all ?? status?.database?.articles ?? 0} articles`} />}
             {marketStatus && <StatusBadge ok={marketStatus.open} label={marketStatus.label || (marketStatus.open ? 'Market Open' : 'Market Closed')} />}
@@ -259,6 +278,28 @@ export function TopBar() {
           </div>
         </div>
 
+        {mobileMenuOpen && (
+          <nav className="xl:hidden flex flex-col gap-2 px-4 py-3 border-t border-border bg-surface">
+            {NAV.map(({ href, label }) => {
+              const active = pathname === href || pathname.startsWith(`${href}/`)
+              return (
+                <NavLink
+                  key={href}
+                  to={href}
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={clsx(
+                    'px-3 py-2 text-sm rounded-md border transition-colors',
+                    active
+                      ? 'bg-accent/15 border-accent/50 text-white'
+                      : 'border-border text-neutral hover:text-white'
+                  )}
+                >
+                  {label}
+                </NavLink>
+              )
+            })}
+          </nav>
+        )}
         <nav className="xl:hidden flex items-center gap-1 overflow-x-auto px-4 pb-2">
           {NAV.map(({ href, label }) => {
             const active = pathname === href || pathname.startsWith(`${href}/`)

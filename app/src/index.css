@@ -12,9 +12,39 @@
   --bear:    #EF4444;
 }
 
+[data-theme="light"] {
+  --bg:      #F8FAFC;
+  --surface: #FFFFFF;
+  --border:  #E2E8F0;
+  --accent:  #0284C7;
+  --neutral: #64748B;
+  --bull:    #059669;
+  --bear:    #DC2626;
+}
+
 body {
-  background: #0F172A;
-  color: #F8FAFC;
+  background: var(--bg);
+  color: var(--surface);
   font-family: system-ui, -apple-system, sans-serif;
   margin: 0;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--neutral);
 }
