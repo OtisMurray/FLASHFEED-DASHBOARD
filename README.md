@@ -4,7 +4,9 @@ FlashFeed aggregates news, social sentiment, screener data, and momentum signals
 
 ---
 
-## Quick Start
+## Quick Start (Local Development with Docker)
+
+> ⚠️ This is the standard local setup that runs on your own machine. It uses Docker Compose with all services including Kafka.
 
 ### Prerequisites
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
@@ -155,6 +157,60 @@ Run the social collector for specific tickers:
 ```bash
 docker exec feedflash-backend python3 1_News/pipeline/fetch_social_to_mongo.py
 ```
+
+---
+
+## Deploy on Railway (Cloud)
+
+> ⚠️ Railway deployment does NOT include Kafka by default (Kafka requires separate Railway services with persistent volumes). The dashboard still functions — News, Screener, Social, Charts, and Momentum all work via the REST API.
+
+### What gets deployed
+
+| Railway Service | What it runs | Source |
+|----------------|-------------|--------|
+| **backend** | Express API server | `Infrastructure/server/Dockerfile` |
+| **frontend** | Vite build + nginx | `app/Dockerfile` |
+| **MongoDB** | Railway plugin (managed) | — |
+| **Redis** | Railway plugin (managed) | — |
+
+### Step 1: Push to GitHub
+```bash
+git push origin main
+```
+
+### Step 2: Create Railway project
+1. Log in to [Railway](https://railway.app)
+2. Click **New Project** → **Deploy from GitHub repo**
+3. Select `Rybread15325/FlashFeedCapstone2026`
+4. Railway will auto-detect the Dockerfiles
+
+### Step 3: Add plugins
+1. Click **New** → **Database** → **Add MongoDB**
+2. Click **New** → **Database** → **Add Redis**
+
+### Step 4: Configure environment variables
+
+**Backend service:**
+| Variable | Value |
+|----------|-------|
+| `MONGODB_URI` | MongoDB connection string from Railway plugin |
+| `REDIS_URL` | Redis connection string from Railway plugin |
+| `CORS_ORIGIN` | Your Railway frontend URL (e.g. `https://frontend.up.railway.app`) |
+| `PORT` | `3001` (Railway sets this automatically) |
+
+**Frontend service:**
+| Variable | Value |
+|----------|-------|
+| `API_URL` | Your Railway backend URL (e.g. `https://backend.up.railway.app`) |
+
+### Step 5: Set up service domains
+1. **Backend:** Settings → Generate Domain → `https://backend.up.railway.app`
+2. **Frontend:** Settings → Generate Domain → `https://frontend.up.railway.app`
+3. Set `API_URL` on frontend to the backend domain
+4. Set `CORS_ORIGIN` on backend to the frontend domain
+
+### Auto-deploy
+Every `git push origin main` automatically redeploys both services.
 
 ---
 
