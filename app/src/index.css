@@ -7,19 +7,9 @@
   --surface: #1E293B;
   --border:  #334155;
   --accent:  #0EA5E9;
-  --neutral: #94A3B8;
+  --neutral: #E2E8F0;
   --bull:    #10B981;
   --bear:    #EF4444;
-}
-
-[data-theme="light"] {
-  --bg:      #F1F5F9;
-  --surface: #FFFFFF;
-  --border:  #94A3B8;
-  --accent:  #0369A1;
-  --neutral: #0F172A;
-  --bull:    #047857;
-  --bear:    #B91C1C;
 }
 
 body {

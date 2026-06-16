@@ -27,7 +27,6 @@ export function TopBar() {
   const { pathname } = useLocation()
   const { toast } = useToast()
   const { mutate } = useSWRConfig()
-  const { theme, toggle } = useTheme()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const { data: status, mutate: mutateStatus } = useSWR('/api/status', fetcher, { refreshInterval: 30_000 })
   const { data: stats } = useSWR('/api/stats?days=0', fetcher, { refreshInterval: 30_000 })
@@ -249,13 +248,6 @@ export function TopBar() {
             Sentiment
           </button>
 
-          <button
-            onClick={toggle}
-            className="p-2 rounded border border-border text-neutral hover:text-white hover:border-accent transition-colors"
-            title="Toggle dark/light mode"
-          >
-            {theme === 'dark' ? '☀️' : '🌙'}
-          </button>
 
           <button
             onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
