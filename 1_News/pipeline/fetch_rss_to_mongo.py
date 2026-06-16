@@ -125,6 +125,21 @@ BLOCKED_TICKERS = {
 }
 
 
+def _normalize_headline(text: str) -> str:
+    """Normalize headline for deduplication: lowercase, remove punctuation, extra spaces."""
+    text = text.lower()
+    text = re.sub(r'[^\w\s]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r'\b(the|a|an|is|at|which|on|and|or|but|in|with|for|to|of|as|by)\b', '', text)
+    return text.strip()
+
+
+def _headline_hash(headline: str) -> str:
+    """Create a hash from normalized headline for cross-wire deduplication."""
+    normalized = _normalize_headline(headline)
+    return hashlib.md5(normalized.encode()).hexdigest()
+
+
 def extract_lightweight_tickers(title: str, content: str) -> str:
     text = f"{title} {content}"
     found = set()
@@ -480,9 +495,12 @@ def process_feed(feed):
         keyword_match = article.get("keyword_match")
         keyword_match_list = [keyword_match] if keyword_match else []
 
+        headline = article.get("title", "")
+        headline_hash = _headline_hash(headline) if ENABLE_DEDUP_HASH and headline else None
+
         docs.append({
             "article_id": article_id,
-            "title": article.get("title", ""),
+            "title": headline,
             "content": article.get("content", ""),
             "url": article_url,
             "source": article.get("source", name),
@@ -499,6 +517,7 @@ def process_feed(feed):
             "event_score": article.get("event_score", 0),
             "sentiment_reason": article.get("sentiment_reason", ""),
             "keyword_match": keyword_match_list,
+            "headline_hash": headline_hash,
         })
 
     return name, url, docs, True, 0
@@ -533,6 +552,16 @@ with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         feed_skip = 0
 
         for mongo_doc in docs:
+            # Cross-wire deduplication: if headline_hash already exists from a different source,
+            # skip this article (it's the same story from another wire)
+            headline_hash = mongo_doc.get("headline_hash")
+            if headline_hash and ENABLE_DEDUP_HASH:
+                existing = articles_col.find_one({"headline_hash": headline_hash}, {"_id": 1, "source": 1})
+                if existing and existing.get("_id") != mongo_doc.get("_id"):
+                    # Same story from different source — skip duplicate
+                    feed_skip += 1
+                    continue
+
             # Use URL as the primary upsert key because Mongo has a unique index on url.
             # If the same story comes in with a different generated article_id, matching by
             # article_id causes duplicate-key crashes on url_1.
