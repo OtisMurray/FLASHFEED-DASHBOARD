@@ -3,6 +3,7 @@ import type { ScreenerRow as SR } from '@/lib/types'
 import type { ViewMode } from './ScreenerPage'
 import { downloadCSV } from '@/hooks/useCSVExport'
 import { TableSkeleton } from '@/components/shared/Skeleton'
+import { useVirtualScroll } from '@/hooks/useVirtualScroll'
 
 interface Props { rows: SR[]; isLoading: boolean; viewMode: ViewMode }
 
@@ -49,6 +50,14 @@ const COLUMNS: Record<ViewMode, Array<{ key: string; label: string }>> = {
 
 export function ScreenerTable({ rows, isLoading, viewMode }: Props) {
   const columns = COLUMNS[viewMode]
+  const ROW_HEIGHT = 44
+  const CONTAINER_HEIGHT = 600
+
+  const { visibleItems, totalHeight, handleScroll } = useVirtualScroll(rows, {
+    itemHeight: ROW_HEIGHT,
+    containerHeight: CONTAINER_HEIGHT,
+    overscan: 10,
+  })
 
   if (isLoading) return <TableSkeleton rows={8} cols={columns.length} />
   if (rows.length === 0) return (
@@ -84,8 +93,8 @@ export function ScreenerTable({ rows, isLoading, viewMode }: Props) {
         </button>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full text-xs">
-          <thead className="border-b border-border bg-bg/50">
+        <table className="w-full text-xs" style={{ height: CONTAINER_HEIGHT }}>
+          <thead className="border-b border-border bg-bg/50 sticky top-0 z-10">
             <tr>
               {columns.map(col => (
                 <th key={col.key} className="px-2 py-2 text-left text-[10px] text-neutral uppercase tracking-wide font-medium whitespace-nowrap">
@@ -94,8 +103,12 @@ export function ScreenerTable({ rows, isLoading, viewMode }: Props) {
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-700/30">
-            {rows.map(row => <ScreenerRow key={row.ticker} row={row} columns={columns} />)}
+          <tbody className="relative" style={{ height: totalHeight }} onScroll={handleScroll}>
+            {visibleItems.map(({ item: row, index, offsetTop }) => (
+              <tr key={row.ticker} className="absolute w-full divide-y divide-slate-700/30" style={{ top: offsetTop, height: ROW_HEIGHT }}>
+                <ScreenerRow row={row} columns={columns} />
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
