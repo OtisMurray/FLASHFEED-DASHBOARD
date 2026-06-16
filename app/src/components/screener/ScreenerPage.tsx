@@ -87,29 +87,31 @@ export function ScreenerPage() {
     if (filters.social_sentiment) {
       const ss = filters.social_sentiment
       rows = rows.filter(t => {
-        if (ss === 'bullish') return t.social_sentiment >= 0.2
-        if (ss === 'bearish') return t.social_sentiment <= -0.2
-        if (ss === 'neutral') return t.social_sentiment > -0.2 && t.social_sentiment < 0.2
+        const s = t.social_sentiment ?? 0
+        if (ss === 'bullish') return s >= 0.2
+        if (ss === 'bearish') return s <= -0.2
+        if (ss === 'neutral') return s > -0.2 && s < 0.2
         return true
       })
     }
     if (filters.news_sentiment) {
       const ns = filters.news_sentiment
       rows = rows.filter(t => {
-        if (ns === 'bullish') return t.structured_sentiment >= 0.2
-        if (ns === 'bearish') return t.structured_sentiment <= -0.2
-        if (ns === 'neutral') return t.structured_sentiment > -0.2 && t.structured_sentiment < 0.2
+        const s = t.structured_sentiment ?? 0
+        if (ns === 'bullish') return s >= 0.2
+        if (ns === 'bearish') return s <= -0.2
+        if (ns === 'neutral') return s > -0.2 && s < 0.2
         return true
       })
     }
     if (filters.min_posts) {
       const mp = parseInt(filters.min_posts)
-      rows = rows.filter(t => t.message_count >= mp)
+      rows = rows.filter(t => (t.message_count ?? 0) >= mp)
     }
 
     // Signal
-    if (signal === 'social_bullish') rows = rows.filter(t => t.social_sentiment >= 0.3)
-    if (signal === 'social_bearish') rows = rows.filter(t => t.social_sentiment <= -0.3)
+    if (signal === 'social_bullish') rows = rows.filter(t => (t.social_sentiment ?? 0) >= 0.3)
+    if (signal === 'social_bearish') rows = rows.filter(t => (t.social_sentiment ?? 0) <= -0.3)
     if (signal === 'unusual_volume') rows = rows.filter(t => (t.volume ?? 0) > ((t as any).avg_volume ?? 1) * 2)
 
     // Sort
@@ -134,10 +136,19 @@ export function ScreenerPage() {
 
   const resetFilters = () => { setFilters({}); setSignal(''); setSearch(''); setPage(0) }
 
+  const lastFetch = Number(localStorage.getItem('flashfeed:lastFetchAt') || 0)
+  const lastFetchAgo = lastFetch ? Math.floor((Date.now() - lastFetch) / 1000) : null
+
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
-        <h1 className="text-white font-semibold text-lg">Market Screener</h1>
+        <div>
+          <h1 className="text-white font-semibold text-lg">Market Screener</h1>
+          <p className="text-xs text-neutral mt-0.5">
+            {lastFetchAgo !== null ? `Last fetch: ${lastFetchAgo < 60 ? `${lastFetchAgo}s ago` : `${Math.floor(lastFetchAgo / 60)}m ago`}` : 'No data fetched yet'}
+            {filtered.length !== data?.length && ` • Showing ${filtered.length} of ${data?.length ?? 0}`}
+          </p>
+        </div>
         <span className="text-neutral text-sm">{filtered.length} tickers</span>
       </div>
 
