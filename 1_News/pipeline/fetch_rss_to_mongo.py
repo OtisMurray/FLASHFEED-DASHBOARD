@@ -30,7 +30,7 @@ DB_NAME = os.environ.get("MONGO_DB", "feedflash")
 MARKET_WINDOW_TIMEZONE = os.environ.get("MARKET_WINDOW_TIMEZONE", "America/New_York")
 MARKET_WINDOW_CLOSE_HOUR = int(os.environ.get("MARKET_WINDOW_CLOSE_HOUR_ET", "17"))
 PRUNE_OLD_ARTICLES = os.environ.get("MARKET_WINDOW_PRUNE", "false").lower() in ("1", "true", "yes")
-FILTER_TO_MARKET_WINDOW = os.environ.get("MARKET_WINDOW_FILTER", "false").lower() in ("1", "true", "yes")
+FILTER_TO_MARKET_WINDOW = os.environ.get("MARKET_WINDOW_FILTER", "true").lower() in ("1", "true", "yes")  # Enabled by default to reduce noise
 INCLUDE_CUSTOM_RSS = os.environ.get("INCLUDE_CUSTOM_RSS_SOURCES", "false").lower() in ("1", "true", "yes")
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 
