@@ -55,6 +55,7 @@ export function ScreenerTable({ rows, isLoading, viewMode }: Props) {
     <div className="text-center py-12 text-neutral">
       <div className="text-3xl mb-2">🔍</div>
       <div className="text-sm">No tickers match current filters</div>
+      <div className="text-xs text-neutral/60 mt-2">Try adjusting filters or click "Run Now" to fetch fresh data</div>
     </div>
   )
 
