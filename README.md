@@ -182,7 +182,8 @@ git push origin main
 1. Log in to [Railway](https://railway.app)
 2. Click **New Project** → **Deploy from GitHub repo**
 3. Select `Rybread15325/FlashFeedCapstone2026`
-4. Railway will auto-detect the Dockerfiles
+4. Name the project **`integratedflashfeed`** in Railway (this sets the URL pattern)
+5. Railway will auto-detect the Dockerfiles and prompt you to configure each service
 
 ### Step 3: Add plugins
 1. Click **New** → **Database** → **Add MongoDB**
