@@ -1,8 +1,5 @@
 import { useState, useCallback } from 'react'
 import { CandlestickChart } from './CandlestickChart'
-import { RSIChart } from './RSIChart'
-import { MACDChart } from './MACDChart'
-import { SentimentChart } from './SentimentChart'
 
 interface ChartData {
   candles: Array<{ time: string; open: number; high: number; low: number; close: number; volume?: number }>
@@ -75,51 +72,45 @@ export function ChartsPage() {
 
       {/* Charts */}
       {data ? (
-        <div className="space-y-3">
-          <ChartCard title="Candlestick + Bollinger Bands (20,2)" height={280}>
-            {/* Toggle controls like StockTwits */}
-            <div className="flex items-center gap-2 mb-3 px-1">
-              <button
-                onClick={() => setShowSentiment(!showSentiment)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
-                  showSentiment
-                    ? 'bg-purple-500/20 border-purple-500/50 text-purple-300'
-                    : 'border-border text-neutral hover:text-white'
-                }`}
-              >
-                Sentiment {(data as any).sentiment?.length || 0}
-              </button>
-              <button
-                onClick={() => setShowDensity(!showDensity)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
-                  showDensity
-                    ? 'bg-orange-500/20 border-orange-500/50 text-orange-300'
-                    : 'border-border text-neutral hover:text-white'
-                }`}
-              >
-                Message Volume {(data as any).density?.length || 0}
-              </button>
-            </div>
-            <CandlestickChart 
-              candles={data.candles} 
-              bollinger={data.bollinger}
-              sentiment={(data as any).sentiment}
-              density={(data as any).density}
-              showSentiment={showSentiment}
-              showDensity={showDensity}
-              onToggleSentiment={setShowSentiment}
-              onToggleDensity={setShowDensity}
-            />
-          </ChartCard>
-          <ChartCard title="RSI (14)" height={130}>
-            <RSIChart data={data.rsi ?? []} />
-          </ChartCard>
-          <ChartCard title="MACD (12,26,9)" height={130}>
-            <MACDChart data={data.macd} />
-          </ChartCard>
-          <ChartCard title="News Sentiment" height={110}>
-            <SentimentChart data={data.sentiment ?? []} />
-          </ChartCard>
+        <div className="bg-surface border border-border rounded-lg p-4">
+          {/* Toggle controls like StockTwits */}
+          <div className="flex items-center gap-2 mb-4">
+            <button
+              onClick={() => setShowSentiment(!showSentiment)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
+                showSentiment
+                  ? 'bg-purple-500/20 border-purple-500/50 text-purple-300'
+                  : 'border-border text-neutral hover:text-white'
+              }`}
+            >
+              Sentiment {(data as any).sentiment?.length || 0}
+            </button>
+            <button
+              onClick={() => setShowDensity(!showDensity)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-full border transition-colors ${
+                showDensity
+                  ? 'bg-orange-500/20 border-orange-500/50 text-orange-300'
+                  : 'border-border text-neutral hover:text-white'
+              }`}
+            >
+              Message Volume {(data as any).density?.length || 0}
+            </button>
+            <div className="flex-1" />
+            <span className="text-xs text-neutral">
+              {activeTicker} • {range} • {interval}
+            </span>
+          </div>
+          
+          <CandlestickChart 
+            candles={data.candles} 
+            bollinger={data.bollinger}
+            sentiment={(data as any).sentiment}
+            density={(data as any).density}
+            showSentiment={showSentiment}
+            showDensity={showDensity}
+            onToggleSentiment={setShowSentiment}
+            onToggleDensity={setShowDensity}
+          />
         </div>
       ) : (
         <div className="text-center py-20 text-neutral">
