@@ -13,13 +13,13 @@
 }
 
 [data-theme="light"] {
-  --bg:      #F8FAFC;
+  --bg:      #F1F5F9;
   --surface: #FFFFFF;
-  --border:  #CBD5E1;
-  --accent:  #0284C7;
-  --neutral: #1E293B;
-  --bull:    #059669;
-  --bear:    #DC2626;
+  --border:  #94A3B8;
+  --accent:  #0369A1;
+  --neutral: #0F172A;
+  --bull:    #047857;
+  --bear:    #B91C1C;
 }
 
 body {
