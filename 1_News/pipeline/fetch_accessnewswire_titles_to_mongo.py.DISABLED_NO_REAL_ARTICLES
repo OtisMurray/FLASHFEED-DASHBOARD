@@ -1,0 +1,101 @@
+import os
+import time
+import hashlib
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+from pymongo import MongoClient, UpdateOne
+
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/feedflash")
+DB_NAME = os.getenv("MONGODB_DB", "feedflash")
+
+URLS = [
+    "https://www.accessnewswire.com/newsroom",
+    "https://www.accessnewswire.com/newsroom/industry/banking-and-financial-services",
+    "https://www.accessnewswire.com/newsroom/industry/exchange-traded-funds",
+]
+
+HEADERS = {
+    "User-Agent": "FeedFlashStockDashboard/0.1 by OtisMurray"
+}
+
+def now_ts():
+    return int(time.time())
+
+def stable_id(url):
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+def main():
+    client = MongoClient(MONGODB_URI)
+    db = client[DB_NAME]
+    col = db.articles
+
+    ops = []
+    seen = set()
+
+    for page_url in URLS:
+        print(f"Fetching ACCESS page: {page_url}")
+
+        try:
+            html = requests.get(page_url, headers=HEADERS, timeout=30).text
+        except Exception as e:
+            print(f"SKIP {page_url}: {e}")
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        for a in soup.find_all("a", href=True):
+            title = a.get_text(" ", strip=True)
+            href = a.get("href", "")
+            url = urljoin(page_url, href).split("?")[0]
+
+            if "{{" in title or "}}" in title:
+                continue
+
+            if len(title) < 25:
+                continue
+
+            if "accessnewswire.com" not in url:
+                continue
+
+            if "/newsroom/" not in url and "/news/" not in url:
+                continue
+
+            if url in seen:
+                continue
+
+            seen.add(url)
+
+            doc = {
+                "_id": stable_id(url),
+                "article_id": stable_id(url)[:24],
+                "source": "ACCESS Newswire",
+                "category": "press_release_title",
+                "title": title,
+                "url": url,
+                "link": url,
+                "summary": "",
+                "content": "",
+                "publish_date": now_ts(),
+                "fetched_date": now_ts(),
+                "fetched_at": now_ts(),
+                "collector": "accessnewswire_title_only_v1",
+                "is_real": True
+            }
+
+            ops.append(UpdateOne({"_id": doc["_id"]}, {"$set": doc}, upsert=True))
+
+    if not ops:
+        print("No ACCESS Newswire titles found.")
+    else:
+        result = col.bulk_write(ops, ordered=False)
+        print({
+            "found": len(ops),
+            "upserted": result.upserted_count,
+            "modified": result.modified_count
+        })
+
+    client.close()
+
+if __name__ == "__main__":
+    main()

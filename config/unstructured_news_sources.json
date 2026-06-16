@@ -1,0 +1,37 @@
+[
+  {
+    "source": "MarketWatch News",
+    "url": "https://www.marketwatch.com/latest-news",
+    "allowed_domains": ["www.marketwatch.com", "marketwatch.com"],
+    "required_path_contains": ["/story/", "/articles/"]
+  },
+  {
+    "source": "CNBC Markets",
+    "url": "https://www.cnbc.com/markets/",
+    "allowed_domains": ["www.cnbc.com", "cnbc.com"],
+    "required_path_contains": ["/202"]
+  },
+  {
+    "source": "Finviz News",
+    "url": "https://finviz.com/news.ashx",
+    "required_path_contains": ["/"]
+  },
+  {
+    "source": "TradingView News",
+    "url": "https://www.tradingview.com/news/",
+    "allowed_domains": ["www.tradingview.com", "tradingview.com"],
+    "required_path_contains": ["/news/"]
+  },
+  {
+    "source": "BBC Business",
+    "url": "https://www.bbc.com/business",
+    "allowed_domains": ["www.bbc.com", "bbc.com"],
+    "required_path_contains": ["/news/articles/", "/news/"]
+  },
+  {
+    "source": "OilPrice News",
+    "url": "https://oilprice.com/Latest-Energy-News/World-News/",
+    "allowed_domains": ["oilprice.com", "www.oilprice.com"],
+    "required_path_contains": ["/Latest-Energy-News/", "/Energy/"]
+  }
+]

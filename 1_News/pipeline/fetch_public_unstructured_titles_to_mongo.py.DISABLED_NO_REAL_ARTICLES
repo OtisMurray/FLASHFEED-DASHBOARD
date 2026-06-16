@@ -1,0 +1,151 @@
+import os
+import re
+import time
+import hashlib
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
+from pymongo import MongoClient, UpdateOne
+
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/feedflash")
+DB_NAME = os.getenv("MONGODB_DB", "feedflash")
+
+PAGES = [
+    {
+        "source": "ACCESS Newswire",
+        "url": "https://www.accessnewswire.com/newsroom",
+        "allowed_domains": ["accessnewswire.com", "www.accessnewswire.com"],
+        "allowed_path_contains": ["/newsroom"],
+    },
+    {
+        "source": "ACCESS Newswire",
+        "url": "https://newsroom.accesswire.com/",
+        "allowed_domains": ["newsroom.accesswire.com"],
+        "allowed_path_contains": ["/"],
+    },
+]
+
+HEADERS = {
+    "User-Agent": "FeedFlashStockDashboard/0.1 contact: otisemurray@icloud.com"
+}
+
+BAD_TITLE_EXACT = {
+    "home", "login", "contact", "contact us", "about", "about us", "privacy policy",
+    "terms of use", "read more", "learn more", "newsroom", "industries", "solutions"
+}
+
+BAD_TITLE_CONTAINS = [
+    "conference & event software",
+    "cookie",
+    "privacy",
+    "terms",
+    "subscribe",
+]
+
+def now_ts():
+    return int(time.time())
+
+def stable_id(source, url, title):
+    return hashlib.sha256(f"{source}|{url}|{title}".encode("utf-8")).hexdigest()
+
+def clean(text):
+    return re.sub(r"\s+", " ", text or "").strip()
+
+def allowed_url(url, domains, path_contains):
+    parsed = urlparse(url)
+    if parsed.netloc not in domains:
+        return False
+    if not any(p in parsed.path for p in path_contains):
+        return False
+    return True
+
+def title_ok(title):
+    low = title.lower().strip()
+    if low in BAD_TITLE_EXACT:
+        return False
+    if any(bad in low for bad in BAD_TITLE_CONTAINS):
+        return False
+    if "{{" in title or "}}" in title:
+        return False
+    if len(title) < 25:
+        return False
+    return True
+
+def extract_titles_from_page(cfg):
+    source = cfg["source"]
+    page_url = cfg["url"]
+    print(f"Fetching {source}: {page_url}")
+
+    try:
+        resp = requests.get(page_url, headers=HEADERS, timeout=25)
+        print("status:", resp.status_code, "len:", len(resp.text))
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"SKIP {source}: {e}")
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    out = []
+    seen = set()
+
+    # Only title + URL. No article body scraping.
+    for tag in soup.find_all(["a", "h1", "h2", "h3"], href=True):
+        title = clean(tag.get_text(" ", strip=True))
+        href = tag.get("href", "")
+        url = urljoin(page_url, href).split("#")[0].split("?")[0]
+
+        if not title_ok(title):
+            continue
+        if not allowed_url(url, cfg["allowed_domains"], cfg["allowed_path_contains"]):
+            continue
+
+        key = (source, title, url)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        out.append({
+            "source": source,
+            "title": title,
+            "url": url,
+        })
+
+    return out
+
+def main():
+    client = MongoClient(MONGODB_URI)
+    db = client[DB_NAME]
+    col = db.articles
+
+    ops = []
+    for cfg in PAGES:
+        for item in extract_titles_from_page(cfg):
+            sid = stable_id(item["source"], item["url"], item["title"])
+            doc = {
+                "_id": sid,
+                "article_id": sid[:24],
+                "source": item["source"],
+                "category": "unstructured_public_title",
+                "title": item["title"],
+                "url": item["url"],
+                "link": item["url"],
+                "summary": "",
+                "content": "",
+                "publish_date": now_ts(),
+                "fetched_date": now_ts(),
+                "fetched_at": now_ts(),
+                "collector": "public_unstructured_title_only_v1",
+                "is_real": True
+            }
+            ops.append(UpdateOne({"_id": doc["_id"]}, {"$set": doc}, upsert=True))
+
+    if not ops:
+        print("No public unstructured titles found.")
+    else:
+        result = col.bulk_write(ops, ordered=False)
+        print({"found": len(ops), "upserted": result.upserted_count, "modified": result.modified_count})
+
+    client.close()
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,224 @@
+import hashlib
+import os
+import re
+import time
+from urllib.parse import quote_plus
+
+import feedparser
+import requests
+from pymongo import MongoClient
+
+MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb://localhost:27017/feedflash")
+MONGO_DB = os.environ.get("MONGO_DB", "feedflash")
+
+FINANCE_SUBREDDITS = [
+    "stocks",
+    "investing",
+    "wallstreetbets",
+    "StockMarket",
+    "SecurityAnalysis",
+    "pennystocks",
+    "options",
+    "ValueInvesting",
+    "dividends",
+    "Daytrading",
+]
+
+SEARCH_TERMS = [
+    "earnings",
+    "guidance",
+    "upgrade",
+    "downgrade",
+    "short squeeze",
+    "FDA approval",
+    "SEC investigation",
+    "lawsuit",
+    "merger",
+    "acquisition",
+    "buyout",
+    "halt",
+    "offering",
+    "bankruptcy",
+    "analyst",
+    "calls",
+    "puts",
+    "volume",
+    "pre-market",
+    "after hours",
+]
+
+FINANCE_CONTEXT_TERMS = [
+    "stock",
+    "stocks",
+    "shares",
+    "market",
+    "earnings",
+    "revenue",
+    "guidance",
+    "analyst",
+    "upgrade",
+    "downgrade",
+    "options",
+    "calls",
+    "puts",
+    "short",
+    "squeeze",
+    "ipo",
+    "sec",
+    "fda",
+    "merger",
+    "acquisition",
+    "buyout",
+    "offering",
+    "bankruptcy",
+    "dividend",
+    "volume",
+    "premarket",
+    "pre-market",
+    "after hours",
+    "nasdaq",
+    "nyse",
+]
+
+HEADERS = {
+    "User-Agent": "FlashFeedCapstone2026/1.0 finance social collector"
+}
+
+def stable_id(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:24]
+
+def extract_ticker(text):
+    matches = re.findall(r"\$([A-Z]{1,5})\b", text or "")
+    return matches[0] if matches else ""
+
+def is_finance_relevant(text, source_label):
+    lower = (text or "").lower()
+
+    # Trusted finance subreddits are allowed, but search results still need finance words or ticker.
+    if re.search(r"\$[A-Z]{1,5}\b", text or ""):
+        return True
+
+    return any(term in lower for term in FINANCE_CONTEXT_TERMS)
+
+def sentiment_from_text(text):
+    lower = (text or "").lower()
+
+    bullish_words = [
+        "beat", "beats", "bullish", "upgrade", "raises", "surge", "squeeze",
+        "buyout", "approval", "record", "growth", "breakout", "partnership"
+    ]
+
+    bearish_words = [
+        "miss", "misses", "bearish", "downgrade", "lawsuit", "fraud",
+        "bankruptcy", "halt", "offering", "probe", "investigation", "weak"
+    ]
+
+    b = sum(1 for w in bullish_words if w in lower)
+    s = sum(1 for w in bearish_words if w in lower)
+
+    if b > s:
+        return "bullish", min(0.95, 0.55 + b * 0.1)
+    if s > b:
+        return "bearish", min(0.95, 0.55 + s * 0.1)
+    return "neutral", 0.0
+
+def fetch_feed(url, source_label):
+    response = requests.get(url, headers=HEADERS, timeout=20)
+    response.raise_for_status()
+
+    parsed = feedparser.parse(response.text)
+    now = int(time.time())
+    docs = []
+
+    for entry in parsed.entries[:25]:
+        title = entry.get("title", "")
+        link = entry.get("link", "")
+        summary = entry.get("summary", "")
+        text_blob = f"{title} {summary}"
+
+        if not is_finance_relevant(text_blob, source_label):
+            continue
+
+        ticker = extract_ticker(text_blob)
+        sentiment, confidence = sentiment_from_text(text_blob)
+        keywords = [term for term in SEARCH_TERMS if term.lower() in text_blob.lower()]
+
+        published = now
+        if getattr(entry, "published_parsed", None):
+            published = int(time.mktime(entry.published_parsed))
+
+        docs.append({
+            "social_id": stable_id(link or title),
+            "platform": "Reddit",
+            "source": source_label,
+            "ticker": ticker,
+            "text": title,
+            "content": summary,
+            "url": link,
+            "author": entry.get("author", ""),
+            "sentiment": sentiment,
+            "score": confidence,
+            "ml_confidence": confidence,
+            "message_density": None,
+            "gossip_score": None,
+            "keywords": keywords,
+            "created_at": published,
+            "detected_at": now,
+            "is_real": True,
+            "collector": "reddit_rss_finance_only",
+        })
+
+    return docs
+
+def main():
+    client = MongoClient(MONGODB_URI)
+    db = client[MONGO_DB]
+    col = db["socials"]
+
+    urls = []
+
+    for sub in FINANCE_SUBREDDITS:
+        urls.append((f"https://www.reddit.com/r/{sub}/new/.rss", f"r/{sub}"))
+
+    for sub in FINANCE_SUBREDDITS:
+        for term in SEARCH_TERMS:
+            urls.append((
+                f"https://www.reddit.com/r/{sub}/search.rss?q={quote_plus(term)}&restrict_sr=on&sort=new",
+                f"r/{sub}:search:{term}"
+            ))
+
+    total_new = 0
+    total_updated = 0
+    total_seen = 0
+
+    for url, label in urls:
+        try:
+            docs = fetch_feed(url, label)
+            feed_new = 0
+            feed_updated = 0
+
+            for doc in docs:
+                total_seen += 1
+                result = col.update_one(
+                    {"social_id": doc["social_id"]},
+                    {"$set": doc},
+                    upsert=True,
+                )
+                if result.upserted_id:
+                    feed_new += 1
+                elif result.modified_count:
+                    feed_updated += 1
+
+            total_new += feed_new
+            total_updated += feed_updated
+
+            if feed_new or feed_updated:
+                print(f"{label}: {feed_new} new, {feed_updated} updated")
+        except Exception as e:
+            print(f"{label}: SKIP {e}")
+
+    print(f"Finance Reddit social import complete — {total_new} new, {total_updated} updated, {total_seen} relevant seen")
+    client.close()
+
+if __name__ == "__main__":
+    main()

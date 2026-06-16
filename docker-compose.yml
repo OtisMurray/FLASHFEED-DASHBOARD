@@ -1,0 +1,199 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: feedflash-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - feedflash_mongo_data:/data/db
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: feedflash-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - feedflash_redis_data:/data
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: feedflash-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: feedflash-kafka
+    restart: unless-stopped
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 168
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: feedflash-kafka-init
+    depends_on:
+      kafka:
+        condition: service_started
+    command: >
+      bash -c "cub kafka-ready -b kafka:29092 1 60 &&
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists
+      --topic flashfeed-events --partitions 1 --replication-factor 1"
+
+  backend:
+    build:
+      context: .
+      dockerfile: Infrastructure/server/Dockerfile
+    container_name: feedflash-backend
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      MONGODB_URI: mongodb://mongo:27017/feedflash
+      MONGO_SERVER_SELECTION_TIMEOUT_MS: ${MONGO_SERVER_SELECTION_TIMEOUT_MS:-3000}
+      REDIS_URL: redis://redis:6379/0
+      FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-}
+      TRADINGVIEW_SCREENER_LIMIT: ${TRADINGVIEW_SCREENER_LIMIT:-3000}
+      BENZINGA_API_KEY: ${BENZINGA_API_KEY:-}
+      DOW_JONES_API_KEY: ${DOW_JONES_API_KEY:-}
+      X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
+      REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
+      REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
+      REDDIT_ACCESS_TOKEN: ${REDDIT_ACCESS_TOKEN:-}
+      SOCIAL_REDDIT_PUBLIC_FALLBACK: ${SOCIAL_REDDIT_PUBLIC_FALLBACK:-false}
+      SOCIAL_REDDIT_TIMEOUT: ${SOCIAL_REDDIT_TIMEOUT:-4}
+      SCHWAB_ACCESS_TOKEN: ${SCHWAB_ACCESS_TOKEN:-}
+      IBKR_ENABLE_NEWS: ${IBKR_ENABLE_NEWS:-false}
+      OPTIONS_API_KEY: ${OPTIONS_API_KEY:-}
+      FUTURES_API_KEY: ${FUTURES_API_KEY:-}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-FeedFlash Research Dashboard}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: flashfeed-events
+      DEFAULT_FETCH_MODE: ${DEFAULT_FETCH_MODE:-fast}
+      NODE_ENV: development
+    depends_on:
+      mongo:
+        condition: service_started
+      redis:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+
+  kafka-consumer:
+    build:
+      context: .
+      dockerfile: Infrastructure/kafka/Dockerfile
+    container_name: feedflash-kafka-consumer
+    restart: unless-stopped
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: flashfeed-events
+      KAFKA_GROUP_ID: flashfeed-consumer-group
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_TTL: 3600
+      REDIS_FEED_MAX: 100
+      MONGODB_URI: mongodb://mongo:27017
+      MONGODB_DB: feedflash
+      MONGODB_COLLECTION: events
+    depends_on:
+      mongo:
+        condition: service_started
+      redis:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+
+  rss-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.rss
+    container_name: feedflash-rss-worker
+    restart: unless-stopped
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/feedflash
+      MONGO_DB: feedflash
+      MONGO_SERVER_SELECTION_TIMEOUT_MS: ${MONGO_SERVER_SELECTION_TIMEOUT_MS:-3000}
+      REDIS_URL: redis://redis:6379/0
+      FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-}
+      TRADINGVIEW_SCREENER_LIMIT: ${TRADINGVIEW_SCREENER_LIMIT:-3000}
+      BENZINGA_API_KEY: ${BENZINGA_API_KEY:-}
+      DOW_JONES_API_KEY: ${DOW_JONES_API_KEY:-}
+      X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
+      REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
+      REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
+      REDDIT_ACCESS_TOKEN: ${REDDIT_ACCESS_TOKEN:-}
+      SOCIAL_REDDIT_PUBLIC_FALLBACK: ${SOCIAL_REDDIT_PUBLIC_FALLBACK:-false}
+      SOCIAL_REDDIT_TIMEOUT: ${SOCIAL_REDDIT_TIMEOUT:-4}
+      SCHWAB_ACCESS_TOKEN: ${SCHWAB_ACCESS_TOKEN:-}
+      IBKR_ENABLE_NEWS: ${IBKR_ENABLE_NEWS:-false}
+      OPTIONS_API_KEY: ${OPTIONS_API_KEY:-}
+      FUTURES_API_KEY: ${FUTURES_API_KEY:-}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-FeedFlash Research Dashboard}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    depends_on:
+      mongo:
+        condition: service_started
+      redis:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+    profiles:
+      - worker
+
+  sentiment-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.sentiment
+    container_name: feedflash-sentiment-worker
+    restart: unless-stopped
+    environment:
+      MONGODB_URI: mongodb://mongo:27017/feedflash
+      MONGO_DB: feedflash
+      MONGO_SERVER_SELECTION_TIMEOUT_MS: ${MONGO_SERVER_SELECTION_TIMEOUT_MS:-3000}
+      REDIS_URL: redis://redis:6379/0
+      FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-}
+      TRADINGVIEW_SCREENER_LIMIT: ${TRADINGVIEW_SCREENER_LIMIT:-3000}
+      BENZINGA_API_KEY: ${BENZINGA_API_KEY:-}
+      DOW_JONES_API_KEY: ${DOW_JONES_API_KEY:-}
+      X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
+      SCHWAB_ACCESS_TOKEN: ${SCHWAB_ACCESS_TOKEN:-}
+      IBKR_ENABLE_NEWS: ${IBKR_ENABLE_NEWS:-false}
+      OPTIONS_API_KEY: ${OPTIONS_API_KEY:-}
+      FUTURES_API_KEY: ${FUTURES_API_KEY:-}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-FeedFlash Research Dashboard}
+      FINBERT_MODEL: ProsusAI/finbert
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    volumes:
+      - hf_sentiment_cache:/tmp/hf_cache
+    depends_on:
+      mongo:
+        condition: service_started
+      redis:
+        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
+    profiles:
+      - worker
+
+volumes:
+  hf_sentiment_cache:
+  feedflash_mongo_data:
+  feedflash_redis_data:

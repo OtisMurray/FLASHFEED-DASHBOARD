@@ -1,0 +1,121 @@
+import os
+import re
+import time
+import hashlib
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+from pymongo import MongoClient, UpdateOne
+
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/feedflash")
+DB_NAME = os.getenv("MONGODB_DB", "feedflash")
+
+PAGES = [
+    "https://newsroom.accesswire.com/",
+]
+
+HEADERS = {
+    "User-Agent": "FeedFlashStockDashboard/0.1 by OtisMurray"
+}
+
+def now_ts():
+    return int(time.time())
+
+def stable_id(url):
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+def clean(text):
+    return re.sub(r"\s+", " ", text or "").strip()
+
+def looks_like_release_url(url):
+    return (
+        "newsroom.accesswire.com" in url
+        and (
+            "/newsroom/" in url
+            or "/viewarticle.aspx" in url
+            or "/article/" in url
+            or "/release/" in url
+        )
+    )
+
+def main():
+    client = MongoClient(MONGODB_URI)
+    db = client[DB_NAME]
+    col = db.articles
+
+    ops = []
+    seen = set()
+
+    for page_url in PAGES:
+        print(f"Fetching ACCESS static newsroom: {page_url}")
+
+        try:
+            resp = requests.get(page_url, headers=HEADERS, timeout=30)
+            print("status:", resp.status_code, "length:", len(resp.text))
+            resp.raise_for_status()
+        except Exception as e:
+            print(f"SKIP {page_url}: {e}")
+            continue
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        for a in soup.find_all("a", href=True):
+            title = clean(a.get_text(" ", strip=True))
+            href = a.get("href", "")
+            url = urljoin(page_url, href).split("?")[0].split("#")[0]
+
+            if not title:
+                continue
+
+            # Avoid nav/footer/category links.
+            bad_titles = {
+                "home", "about us", "contact us", "login", "privacy policy",
+                "terms of use", "learn more", "read more", "newsroom"
+            }
+            if title.lower() in bad_titles:
+                continue
+
+            if len(title) < 25:
+                continue
+
+            if not looks_like_release_url(url):
+                continue
+
+            if url in seen:
+                continue
+
+            seen.add(url)
+
+            doc = {
+                "_id": stable_id(url),
+                "article_id": stable_id(url)[:24],
+                "source": "ACCESS Newswire",
+                "category": "press_release_title",
+                "title": title,
+                "url": url,
+                "link": url,
+                "summary": "",
+                "content": "",
+                "publish_date": now_ts(),
+                "fetched_date": now_ts(),
+                "fetched_at": now_ts(),
+                "collector": "accesswire_title_only_static_v1",
+                "is_real": True
+            }
+
+            ops.append(UpdateOne({"_id": doc["_id"]}, {"$set": doc}, upsert=True))
+
+    if not ops:
+        print("No ACCESS Newswire titles found.")
+    else:
+        result = col.bulk_write(ops, ordered=False)
+        print({
+            "found": len(ops),
+            "upserted": result.upserted_count,
+            "modified": result.modified_count
+        })
+
+    client.close()
+
+if __name__ == "__main__":
+    main()

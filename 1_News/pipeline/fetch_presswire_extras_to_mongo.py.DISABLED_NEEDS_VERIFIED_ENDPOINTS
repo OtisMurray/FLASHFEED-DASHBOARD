@@ -1,0 +1,188 @@
+import os
+import re
+import time
+import hashlib
+import requests
+import feedparser
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+from email.utils import parsedate_to_datetime
+from datetime import datetime, timezone
+from pymongo import MongoClient, UpdateOne
+
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/feedflash")
+DB_NAME = os.getenv("MONGODB_DB", "feedflash")
+
+HEADERS = {
+    "User-Agent": "FeedFlashStockDashboard/0.1 by OtisMurray"
+}
+
+ACCESS_RSS_FEEDS = [
+    ("AccessWire", "https://www.newswire.com/newsroom/rss/beat/financial-and-insurance-services", "financial_and_insurance_services"),
+    ("AccessWire", "https://www.newswire.com/newsroom/rss/beat/financial-and-insurance-services-financial-news", "financial_news"),
+    ("AccessWire", "https://www.newswire.com/newsroom/rss/beat/financial-and-insurance-services-stocks", "stocks"),
+    ("AccessWire", "https://www.newswire.com/newsroom/rss/beat/financial-and-insurance-services-investments", "investments"),
+    ("AccessWire", "https://www.newswire.com/newsroom/rss/beat/financial-and-insurance-services-mergers-and-acquisitions", "mergers_and_acquisitions"),
+]
+
+# BusinessWire documents RSS/newsfeed options, but the accessible public page points
+# to configurable/licensed feeds rather than a stable open all-news endpoint.
+# Keep this empty until we get an official feed URL/API/license.
+BUSINESSWIRE_PAGES = []
+
+def now_ts():
+    return int(datetime.now(timezone.utc).timestamp())
+
+def stable_id(source, url):
+    return hashlib.sha256(f"{source}|{url}".encode("utf-8")).hexdigest()
+
+def parse_rss_date(entry):
+    for attr in ("published_parsed", "updated_parsed"):
+        parsed = getattr(entry, attr, None)
+        if parsed:
+            return int(time.mktime(parsed))
+    for attr in ("published", "updated"):
+        val = getattr(entry, attr, None)
+        if val:
+            try:
+                return int(parsedate_to_datetime(val).timestamp())
+            except Exception:
+                pass
+    return now_ts()
+
+def article_doc(source, category, title, url, summary="", publish_date=None):
+    publish_date = publish_date or now_ts()
+    return {
+        "_id": stable_id(source, url),
+        "article_id": stable_id(source, url)[:24],
+        "source": source,
+        "category": category,
+        "title": title.strip(),
+        "url": url.strip(),
+        "link": url.strip(),
+        "summary": summary.strip(),
+        "content": summary.strip(),
+        "publish_date": publish_date,
+        "fetched_date": now_ts(),
+        "fetched_at": now_ts(),
+        "collector": "presswire_extras_v1",
+        "is_real": True
+    }
+
+def fetch_access_rss():
+    docs = []
+
+    for source, feed_url, category in ACCESS_RSS_FEEDS:
+        print(f"Fetching {source} RSS: {category}")
+
+        try:
+            resp = requests.get(feed_url, headers=HEADERS, timeout=20)
+            if resp.status_code >= 400:
+                print(f"{source} {category}: SKIP status={resp.status_code}")
+                continue
+        except Exception as e:
+            print(f"{source} {category}: SKIP {e}")
+            continue
+
+        feed = feedparser.parse(resp.text)
+
+        for entry in feed.entries[:40]:
+            title = getattr(entry, "title", "").strip()
+            url = getattr(entry, "link", "").strip()
+            summary = getattr(entry, "summary", "").strip()
+
+            if not title or not url:
+                continue
+
+            docs.append(article_doc(
+                source=source,
+                category=category,
+                title=title,
+                url=url,
+                summary=summary,
+                publish_date=parse_rss_date(entry)
+            ))
+
+    return docs
+
+def fetch_businesswire_html():
+    docs = []
+
+    for source, page_url, category in BUSINESSWIRE_PAGES:
+        print(f"Fetching {source} page: {category}")
+
+        try:
+            resp = requests.get(page_url, headers=HEADERS, timeout=20)
+            if resp.status_code >= 400:
+                print(f"{source} {category}: SKIP status={resp.status_code}")
+                continue
+        except Exception as e:
+            print(f"{source} {category}: SKIP {e}")
+            continue
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        seen = set()
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            full_url = urljoin(page_url, href)
+
+            # BusinessWire press releases usually live under newsroom/news or news/home paths.
+            if not (
+                "/news/home/" in full_url
+                or "/newsroom/news/" in full_url
+                or "/newsroom/" in full_url and re.search(r"/\d{4}/", full_url)
+            ):
+                continue
+
+            title = a.get_text(" ", strip=True)
+            title = re.sub(r"\s+", " ", title)
+
+            if len(title) < 20:
+                continue
+
+            key = full_url.split("?")[0]
+            if key in seen:
+                continue
+            seen.add(key)
+
+            docs.append(article_doc(
+                source=source,
+                category=category,
+                title=title,
+                url=key,
+                summary="",
+                publish_date=now_ts()
+            ))
+
+    return docs
+
+def main():
+    client = MongoClient(MONGODB_URI)
+    db = client[DB_NAME]
+    col = db.articles
+
+    docs = []
+    docs.extend(fetch_access_rss())
+    docs.extend(fetch_businesswire_html())
+
+    ops = []
+    for doc in docs:
+        ops.append(UpdateOne({"_id": doc["_id"]}, {"$set": doc}, upsert=True))
+
+    if not ops:
+        print("No BusinessWire/AccessWire articles found.")
+        client.close()
+        return
+
+    result = col.bulk_write(ops, ordered=False)
+    print({
+        "found": len(docs),
+        "upserted": result.upserted_count,
+        "modified": result.modified_count
+    })
+
+    client.close()
+
+if __name__ == "__main__":
+    main()

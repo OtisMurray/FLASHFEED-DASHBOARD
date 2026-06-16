@@ -1,0 +1,18 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+  pymongo \
+  transformers \
+  torch \
+  numpy
+
+COPY 6_AI ./6_AI
+
+ENV PYTHONUNBUFFERED=1
+ENV TRANSFORMERS_CACHE=/tmp/hf_cache
+ENV HF_HOME=/tmp/hf_cache
+ENV FINBERT_MODEL=ProsusAI/finbert
+
+CMD ["python", "6_AI/sentiment/score_mongo_finbert_gossip.py", "--collections", "articles,socials", "--recent-minutes", "1440"]
