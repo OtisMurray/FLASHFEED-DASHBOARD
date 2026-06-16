@@ -31,9 +31,7 @@ const API_BASE =
 
 const tabs = [
   { id: 'all', label: 'All' },
-  { id: 'reddit', label: 'Reddit' },
   { id: 'bluesky', label: 'Bluesky' },
-  { id: 'twitter', label: 'Twitter' },
   { id: 'stocktwits', label: 'StockTwits' },
 ]
 
