@@ -37,7 +37,7 @@ export function TopBar() {
   const [cooldownRemaining, setCooldownRemaining] = useState(0)
   const [watching, setWatching] = useState(false)
   const [watchInterval, setWatchInterval] = useState('60')
-  const [fetchMode, setFetchMode] = useState<'fast' | 'full'>('fast')
+  const [fetchMode, setFetchMode] = useState<'fast' | 'full'>('full')
   const [watchLines, setWatchLines] = useState<Array<{ text: string; type: string; ts: number }>>([])
   const [showSentiment, setShowSentiment] = useState(false)
   const [lastAutoResult, setLastAutoResult] = useState<{ new?: number; updated?: number; ms?: number; at: number } | null>(null)
@@ -208,16 +208,6 @@ export function TopBar() {
             {fetching ? 'Fetching...' : cooldownRemaining > 0 ? `Fetch ${cooldownRemaining}s` : 'Run Now'}
           </button>
 
-          <select
-            value={fetchMode}
-            onChange={e => setFetchMode(e.target.value as 'fast' | 'full')}
-            disabled={fetching || watching}
-            className="hidden md:block bg-bg border border-border text-xs text-neutral rounded px-2 py-1.5 focus:outline-none disabled:opacity-50"
-            title="Fast refresh is optimized for top movers. Full refresh runs every broader source sweep."
-          >
-            <option value="fast">Fast</option>
-            <option value="full">Full</option>
-          </select>
 
           <div className="hidden md:flex items-stretch">
             <select
