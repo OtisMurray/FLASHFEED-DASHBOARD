@@ -40,26 +40,22 @@ movers = list(db['screeners'].find(
 tickers = [m['ticker'] for m in movers if m.get('ticker')]
 print(f'Top movers: {len(tickers)}')
 
-# Scrape StockTwits
+# Scrape StockTwits — now returns posts with tickers_mentioned + sentiment_score
 posts = scrape_tickers(tickers[:25])  # 25 to avoid rate limits
 print(f'Got {len(posts)} StockTwits posts')
 
-# Save to socials collection
+# Save directly — they're already in the correct schema
 if posts:
     for p in posts:
         db['socials'].update_one(
             {'id': p['id']},
-            {'\$set': {**p, 'platform': 'stocktwits', 'source': 'stocktwits'}},
+            {'\$set': p},
             upsert=True
         )
     print(f'Saved {len(posts)} posts')
 
 client.close()
 " 2>&1 | grep -v "^$"
-
-# 4. Score sentiment on recent articles
-echo "🧠 4. Running sentiment analysis..."
-docker exec feedflash-backend python3 6_AI/sentiment/batch_score_mongo_gemini.py 2>&1 | tail -5 || true
 
 # 5. Update rolling windows
 echo "📈 5. Updating rolling windows..."
