@@ -15,19 +15,19 @@ fi
 echo "✓ Docker is running"
 
 # Start MongoDB if not already running
-if ! docker ps | grep -q mongodb; then
+if ! docker ps | grep -q feedflash-mongo; then
     echo "📦 Starting MongoDB..."
-    docker-compose up -d mongodb
+    docker-compose up -d mongo
     sleep 3
 else
     echo "✓ MongoDB already running"
 fi
 
-# Start backend if not already running
+# Start backend + Kafka if not already running
 if ! docker ps | grep -q feedflash-backend; then
-    echo "🔧 Starting backend..."
-    docker-compose up -d backend
-    sleep 5
+    echo "🔧 Starting backend (with Kafka, Redis, Zookeeper)..."
+    docker-compose up -d mongo redis zookeeper kafka backend
+    sleep 8
 else
     echo "✓ Backend already running"
 fi
