@@ -22,14 +22,12 @@ interface Props {
   newsEvents?: NewsEvent[]
   showSentiment?: boolean
   showDensity?: boolean
-  onToggleSentiment?: (show: boolean) => void
-  onToggleDensity?: (show: boolean) => void
 }
 
 const WIDTH = 1000
-const HEIGHT = 320
-const PAD = { left: 48, right: 64, top: 20, bottom: 34 }
-const PRICE_BOTTOM = 250
+const HEIGHT = 340
+const PAD = { left: 56, right: 72, top: 24, bottom: 42 }
+const PRICE_BOTTOM = 270
 
 function finiteNumber(value: unknown, fallback = 0) {
   const n = Number(value)
@@ -49,19 +47,20 @@ function pathFromPoints(points: Array<{ x: number; y: number }>) {
 function shortTime(value: string | number) {
   const sec = timeNumber(value)
   if (!sec) return ''
-  return new Date(sec * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  const d = new Date(sec * 1000)
+  const now = Date.now()
+  const diff = now - d.getTime()
+  if (diff < 86400000) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
 function nearestIndex(candles: Candle[], eventTime: string | number) {
   const target = timeNumber(eventTime)
   let best = 0
-  let bestDistance = Number.POSITIVE_INFINITY
+  let bestDistance = Infinity
   candles.forEach((candle, index) => {
     const distance = Math.abs(timeNumber(candle.time) - target)
-    if (distance < bestDistance) {
-      best = index
-      bestDistance = distance
-    }
+    if (distance < bestDistance) { best = index; bestDistance = distance }
   })
   return best
 }
@@ -75,29 +74,27 @@ export function CandlestickChart({
   newsEvents = [],
   showSentiment = true,
   showDensity = true,
-  onToggleSentiment,
-  onToggleDensity
 }: Props) {
   const cleanCandles = candles
-    .map(candle => ({
-      ...candle,
-      open: finiteNumber(candle.open),
-      high: finiteNumber(candle.high),
-      low: finiteNumber(candle.low),
-      close: finiteNumber(candle.close),
-      volume: finiteNumber(candle.volume),
+    .map(c => ({
+      ...c,
+      open: finiteNumber(c.open),
+      high: finiteNumber(c.high),
+      low: finiteNumber(c.low),
+      close: finiteNumber(c.close),
+      volume: finiteNumber(c.volume),
     }))
-    .filter(candle => candle.open > 0 && candle.high > 0 && candle.low > 0 && candle.close > 0)
+    .filter(c => c.open > 0 && c.high > 0 && c.low > 0 && c.close > 0)
 
   if (!cleanCandles.length) {
-    return <div className="w-full h-full flex items-center justify-center text-xs text-neutral">No candle data</div>
+    return <div className="w-full h-full flex items-center justify-center text-sm text-neutral">No candle data</div>
   }
 
   const priceValues = [
-    ...cleanCandles.flatMap(candle => [candle.high, candle.low]),
-    ...(bollinger?.upper || []).map(point => finiteNumber(point.value)).filter(Boolean),
-    ...(bollinger?.lower || []).map(point => finiteNumber(point.value)).filter(Boolean),
-    ...predicted.map(point => finiteNumber(point.value)).filter(Boolean),
+    ...cleanCandles.flatMap(c => [c.high, c.low]),
+    ...(bollinger?.upper || []).map(p => finiteNumber(p.value)).filter(Boolean),
+    ...(bollinger?.lower || []).map(p => finiteNumber(p.value)).filter(Boolean),
+    ...predicted.map(p => finiteNumber(p.value)).filter(Boolean),
   ]
   const rawMin = Math.min(...priceValues)
   const rawMax = Math.max(...priceValues)
@@ -107,131 +104,150 @@ export function CandlestickChart({
   const plotWidth = WIDTH - PAD.left - PAD.right
   const priceHeight = PRICE_BOTTOM - PAD.top
   const step = cleanCandles.length > 1 ? plotWidth / (cleanCandles.length - 1) : plotWidth
-  const bodyWidth = Math.max(2.2, Math.min(10, step * 0.62))
-  const maxDensity = Math.max(1, ...density.map(point => finiteNumber(point.scaled ?? point.value)))
+  const bodyWidth = Math.max(2.5, Math.min(12, step * 0.65))
+  const maxDensity = Math.max(1, ...density.map(p => finiteNumber(p.scaled ?? p.value)))
 
-  const xAt = (index: number) => PAD.left + index * step
-  const yPrice = (value: number) => PAD.top + ((max - value) / (max - min)) * priceHeight
-  const seriesPoint = (point: SeriesPoint) => {
-    const target = timeNumber(point.time)
-    let index = cleanCandles.findIndex(candle => timeNumber(candle.time) >= target)
-    if (index < 0) index = cleanCandles.length - 1
-    return { x: xAt(index), y: yPrice(finiteNumber(point.value)) }
+  const xAt = (i: number) => PAD.left + i * step
+  const yPrice = (v: number) => PAD.top + ((max - v) / (max - min)) * priceHeight
+  const seriesPoint = (p: SeriesPoint) => {
+    const target = timeNumber(p.time)
+    let i = cleanCandles.findIndex(c => timeNumber(c.time) >= target)
+    if (i < 0) i = cleanCandles.length - 1
+    return { x: xAt(i), y: yPrice(finiteNumber(p.value)) }
   }
 
   const upperPath = bollinger?.upper?.length ? pathFromPoints(bollinger.upper.map(seriesPoint)) : ''
   const lowerPath = bollinger?.lower?.length ? pathFromPoints(bollinger.lower.map(seriesPoint)) : ''
   const predictedPath = predicted.length ? pathFromPoints(predicted.map(seriesPoint)) : ''
   const sentimentPath = sentiment.length && showSentiment
-    ? pathFromPoints(sentiment.map(point => {
-      const target = timeNumber(point.time)
-      let index = cleanCandles.findIndex(candle => timeNumber(candle.time) >= target)
-      if (index < 0) index = cleanCandles.length - 1
-      const value = Math.max(-1, Math.min(1, finiteNumber(point.value)))
-      return { x: xAt(index), y: 272 - ((value + 1) / 2) * 36 }
-    }))
+    ? pathFromPoints(sentiment.map(p => {
+        const target = timeNumber(p.time)
+        let i = cleanCandles.findIndex(c => timeNumber(c.time) >= target)
+        if (i < 0) i = cleanCandles.length - 1
+        const v = Math.max(-1, Math.min(1, finiteNumber(p.value)))
+        return { x: xAt(i), y: 290 - ((v + 1) / 2) * 30 }
+      }))
     : ''
 
-  const yTicks = Array.from({ length: 5 }, (_, index) => min + (spread * index) / 4)
-  const xTicks = Array.from({ length: Math.min(6, cleanCandles.length) }, (_, index) => {
-    const candleIndex = Math.round((index / Math.max(1, Math.min(6, cleanCandles.length) - 1)) * (cleanCandles.length - 1))
-    return { index: candleIndex, candle: cleanCandles[candleIndex] }
+  const yTicks = Array.from({ length: 5 }, (_, i) => min + (spread * i) / 4)
+
+  const xTicksCount = Math.min(8, cleanCandles.length)
+  const xTicks = Array.from({ length: xTicksCount }, (_, i) => {
+    const idx = Math.round((i / Math.max(1, xTicksCount - 1)) * (cleanCandles.length - 1))
+    return { index: idx, candle: cleanCandles[idx] }
   })
 
+  const lastPrice = cleanCandles[cleanCandles.length - 1].close
+  const lastChange = ((lastPrice - cleanCandles[cleanCandles.length - 1].open) / cleanCandles[cleanCandles.length - 1].open) * 100
+
   return (
-    <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="w-full h-full" preserveAspectRatio="none" role="img" aria-label="Candlestick chart">
-      <rect x="0" y="0" width={WIDTH} height={HEIGHT} fill="transparent" />
+    <div className="w-full">
+      <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="w-full" role="img" aria-label="Candlestick chart">
+        <rect width={WIDTH} height={HEIGHT} fill="transparent" />
 
-      {yTicks.map((tick, index) => {
-        const y = yPrice(tick)
-        return (
-          <g key={`y-${index}`}>
-            <line x1={PAD.left} x2={WIDTH - PAD.right} y1={y} y2={y} stroke="#1e293b" strokeWidth="1" />
-            <text x={WIDTH - PAD.right + 10} y={y + 4} fill="#94a3b8" fontSize="11" fontFamily="monospace">
-              {tick.toFixed(tick < 10 ? 2 : 1)}
-            </text>
-          </g>
-        )
-      })}
+        {/* Price axis */}
+        {yTicks.map((tick, i) => {
+          const y = yPrice(tick)
+          return (
+            <g key={`y-${i}`}>
+              <line x1={PAD.left} x2={WIDTH - PAD.right} y1={y} y2={y} stroke="#2a3a4a" strokeWidth="1" />
+              <text x={WIDTH - PAD.right + 8} y={y + 4} fill="#E2E8F0" fontSize="13" fontFamily="monospace" fontWeight="600">
+                {tick.toFixed(tick < 10 ? 2 : 0)}
+              </text>
+            </g>
+          )
+        })}
 
-      {xTicks.map(({ index, candle }) => {
-        const x = xAt(index)
-        return (
-          <g key={`x-${index}`}>
-            <line x1={x} x2={x} y1={PAD.top} y2={PRICE_BOTTOM} stroke="#172033" strokeWidth="1" />
-            <text x={x} y={HEIGHT - 11} fill="#64748b" fontSize="11" textAnchor="middle" fontFamily="monospace">
-              {shortTime(candle.time)}
-            </text>
-          </g>
-        )
-      })}
+        {/* Time axis */}
+        {xTicks.map(({ index: idx, candle }) => {
+          const x = xAt(idx)
+          return (
+            <g key={`x-${idx}`}>
+              <line x1={x} x2={x} y1={PAD.top} y2={PRICE_BOTTOM} stroke="#1a2836" strokeWidth="1" />
+              <text x={x} y={HEIGHT - 14} fill="#94A3B8" fontSize="12" textAnchor="middle" fontFamily="monospace">
+                {shortTime(candle.time)}
+              </text>
+            </g>
+          )
+        })}
 
-      {showDensity && density.map((point, index) => {
-        const candleIndex = nearestIndex(cleanCandles, point.time)
-        const x = xAt(candleIndex) - bodyWidth / 2
-        const value = finiteNumber(point.scaled ?? point.value)
-        const barHeight = Math.max(1, (value / maxDensity) * 34)
-        return (
-          <rect
-            key={`density-${index}`}
-            x={x}
-            y={PRICE_BOTTOM + 34 - barHeight}
-            width={bodyWidth}
-            height={barHeight}
-            fill="rgba(251, 146, 60, 0.4)"
-          />
-        )
-      })}
+        {/* Message volume bars */}
+        {showDensity && density.map((point, i) => {
+          const idx = nearestIndex(cleanCandles, point.time)
+          const x = xAt(idx) - bodyWidth / 2
+          const v = finiteNumber(point.scaled ?? point.value)
+          const barH = Math.max(1, (v / maxDensity) * 28)
+          return (
+            <rect key={`d-${i}`} x={x} y={PRICE_BOTTOM + 28 - barH} width={bodyWidth} height={barH} fill="rgba(251, 146, 60, 0.45)" rx="1" />
+          )
+        })}
 
-      {cleanCandles.map((candle, index) => {
-        const x = xAt(index)
-        const up = candle.close >= candle.open
-        const color = up ? '#10b981' : '#ef4444'
-        const openY = yPrice(candle.open)
-        const closeY = yPrice(candle.close)
-        const highY = yPrice(candle.high)
-        const lowY = yPrice(candle.low)
-        const bodyY = Math.min(openY, closeY)
-        const bodyH = Math.max(1.8, Math.abs(closeY - openY))
-        return (
-          <g key={`${candle.time}-${index}`}>
-            <line x1={x} x2={x} y1={highY} y2={lowY} stroke={color} strokeWidth="1.4" />
-            <rect x={x - bodyWidth / 2} y={bodyY} width={bodyWidth} height={bodyH} fill={up ? 'rgba(16,185,129,0.8)' : 'rgba(239,68,68,0.8)'} stroke={color} strokeWidth="1" rx="1" />
-          </g>
-        )
-      })}
+        {/* Candles */}
+        {cleanCandles.map((candle, i) => {
+          const x = xAt(i)
+          const up = candle.close >= candle.open
+          const color = up ? '#22C55E' : '#EF4444'
+          const oy = yPrice(candle.open)
+          const cy = yPrice(candle.close)
+          const hy = yPrice(candle.high)
+          const ly = yPrice(candle.low)
+          const bodyY = Math.min(oy, cy)
+          const bodyH = Math.max(2, Math.abs(cy - oy))
+          return (
+            <g key={`c-${i}`}>
+              <line x1={x} x2={x} y1={hy} y2={ly} stroke={color} strokeWidth="1.5" />
+              <rect x={x - bodyWidth / 2} y={bodyY} width={bodyWidth} height={bodyH} fill={up ? 'rgba(34,197,94,0.85)' : 'rgba(239,68,68,0.85)'} stroke={color} strokeWidth="1" rx="1" />
+            </g>
+          )
+        })}
 
-      {upperPath && <path d={upperPath} fill="none" stroke="rgba(167,139,250,0.7)" strokeWidth="1.5" strokeDasharray="5 5" />}
-      {lowerPath && <path d={lowerPath} fill="none" stroke="rgba(167,139,250,0.7)" strokeWidth="1.5" strokeDasharray="5 5" />}
-      {predictedPath && <path d={predictedPath} fill="none" stroke="#f59e0b" strokeWidth="2" strokeDasharray="7 5" />}
-      {sentimentPath && <path d={sentimentPath} fill="none" stroke="#a78bfa" strokeWidth="2" />}
+        {/* Bollinger */}
+        {upperPath && <path d={upperPath} fill="none" stroke="rgba(167,139,250,0.6)" strokeWidth="1.5" strokeDasharray="6 4" />}
+        {lowerPath && <path d={lowerPath} fill="none" stroke="rgba(167,139,250,0.6)" strokeWidth="1.5" strokeDasharray="6 4" />}
+        {/* Prediction */}
+        {predictedPath && <path d={predictedPath} fill="none" stroke="#F59E0B" strokeWidth="2.5" strokeDasharray="8 6" />}
+        {/* Sentiment */}
+        {sentimentPath && <path d={sentimentPath} fill="none" stroke="#A78BFA" strokeWidth="2.5" />}
 
-      <line x1={PAD.left} x2={WIDTH - PAD.right} y1={PRICE_BOTTOM} y2={PRICE_BOTTOM} stroke="#334155" strokeWidth="1" />
-      {showDensity && <text x={PAD.left} y={PRICE_BOTTOM + 27} fill="#fb923c" fontSize="11" fontFamily="monospace" fontWeight="600">Message Volume</text>}
-      {showSentiment && <text x={PAD.left + (showDensity ? 120 : 70)} y={PRICE_BOTTOM + 27} fill="#a78bfa" fontSize="11" fontFamily="monospace" fontWeight="600">Sentiment</text>}
+        {/* Bottom divider */}
+        <line x1={PAD.left} x2={WIDTH - PAD.right} y1={PRICE_BOTTOM} y2={PRICE_BOTTOM} stroke="#475569" strokeWidth="1" />
+        <line x1={PAD.left} x2={WIDTH - PAD.right} y1={290} y2={290} stroke="#475569" strokeWidth="0.5" strokeDasharray="3 3" />
 
-      {newsEvents.slice(-12).map((event, index) => {
-        const candleIndex = nearestIndex(cleanCandles, event.time)
-        const candle = cleanCandles[candleIndex]
-        const x = xAt(candleIndex)
-        const bearish = event.position === 'aboveBar' || event.shape === 'arrowDown'
-        const y = bearish ? yPrice(candle.high) - 13 : yPrice(candle.low) + 15
-        const color = event.color || '#f59e0b'
-        const time = shortTime(event.time)
-        return (
-          <g key={`${event.time}-${index}`}>
-            <title>{`${event.source || 'News'}: ${event.title || event.text || 'matched signal'}\n${time}`}</title>
-            {bearish ? (
-              <path d={`M${x},${y + 7} L${x - 6},${y - 5} L${x + 6},${y - 5} Z`} fill={color} />
-            ) : (
-              <path d={`M${x},${y - 7} L${x - 6},${y + 5} L${x + 6},${y + 5} Z`} fill={color} />
-            )}
-            <text x={x + 8} y={y + 4} fill={color} fontSize="9" fontFamily="monospace" fontWeight="600">
-              {time}
-            </text>
-          </g>
-        )
-      })}
-    </svg>
+        {/* Labels */}
+        <text x={PAD.left} y={PRICE_BOTTOM + 38} fill="#94A3B8" fontSize="13" fontFamily="monospace" fontWeight="500">
+          Price ${lastPrice.toFixed(2)} ({lastChange >= 0 ? '+' : ''}{lastChange.toFixed(2)}%)
+        </text>
+        {showDensity && (
+          <text x={PAD.left + 220} y={PRICE_BOTTOM + 38} fill="#FB923C" fontSize="12" fontFamily="monospace" fontWeight="700">
+            ■ Volume
+          </text>
+        )}
+        {showSentiment && (
+          <text x={PAD.left + 220 + (showDensity ? 100 : 0)} y={PRICE_BOTTOM + 38} fill="#A78BFA" fontSize="12" fontFamily="monospace" fontWeight="700">
+            ■ Sentiment
+          </text>
+        )}
+
+        {/* News events */}
+        {newsEvents.slice(-15).map((event, i) => {
+          const idx = nearestIndex(cleanCandles, event.time)
+          const candle = cleanCandles[idx]
+          const x = xAt(idx)
+          const bearish = event.position === 'aboveBar' || event.shape === 'arrowDown'
+          const y = bearish ? yPrice(candle.high) - 16 : yPrice(candle.low) + 18
+          const color = event.color || (bearish ? '#EF4444' : '#22C55E')
+          const time = shortTime(event.time)
+          const src = (event.source || 'News').substring(0, 5)
+          return (
+            <g key={`ne-${i}`}>
+              {!bearish && <line x1={x} x2={x} y1={yPrice(candle.low)} y2={yPrice(candle.low) + 8} stroke={color} strokeWidth="1.5" strokeDasharray="2 2" />}
+              <title>{`${event.source || 'News'} • ${event.title || event.text || 'signal'} • ${time}`}</title>
+              <rect x={x - 6} y={y - 6} width="12" height="12" rx="3" fill={color} opacity="0.85" />
+              <text x={x + 10} y={y + 4} fill={color} fontSize="11" fontFamily="monospace" fontWeight="700">{src}</text>
+            </g>
+          )
+        })}
+      </svg>
+    </div>
   )
 }

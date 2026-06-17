@@ -108,8 +108,6 @@ export function ChartsPage() {
             density={(data as any).density}
             showSentiment={showSentiment}
             showDensity={showDensity}
-            onToggleSentiment={setShowSentiment}
-            onToggleDensity={setShowDensity}
           />
         </div>
       ) : (
@@ -122,13 +120,3 @@ export function ChartsPage() {
   )
 }
 
-function ChartCard({ title, height, children }: { title: string; height: number; children: React.ReactNode }) {
-  return (
-    <div className="bg-surface border border-border rounded-lg overflow-hidden">
-      <div className="px-3 py-2 border-b border-border">
-        <span className="text-xs text-neutral font-medium uppercase tracking-wide">{title}</span>
-      </div>
-      <div style={{ height }}>{children}</div>
-    </div>
-  )
-}
