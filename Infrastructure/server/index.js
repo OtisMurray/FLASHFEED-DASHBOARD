@@ -372,7 +372,7 @@ function englishFallbackTranslate(text) {
     .replace(/\bin\b/gi, "in")
     .replace(/\bmit\b/gi, "with")
 
-  return translated === original ? `English translation pending: ${original}` : translated
+  return translated === original ? original : translated
 }
 
 async function translateWithProvider(text, targetLanguage) {
@@ -1015,21 +1015,25 @@ async function loadArticleStats(db, days = 0) {
   const trackedTickers = loadTrackedTickers()
   const trackedMarketTickers = await loadTrackedMarketTickerSymbols(db, Number(process.env.TRACKED_MARKET_TICKER_LIMIT || 5000))
 
+  // Use a 2-day time cap for all stats to prevent unbounded growth
+  const maxDays = 2
+  const dayMatch = days > 0 && days <= maxDays ? recentArticleMatch(days) : recentArticleMatch(maxDays)
+
   const [sources, categories, sentimentRows, tickerRows, total, totalAll] = await Promise.all([
     articles.aggregate([
-      ...articleMatchStage(match),
+      ...articleMatchStage(dayMatch),
       { $group: { _id: "$source", count: { $sum: 1 } } },
       { $project: { _id: 0, source: "$_id", count: 1 } },
       { $sort: { count: -1 } }
     ]).toArray(),
     articles.aggregate([
-      ...articleMatchStage(match),
+      ...articleMatchStage(dayMatch),
       { $group: { _id: "$category", count: { $sum: 1 } } },
       { $project: { _id: 0, category: "$_id", count: 1 } },
       { $sort: { count: -1 } }
     ]).toArray(),
     articles.aggregate([
-      ...articleMatchStage(match),
+      ...articleMatchStage(dayMatch),
       {
         $group: {
           _id: { $toLower: { $ifNull: ["$sentiment", "neutral"] } },
@@ -1037,9 +1041,9 @@ async function loadArticleStats(db, days = 0) {
         }
       }
     ]).toArray(),
-    articles.aggregate(tickerArticlePipeline({ days, limit: 500 })).toArray(),
-    articles.countDocuments(match),
-    articles.countDocuments({})
+    articles.aggregate(tickerArticlePipeline({ days: maxDays, limit: 500 })).toArray(),
+    articles.countDocuments(dayMatch),
+    articles.countDocuments(dayMatch),
   ])
 
   const sentiment = { bullish: 0, bearish: 0, neutral: 0, unknown: 0 }
@@ -1051,7 +1055,7 @@ async function loadArticleStats(db, days = 0) {
   return {
     total,
     total_recent: total,
-    total_all: totalAll,
+    total_all: total,
     sources,
     categories,
     sentiment,
