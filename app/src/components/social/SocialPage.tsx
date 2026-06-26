@@ -55,6 +55,60 @@ function sourceLabel(post: SocialPost) {
   return post.platform || post.source || 'Social'
 }
 
+const TRENDING_STOP_WORDS = new Set([
+  'about', 'after', 'again', 'all', 'also', 'and', 'any', 'are', 'because', 'been',
+  'before', 'being', 'but', 'can', 'could', 'day', 'did', 'does', 'doing', 'down',
+  'each', 'few', 'for', 'from', 'get', 'gets', 'getting', 'got', 'had', 'has',
+  'have', 'here', 'how', 'http', 'https', 'into', 'its', 'just', 'like', 'make',
+  'many', 'more', 'much', 'new', 'now', 'only', 'other', 'our', 'out', 'over',
+  'really', 'said', 'same', 'see', 'should', 'some', 'still', 'stock', 'than',
+  'that', 'the', 'their', 'them', 'then', 'there', 'these', 'they', 'thing',
+  'think', 'this', 'those', 'through', 'today', 'tomorrow', 'too', 'under',
+  'very', 'want', 'was', 'way', 'were', 'what', 'when', 'where', 'which',
+  'while', 'who', 'why', 'will', 'with', 'would', 'www', 'com', 'you', 'your',
+])
+
+function trendingPhrases(posts: SocialPost[]) {
+  const counts = new Map<string, number>()
+
+  for (const post of posts) {
+    const supplied = [
+      ...(post.finance_keywords || []),
+      ...(post.gossip_keywords || []),
+      ...(post.keywords || []),
+    ]
+      .map(value => String(value || '').trim().toLowerCase())
+      .filter(value => value.length >= 2)
+
+    const text = displayText(post)
+    const cashtags = (text.match(/\$[a-z][a-z0-9.-]{0,9}/gi) || []).map(tag => tag.toLowerCase())
+    const symbols = new Set([
+      String(post.ticker || post.symbol || '').toLowerCase(),
+      ...cashtags.map(tag => tag.slice(1)),
+      ...(text.match(/\b[A-Z]{2,5}\b/g) || []).map(tag => tag.toLowerCase()),
+    ])
+    const words = (text.toLowerCase().match(/[a-z][a-z'-]{2,}/g) || [])
+      .filter(token => !TRENDING_STOP_WORDS.has(token) && !symbols.has(token))
+      .slice(0, 80)
+    const phrases = words.slice(0, -1).map((word, index) => `${word} ${words[index + 1]}`)
+
+    // Count a phrase once per post so repeated spam cannot monopolize the list.
+    for (const phrase of new Set([...supplied, ...cashtags, ...phrases])) {
+      counts.set(phrase, (counts.get(phrase) || 0) + 1)
+    }
+  }
+
+  const repeated = Array.from(counts.entries()).filter(([, count]) => count >= 2)
+  const candidates = repeated.length ? repeated : Array.from(counts.entries())
+
+  const ranked = (rows: Array<[string, number]>) => rows.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  const phrases = ranked(candidates.filter(([phrase]) => phrase.includes(' ') && !phrase.startsWith('$'))).slice(0, 8)
+  const cashtags = ranked(candidates.filter(([phrase]) => phrase.startsWith('$'))).slice(0, 4)
+  const suppliedWords = ranked(candidates.filter(([phrase]) => !phrase.includes(' ') && !phrase.startsWith('$')))
+
+  return [...phrases, ...cashtags, ...suppliedWords].slice(0, 12)
+}
+
 export default function SocialPage() {
   const [active, setActive] = useState('all')
   const [windowMinutes, setWindowMinutes] = useState('5')
@@ -130,27 +184,7 @@ export default function SocialPage() {
     await loadSocial('')
   }
 
-  const trending = useMemo(() => {
-    const counts = new Map<string, number>()
-
-    for (const post of posts) {
-      const words = [
-        ...(post.finance_keywords || []),
-        ...(post.gossip_keywords || []),
-        ...(post.keywords || []),
-      ]
-
-      for (const raw of words) {
-        const key = String(raw || '').trim()
-        if (!key || key.length < 2) continue
-        counts.set(key, (counts.get(key) || 0) + 1)
-      }
-    }
-
-    return Array.from(counts.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 12)
-  }, [posts])
+  const trending = useMemo(() => trendingPhrases(posts), [posts])
 
   return (
     <div className="p-6 md:p-8 text-white">
@@ -228,7 +262,7 @@ export default function SocialPage() {
           <div className="flex flex-wrap gap-2">
             {trending.map(([phrase, count]) => (
               <span key={phrase} className="rounded-full bg-slate-900 border border-slate-700 px-3 py-1 text-sm">
-                {phrase} <span className="text-neutral">×{count}</span>
+                {phrase.startsWith('$') ? phrase.toUpperCase() : phrase} <span className="text-neutral">×{count}</span>
               </span>
             ))}
           </div>

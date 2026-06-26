@@ -55,15 +55,21 @@ REDDIT_TIMEOUT = int(os.getenv("SOCIAL_REDDIT_TIMEOUT", str(min(TIMEOUT, 8))))
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "").strip()
 REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
 REDDIT_ACCESS_TOKEN = os.getenv("REDDIT_ACCESS_TOKEN", "").strip()
-REDDIT_PUBLIC_FALLBACK = os.getenv("SOCIAL_REDDIT_PUBLIC_FALLBACK", "false").lower() in ("1", "true", "yes")
+REDDIT_PUBLIC_FALLBACK = os.getenv("SOCIAL_REDDIT_PUBLIC_FALLBACK", "true").lower() in ("1", "true", "yes")
+INCLUDE_PRIVATE_TICKERS = os.getenv("SOCIAL_INCLUDE_PRIVATE_TICKERS", "false").lower() in ("1", "true", "yes")
 REDDIT_SUBREDDITS = [
     s.strip()
-    for s in os.getenv("SOCIAL_REDDIT_SUBREDDITS", "stocks,StockMarket,Daytrading,pennystocks,Shortsqueeze,wallstreetbets").split(",")
+    for s in os.getenv("SOCIAL_REDDIT_SUBREDDITS", "stocks,StockMarket").split(",")
     if s.strip()
 ]
+REDDIT_QUERY_LIMIT = max(1, int(os.getenv("SOCIAL_REDDIT_QUERY_LIMIT", "1")))
+REDDIT_SUBREDDIT_LIMIT = max(1, int(os.getenv("SOCIAL_REDDIT_SUBREDDIT_LIMIT", "2")))
+REDDIT_MAX_TICKERS_PER_CYCLE = max(0, int(os.getenv("SOCIAL_REDDIT_MAX_TICKERS_PER_CYCLE", "3")))
+REDDIT_PUBLIC_JSON = os.getenv("SOCIAL_REDDIT_PUBLIC_JSON", "false").lower() in ("1", "true", "yes")
+REDDIT_RECENT_SWEEP = os.getenv("SOCIAL_REDDIT_RECENT_SWEEP", "false").lower() in ("1", "true", "yes")
 PRIVATE_SOCIAL_TICKERS = [
     s.strip().upper()
-    for s in os.getenv("SOCIAL_PRIVATE_TICKERS", "SPACEX").split(",")
+    for s in os.getenv("SOCIAL_PRIVATE_TICKERS", "").split(",")
     if s.strip()
 ]
 NITTER_INSTANCES = [
@@ -293,6 +299,15 @@ def _post_id(ticker: str, msg_id) -> str:
 
 
 def _load_tickers() -> list[str]:
+    if os.getenv("SOCIAL_STRICT_FINVIZ_TOP_MOVERS", "true").lower() in ("1", "true", "yes"):
+        tickers = _load_momentum_tickers()
+        if not tickers:
+            print("Social ticker source: strict Finviz top movers only — none found; skipping social collectors")
+            return []
+        tickers = tickers[:MAX_TICKERS]
+        print(f"Social ticker source: strict Finviz top movers only — {','.join(tickers)}")
+        return tickers
+
     configured = os.getenv("SOCIAL_TICKERS", "")
     if configured.strip():
         tickers = [t.strip().upper() for t in configured.split(",") if t.strip()]
@@ -319,10 +334,11 @@ def _load_tickers() -> list[str]:
         seen.add(ticker)
         if len(filtered) >= MAX_TICKERS:
             break
-    for ticker in PRIVATE_SOCIAL_TICKERS:
-        if ticker not in seen and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,7}", ticker):
-            filtered.append(ticker)
-            seen.add(ticker)
+    if INCLUDE_PRIVATE_TICKERS:
+        for ticker in PRIVATE_SOCIAL_TICKERS:
+            if ticker not in seen and re.fullmatch(r"[A-Z][A-Z0-9.-]{0,7}", ticker):
+                filtered.append(ticker)
+                seen.add(ticker)
     return filtered
 
 
@@ -344,7 +360,7 @@ def _load_momentum_tickers() -> list[str]:
                 "exchange": {"$in": sorted(US_EXCHANGES)},
                 "quote_status": {"$ne": "missing"},
             },
-            {"ticker": 1, "change_pct": 1, "change_percent": 1, "rel_volume": 1, "volume": 1, "quote_source": 1},
+            {"ticker": 1, "change_pct": 1, "change_percent": 1, "rel_volume": 1, "volume": 1, "quote_source": 1, "finviz_seen_at": 1, "quote_updated_at": 1},
         ).sort([("change_pct", -1), ("change_percent", -1), ("rel_volume", -1), ("volume", -1)]).limit(limit * 3))
     except Exception as exc:
         print(f"Social momentum ticker load skipped — {exc}")
@@ -357,8 +373,22 @@ def _load_momentum_tickers() -> list[str]:
 
     tickers: list[str] = []
     seen: set[str] = set()
-    preferred = [row for row in rows if row.get("quote_source") == "finviz_elite_screener"]
-    fallback = [row for row in rows if row.get("quote_source") != "finviz_elite_screener"]
+    fresh_cutoff = time.time() - 30 * 60
+
+    def row_time(row: dict) -> float:
+        value = row.get("finviz_seen_at") or row.get("quote_updated_at") or 0
+        if isinstance(value, datetime):
+            return value.timestamp()
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0
+
+    preferred = [
+        row for row in rows
+        if row.get("quote_source") == "finviz_elite_screener" and row_time(row) >= fresh_cutoff
+    ]
+    fallback = [row for row in rows if row not in preferred]
     for row in [*preferred, *fallback]:
         ticker = str(row.get("ticker") or "").upper().strip()
         if ticker in seen or ticker in CRYPTO_TICKERS:
@@ -514,20 +544,11 @@ def _fetch_reddit_ticker(ticker: str) -> list[dict]:
     if not reddit_configured and not REDDIT_PUBLIC_FALLBACK:
         return docs
 
-    queries = _reddit_search_queries(ticker)
+    queries = _reddit_search_queries(ticker)[:REDDIT_QUERY_LIMIT]
     search_jobs: list[dict] = []
 
     for query in queries:
-        search_jobs.append({
-            "oauth_path": "/search",
-            "urls": ["https://www.reddit.com/search.json", "https://old.reddit.com/search.json"],
-            "params": {"q": query, "sort": "new", "t": "day", "limit": max(1, min(REDDIT_GLOBAL_MAX, 25))},
-            "source": "Reddit Global Search",
-            "subreddit": "",
-            "feed_url": f"https://www.reddit.com/search.rss?q={quote_plus(query)}&sort=new&t=day",
-            "limit": REDDIT_GLOBAL_MAX,
-        })
-        for subreddit in REDDIT_SUBREDDITS:
+        for subreddit in REDDIT_SUBREDDITS[:REDDIT_SUBREDDIT_LIMIT]:
             search_jobs.append({
                 "oauth_path": f"/r/{subreddit}/search",
                 "urls": [
@@ -557,6 +578,8 @@ def _fetch_reddit_ticker(ticker: str) -> list[dict]:
 
             for url in job["urls"]:
                 if not REDDIT_PUBLIC_FALLBACK:
+                    break
+                if not reddit_configured and not REDDIT_PUBLIC_JSON:
                     break
                 if entries:
                     break
@@ -662,7 +685,10 @@ def _fetch_reddit_ticker(ticker: str) -> list[dict]:
         if len(docs) >= max(REDDIT_GLOBAL_MAX, REDDIT_MAX_PER_SUBREDDIT * len(REDDIT_SUBREDDITS)):
             break
 
-    for subreddit in REDDIT_SUBREDDITS:
+    if not REDDIT_RECENT_SWEEP:
+        return docs
+
+    for subreddit in REDDIT_SUBREDDITS[:REDDIT_SUBREDDIT_LIMIT]:
         entries = _fetch_reddit_recent_entries(subreddit, now)
         message_volume = len(entries)
         message_density = round(message_volume / 30, 3)
@@ -925,7 +951,15 @@ def _fetch_x_public_ticker(ticker: str) -> list[dict]:
 def _fetch_ticker_social(ticker: str) -> list[dict]:
     return [
         *_fetch_ticker(ticker),
+        *_fetch_bluesky_ticker(ticker),
+        *_fetch_x_ticker(ticker),
         *_fetch_reddit_ticker(ticker),
+    ]
+
+
+def _fetch_fast_ticker_social(ticker: str) -> list[dict]:
+    return [
+        *_fetch_ticker(ticker),
         *_fetch_bluesky_ticker(ticker),
         *_fetch_x_ticker(ticker),
     ]
@@ -944,8 +978,22 @@ def main() -> None:
     found = upserted = modified = 0
     platform_counts: dict[str, int] = {}
     worker_errors = 0
+    def write_docs(docs: list[dict]) -> None:
+        nonlocal found, upserted, modified
+        found += len(docs)
+        for doc in docs:
+            platform = str(doc.get("platform") or "Unknown")
+            platform_counts[platform] = platform_counts.get(platform, 0) + 1
+        if docs:
+            result = socials.bulk_write([
+                UpdateOne({"id": doc["id"]}, {"$set": doc}, upsert=True)
+                for doc in docs
+            ], ordered=False)
+            upserted += result.upserted_count
+            modified += result.modified_count
+
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = [executor.submit(_fetch_ticker_social, ticker) for ticker in tickers]
+        futures = [executor.submit(_fetch_fast_ticker_social, ticker) for ticker in tickers]
 
         for future in as_completed(futures):
             try:
@@ -954,17 +1002,20 @@ def main() -> None:
                 worker_errors += 1
                 print(f"Social ticker worker failed — {exc}")
                 continue
-            found += len(docs)
-            for doc in docs:
-                platform = str(doc.get("platform") or "Unknown")
-                platform_counts[platform] = platform_counts.get(platform, 0) + 1
-            if docs:
-                result = socials.bulk_write([
-                    UpdateOne({"id": doc["id"]}, {"$set": doc}, upsert=True)
-                    for doc in docs
-                ], ordered=False)
-                upserted += result.upserted_count
-                modified += result.modified_count
+            write_docs(docs)
+
+    if INCLUDE_REDDIT and REDDIT_MAX_TICKERS_PER_CYCLE:
+        reddit_tickers = tickers[:REDDIT_MAX_TICKERS_PER_CYCLE]
+        with ThreadPoolExecutor(max_workers=min(2, len(reddit_tickers) or 1)) as executor:
+            futures = [executor.submit(_fetch_reddit_ticker, ticker) for ticker in reddit_tickers]
+            for future in as_completed(futures):
+                try:
+                    docs = future.result()
+                except Exception as exc:
+                    worker_errors += 1
+                    print(f"Reddit worker failed — {exc}")
+                    continue
+                write_docs(docs)
 
     reddit_count = platform_counts.get("Reddit", 0)
     reddit_configured = bool(REDDIT_ACCESS_TOKEN or (REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET))

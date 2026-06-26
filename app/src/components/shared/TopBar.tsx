@@ -2,12 +2,16 @@ import useSWR, { useSWRConfig } from 'swr'
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { clsx } from 'clsx'
-import { StatusBadge } from './StatusBadge'
 import { useToast } from '@/components/shared/Toast'
 import { SentimentModal } from '@/components/shared/SentimentModal'
 import { useTheme } from '@/hooks/useTheme'
 
-const fetcher = (url: string) => fetch(url).then(r => r.json())
+const fetcher = async (url: string) => {
+  const response = await fetch(url)
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`)
+  return data
+}
 
 const FETCH_COOLDOWN_SECONDS = 60
 const LAST_FETCH_KEY = 'flashfeed:lastFetchAt'
@@ -23,25 +27,45 @@ const NAV = [
   { href: '/settings', label: 'Settings' },
 ]
 
+const TAB_PREFETCH: Record<string, string[]> = {
+  '/overview': ['/api/stats?days=3', '/api/articles?limit=30&ticker_only=1&recent_days=3', '/api/social/rolling?window_minutes=1440&limit=80&ranked=1', '/api/correlation'],
+  '/news': ['/api/articles?limit=30&offset=0&feed=today', '/api/keywords'],
+  '/screener': ['/api/screener?limit=1000&days=3&compact=1', '/api/articles?mover_only=1&ticker_only=1&article_kind=structured&recent_days=3&limit=24'],
+  '/social': ['/api/social/rolling?window_minutes=1440&limit=200'],
+  '/charts': ['/api/charts/AAPL?range=1d&interval=1m&window_minutes=30&bucket_minutes=1'],
+  '/momentum': ['/api/momentum?min_news=0&min_rel_vol=0&limit=30&order=absolute_momentum&window_minutes=1440', '/api/momentum/trending?window_minutes=1440', '/api/trade-watch?limit=5&window_minutes=1440', '/api/prediction/signals?limit=80', '/api/market/status'],
+  '/correlation': ['/api/correlation'],
+}
+
 export function TopBar() {
   const { pathname } = useLocation()
   const { toast } = useToast()
   const { mutate } = useSWRConfig()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
-  const { data: status, mutate: mutateStatus } = useSWR('/api/status', fetcher, { refreshInterval: 30_000 })
-  const { data: stats } = useSWR('/api/stats?days=0', fetcher, { refreshInterval: 30_000 })
-  const { data: marketStatus } = useSWR('/api/market/status', fetcher, { refreshInterval: 60_000 })
+  const { mutate: mutateStatus } = useSWR('/api/status', fetcher, { refreshInterval: 30_000 })
 
   const [fetching, setFetching] = useState(false)
-  const [fetchResult, setFetchResult] = useState<{ new_articles?: number; updated_articles?: number; refreshed_articles?: number; unchanged_articles?: number; total_articles?: number; ms?: number } | null>(null)
+  const [fetchResult, setFetchResult] = useState<{ new_articles?: number; updated_articles?: number; refreshed_articles?: number; unchanged_articles?: number; tradingview_new?: number; tradingview_updated?: number; unstructured_new?: number; unstructured_updated?: number; social_new?: number; social_updated?: number; tradingview_screener_rows?: number; total_articles?: number; ms?: number } | null>(null)
   const [cooldownRemaining, setCooldownRemaining] = useState(0)
   const [watching, setWatching] = useState(false)
   const [watchInterval, setWatchInterval] = useState('60')
-  const [fetchMode, setFetchMode] = useState<'fast' | 'full'>('full')
+  const [fetchMode, setFetchMode] = useState<'fast' | 'full'>('fast')
   const [watchLines, setWatchLines] = useState<Array<{ text: string; type: string; ts: number }>>([])
   const [showSentiment, setShowSentiment] = useState(false)
-  const [lastAutoResult, setLastAutoResult] = useState<{ new?: number; updated?: number; ms?: number; at: number } | null>(null)
   const watchRef = useRef<EventSource | null>(null)
+  const prefetchedTabs = useRef(new Set<string>())
+
+  const prefetchTab = useCallback((href: string) => {
+    if (prefetchedTabs.current.has(href)) return
+    prefetchedTabs.current.add(href)
+    for (const endpoint of TAB_PREFETCH[href] || []) {
+      // Seed SWR and the server response cache while the user is deciding to
+      // click. Failures remain silent; the destination page will retry.
+      void mutate(endpoint, fetcher(endpoint), { revalidate: false }).catch(() => {
+        prefetchedTabs.current.delete(href)
+      })
+    }
+  }, [mutate])
 
   useEffect(() => {
     const updateCooldown = () => {
@@ -80,31 +104,41 @@ export function TopBar() {
       return
     }
 
-    localStorage.setItem(LAST_FETCH_KEY, String(Date.now()))
-    setCooldownRemaining(FETCH_COOLDOWN_SECONDS)
-
     setFetching(true)
     setFetchResult(null)
     const t0 = Date.now()
     try {
       const res = await fetch(`/api/fetch?mode=${fetchMode}`, { method: 'POST' })
       const data = await res.json()
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || `Fetch returned HTTP ${res.status}`)
+      }
       const latency = Date.now() - t0
+      localStorage.setItem(LAST_FETCH_KEY, String(Date.now()))
+      setCooldownRemaining(FETCH_COOLDOWN_SECONDS)
       setFetchResult(data)
       const socialNew = data.social_new ?? 0
       const socialUpdated = data.social_updated ?? 0
       const trackedMarketCount = data.tracked_market_ticker_count ? `; ${data.tracked_market_ticker_count} market tickers` : ''
+      const wireNew = data.new_articles ?? 0
+      const wireUpdated = data.updated_articles ?? data.refreshed_articles ?? 0
+      const tradingViewNew = data.tradingview_new ?? 0
+      const tradingViewUpdated = data.tradingview_updated ?? 0
+      const unstructuredNew = data.unstructured_new ?? 0
+      const unstructuredUpdated = data.unstructured_updated ?? 0
+      const screenerRows = data.tradingview_screener_rows ?? 0
       toast(
-        `${data.quotes_updated ?? 0} quotes${trackedMarketCount}; +${data.new_articles ?? 0} new articles${data.updated_articles !== undefined ? `, ${data.updated_articles} refreshed` : ''}; +${socialNew} social${socialUpdated ? `, ${socialUpdated} refreshed` : ''}`,
+        `${wireNew} new wire, ${wireUpdated} refreshed; ${tradingViewNew} new TradingView, ${tradingViewUpdated} refreshed; ${unstructuredNew} new public, ${unstructuredUpdated} refreshed; ${screenerRows} screener rows; ${socialNew} new social${socialUpdated ? `, ${socialUpdated} refreshed` : ''}${trackedMarketCount}`,
         undefined,
-        ((data.new_articles ?? 0) + (data.updated_articles ?? data.refreshed_articles ?? 0) + socialNew + socialUpdated) > 0 ? 'success' : 'info',
+        (wireNew + wireUpdated + tradingViewNew + tradingViewUpdated + unstructuredNew + unstructuredUpdated + socialNew + socialUpdated + screenerRows) > 0 ? 'success' : 'info',
         latency
       )
       mutateStatus()
       revalidateDashboardData()
       setTimeout(() => setFetchResult(null), 8000)
-    } catch {
-      toast('Fetch failed', 'Could not reach API', 'error')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not reach API'
+      toast('Fetch failed', message, 'error')
     } finally {
       setFetching(false)
     }
@@ -116,8 +150,17 @@ export function TopBar() {
       watchRef.current = null
       setWatching(false)
     } else {
+      if (fetching || cooldownRemaining > 0) {
+        toast(
+          'Auto is cooling down',
+          cooldownRemaining > 0 ? `Wait ${cooldownRemaining}s after Run Now before starting Auto.` : undefined,
+          'info'
+        )
+        return
+      }
+
       setWatchLines([])
-      const es = new EventSource(`/api/watch?interval=${watchInterval}&mode=${fetchMode}`)
+      const es = new EventSource(`/api/watch?interval=${watchInterval}&mode=auto`)
 
       es.addEventListener('start', (e) => {
         const d = JSON.parse(e.data)
@@ -127,9 +170,13 @@ export function TopBar() {
         const d = JSON.parse(e.data)
         const isNew = d.new !== undefined && d.new > 0
         setWatchLines(l => [...l.slice(-200), { text: d.text, type: isNew ? 'new' : '', ts: Date.now() }])
+        if (d.cooldown_remaining_ms) {
+          setCooldownRemaining(Math.ceil(Number(d.cooldown_remaining_ms || 0) / 1000))
+        }
         // Show toast notification with cycle results
         if (d.new !== undefined) {
-          setLastAutoResult({ new: d.new, updated: d.updated, ms: d.ms, at: Date.now() })
+          localStorage.setItem(LAST_FETCH_KEY, String(Date.now()))
+          setCooldownRemaining(FETCH_COOLDOWN_SECONDS)
           toast(
             `${d.quotes_updated ?? 0} quotes${d.tracked_market_ticker_count ? `; ${d.tracked_market_ticker_count} market tickers` : ''}; +${d.new} new articles${d.updated > 0 ? `, ${d.updated} refreshed` : ''}; +${d.social_new ?? 0} social${d.social_updated > 0 ? `, ${d.social_updated} refreshed` : ''}`,
             undefined,
@@ -160,7 +207,7 @@ export function TopBar() {
       watchRef.current = es
       setWatching(true)
     }
-  }, [watching, watchInterval, fetchMode, mutateStatus, revalidateDashboardData])
+  }, [watching, watchInterval, fetching, cooldownRemaining, toast, mutateStatus, revalidateDashboardData])
 
   return (
     <>
@@ -178,6 +225,8 @@ export function TopBar() {
                 <NavLink
                   key={href}
                   to={href}
+                  onMouseEnter={() => prefetchTab(href)}
+                  onFocus={() => prefetchTab(href)}
                   className={clsx(
                     'px-3 py-2 text-xs rounded-md border transition-colors',
                     active
@@ -195,18 +244,30 @@ export function TopBar() {
 
           {fetchResult && (
             <span className="hidden lg:inline text-xs text-emerald-400 animate-in whitespace-nowrap">
-              +{fetchResult.new_articles ?? 0} new{fetchResult.updated_articles !== undefined ? `, ${fetchResult.updated_articles} refreshed` : fetchResult.refreshed_articles !== undefined ? `, ${fetchResult.refreshed_articles} refreshed` : ''} ({((fetchResult.ms ?? 0) / 1000).toFixed(1)}s)
+              +{(fetchResult.new_articles ?? 0) + (fetchResult.tradingview_new ?? 0) + (fetchResult.unstructured_new ?? 0) + (fetchResult.social_new ?? 0)} new, {(fetchResult.updated_articles ?? fetchResult.refreshed_articles ?? 0) + (fetchResult.tradingview_updated ?? 0) + (fetchResult.unstructured_updated ?? 0) + (fetchResult.social_updated ?? 0)} refreshed ({((fetchResult.ms ?? 0) / 1000).toFixed(1)}s)
             </span>
           )}
 
-          <button
-            onClick={doFetch}
-            disabled={fetching || cooldownRemaining > 0}
-            title={cooldownRemaining > 0 ? `Fetch available in ${cooldownRemaining}s` : `${fetchMode === 'fast' ? 'Fast trader refresh' : 'Full source refresh'}`}
-            className="px-3 py-1.5 bg-accent text-white text-xs font-medium rounded hover:bg-sky-400 disabled:opacity-50 transition-colors whitespace-nowrap"
-          >
-            {fetching ? 'Fetching...' : cooldownRemaining > 0 ? `Fetch ${cooldownRemaining}s` : 'Run Now'}
-          </button>
+          <div className="flex items-stretch">
+            <select
+              value={fetchMode}
+              onChange={e => setFetchMode(e.target.value as 'fast' | 'full')}
+              disabled={fetching}
+              aria-label="Fetch mode"
+              className="hidden md:block bg-bg border border-border border-r-0 text-xs text-neutral rounded-l px-2 py-1.5 focus:outline-none disabled:opacity-50"
+            >
+              <option value="fast">Fast</option>
+              <option value="full">Full</option>
+            </select>
+            <button
+              onClick={doFetch}
+              disabled={fetching || cooldownRemaining > 0}
+              title={cooldownRemaining > 0 ? `Fetch available in ${cooldownRemaining}s` : `${fetchMode === 'fast' ? 'Fast trader refresh' : 'Full source refresh'}`}
+              className="px-3 py-1.5 bg-accent text-white text-xs font-medium rounded md:rounded-l-none hover:bg-sky-400 disabled:opacity-50 transition-colors whitespace-nowrap"
+            >
+              {fetching ? 'Fetching...' : cooldownRemaining > 0 ? `Fetch ${cooldownRemaining}s` : 'Run Now'}
+            </button>
+          </div>
 
 
           <div className="hidden md:flex items-stretch">
@@ -220,14 +281,15 @@ export function TopBar() {
             </select>
             <button
               onClick={toggleWatch}
-              className={`px-3 py-1.5 text-xs font-medium rounded-r border transition-colors ${
+              disabled={fetching || (!watching && cooldownRemaining > 0)}
+              className={`px-3 py-1.5 text-xs font-medium rounded-r border transition-colors disabled:opacity-50 ${
                 watching
                   ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400'
                   : 'bg-surface border-border text-neutral hover:text-white hover:border-accent'
               }`}
-              title={watching ? 'Stop auto-watch' : 'Start auto-watch'}
+              title={watching ? 'Stop auto-watch' : cooldownRemaining > 0 ? `Auto available in ${cooldownRemaining}s` : 'Start auto-watch'}
             >
-              {watching ? 'Stop' : 'Auto'}
+              {watching ? 'Stop' : cooldownRemaining > 0 ? `${cooldownRemaining}s` : 'Auto'}
             </button>
           </div>
 
@@ -247,17 +309,6 @@ export function TopBar() {
             {mobileMenuOpen ? '✕' : '☰'}
           </button>
 
-          <div className="hidden sm:flex items-center gap-2">
-            {(status || stats) && <StatusBadge ok={status?.ok !== false} label={`${stats?.total_all ?? status?.database?.total_all ?? status?.database?.articles ?? 0} articles`} />}
-            {marketStatus && <StatusBadge ok={marketStatus.open} label={marketStatus.label || (marketStatus.open ? 'Market Open' : 'Market Closed')} />}
-            {watching && <StatusBadge ok={true} label={`Auto ${watchInterval}s`} />}
-            {lastAutoResult && (
-              <StatusBadge
-                ok={true}
-                label={`Last +${lastAutoResult.new ?? 0}/${lastAutoResult.updated ?? 0} ${Math.floor((Date.now() - lastAutoResult.at) / 1000)}s ago`}
-              />
-            )}
-          </div>
         </div>
 
         {mobileMenuOpen && (

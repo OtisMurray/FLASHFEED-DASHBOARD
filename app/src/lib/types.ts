@@ -5,7 +5,10 @@ export interface Article {
   source:         string
   category?:      string | null
   publish_date:   number
+  fetched_date?:  number
+  detected_at?:   number
   ticker?:        string | null
+  tickers?:       string[]
   company?:       string | null
   sentiment?:     'bullish' | 'bearish' | 'neutral' | null
   ml_confidence?: number | null
@@ -32,7 +35,12 @@ export interface ScreenerRow {
   social_sentiment?:    number
   social_message_sentiment?: number
   social_message_density?: number
+  stocktwits_message_sentiment?: number
+  stocktwits_message_density?: number
   stocktwits_message_count?: number
+  reddit_message_count?: number
+  bluesky_message_count?: number
+  twitter_message_count?: number
   structured_sentiment?: number
   message_count?:       number
   news_article_count?:  number
@@ -114,6 +122,7 @@ export interface MomentumRow {
   positive_mover?:   boolean
   finviz_rank?:      number
   latest_social?:    number | null
+  latest_publish?:   number | string | null
   ai_numeric_rank?:   number
   trade_watch?: {
     trade_watch_score: number

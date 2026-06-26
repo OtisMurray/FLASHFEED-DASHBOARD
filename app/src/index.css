@@ -38,3 +38,35 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--neutral);
 }
+
+
+/* FlashFeed dashboard fix: Overview should fill the screen, not create one giant page scroll. */
+@media (min-width: 900px) {
+  .overview-page {
+    height: calc(100vh - 52px);
+    max-height: calc(100vh - 52px);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .overview-page > .grid:last-child {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .overview-page > .grid:last-child > * {
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .overview-page > .grid:last-child [class*="overflow-y-auto"],
+  .overview-page > .grid:last-child [class*="overflow-auto"] {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+}

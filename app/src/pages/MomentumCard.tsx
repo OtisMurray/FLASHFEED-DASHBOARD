@@ -18,7 +18,8 @@ function fmtCompact(n: number | null | undefined): string {
 }
 
 function quoteAgeLabel(value: MomentumRow['quote_updated_at']): string {
-  const raw = typeof value === 'number' ? value : Number(value || 0)
+  const numeric = typeof value === 'number' ? value : Number(value || 0)
+  const raw = Number.isFinite(numeric) && numeric > 0 ? numeric : Math.floor(Date.parse(String(value || '')) / 1000)
   if (!raw) return 'No quote time'
   const ts = raw > 1_000_000_000_000 ? Math.floor(raw / 1000) : raw
   const age = Math.max(0, Math.floor(Date.now() / 1000) - ts)
@@ -32,7 +33,6 @@ export function MomentumCard({ row, rank }: Props) {
   const chg = row.change_pct ?? 0
   const sent = row.sentiment ?? 0
   const structuredCount = row.structured_article_count ?? 0
-  const publicNewsCount = row.unstructured_article_count ?? 0
   const socialCount = row.message_count ?? 0
   const bracket = row.bracket_order
 
@@ -72,11 +72,11 @@ export function MomentumCard({ row, rank }: Props) {
           <MetricCell label="Weighted Sent" value={`${sent >= 0 ? '+' : ''}${sent.toFixed(2)}`}
             color={sent >= 0.2 ? 'text-emerald-400' : sent <= -0.2 ? 'text-red-400' : 'text-neutral'} />
           <MetricCell label="Structured" value={String(structuredCount)} />
-          <MetricCell label="Public News" value={String(publicNewsCount)} />
+          <MetricCell label="Catalyst Age" value={structuredCount ? quoteAgeLabel(row.latest_publish) : 'No catalyst'} color={structuredCount ? 'text-sky-300' : 'text-yellow-300'} />
           <MetricCell label="Social" value={String(socialCount)} />
           <MetricCell
-            label="AI Rank"
-            value={bracket ? `${Math.round((bracket.confidence ?? 0) * 100)}%` : '—'}
+            label="Watch Score"
+            value={bracket ? `${Math.round((bracket.confidence ?? 0) * 100)}/100` : '—'}
             color={bracket?.candidate ? 'text-emerald-400' : 'text-neutral'}
           />
           <MetricCell
@@ -109,7 +109,7 @@ export function MomentumCard({ row, rank }: Props) {
           {/* Headlines */}
           <div className="md:col-span-1">
             <div className="text-[10px] text-neutral uppercase tracking-wide mb-1">
-              Headlines ({headlines.length}; {structuredCount} structured, {publicNewsCount} public)
+              Headlines ({headlines.length}; {structuredCount} structured)
             </div>
             <div className="space-y-1 max-h-[160px] overflow-y-auto">
               {headlines.length === 0 ? (

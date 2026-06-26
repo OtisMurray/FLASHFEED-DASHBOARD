@@ -42,13 +42,24 @@ export function MomentumPage() {
       <div className="flex items-center justify-between mb-3">
         <div>
           <h1 className="text-white font-semibold text-lg">Momentum</h1>
-          <p className="text-xs text-neutral mt-0.5">Positive price movers enriched with structured news, public news, and ticker-specific social.</p>
+          <p className="text-xs text-neutral mt-0.5">Positive price movers enriched with structured news, ticker-specific social, and live market breadth.</p>
         </div>
         <span className="text-neutral text-sm">{tickers.length} tickers</span>
       </div>
 
       {/* Market status banner */}
       <MarketBanner status={marketStatus} />
+
+      {data?.market_context && (
+        <div className="mb-4 flex flex-wrap items-center gap-4 rounded-lg border border-border bg-surface px-3 py-2 text-xs">
+          <span className={data.market_context.label === 'Risk-on' ? 'font-semibold text-emerald-400' : data.market_context.label === 'Risk-off' ? 'font-semibold text-red-400' : 'font-semibold text-yellow-300'}>
+            Market {data.market_context.label}
+          </span>
+          <span className="text-neutral">Breadth {data.market_context.advancing}/{data.market_context.declining} adv/dec</span>
+          <span className="text-neutral">{(Number(data.market_context.breadth_ratio || 0) * 100).toFixed(0)}% advancing</span>
+          <span className="text-neutral">Average {Number(data.market_context.avg_change_pct || 0) >= 0 ? '+' : ''}{Number(data.market_context.avg_change_pct || 0).toFixed(2)}%</span>
+        </div>
+      )}
 
       {/* Filter toolbar */}
       <div className="flex items-center gap-2 mb-4 flex-wrap bg-surface border border-border rounded-lg px-3 py-2">
@@ -155,27 +166,34 @@ export function MomentumPage() {
 function PredictionPerformancePanel({ data }: { data: any }) {
   const summary = Array.isArray(data?.summary) ? data.summary : []
   const total = summary.reduce((sum: number, row: any) => sum + Number(row.count || 0), 0)
-  if (!total) return null
-
   const complete = summary.find((row: any) => row.status === 'complete') || {}
   const partial = summary.find((row: any) => row.status === 'partially_labeled') || {}
   const pending = summary.find((row: any) => row.status === 'pending') || {}
   const accuracy = complete.directional_accuracy_5m ?? partial.directional_accuracy_5m
   const model = data?.model
+  const modelCoverage = Number(model?.metrics?.coverage_5m || 0)
+  const actionableSamples = Number(model?.metrics?.actionable_samples || 0)
+  const modelValidated = modelCoverage > 0 && actionableSamples > 0
 
   return (
     <section className="mb-4 border border-border rounded-lg bg-surface px-3 py-2">
       <div className="flex flex-wrap items-center gap-3">
         <div className="mr-auto">
           <h2 className="text-white text-sm font-semibold">Prediction Labels</h2>
-          <p className="text-[11px] text-neutral">Trade Watch signals are being labeled against later quote moves.</p>
+          <p className="text-[11px] text-neutral">
+            {total
+              ? modelValidated
+                ? 'Trade Watch signals are labeled against actual later intraday candles.'
+                : 'Watch scores are heuristic research rankings; the prediction model has not shown validated 5m coverage yet.'
+              : 'Waiting for a fresh market quote before collecting prediction signals.'}
+          </p>
         </div>
         <MiniMetric label="Signals" value={String(total)} />
         <MiniMetric label="Pending" value={String(pending.count || 0)} />
         <MiniMetric label="Labeled" value={String(Number(complete.count || 0) + Number(partial.count || 0))} />
-        <MiniMetric label="5m Acc." value={accuracy == null ? '--' : `${(Number(accuracy) * 100).toFixed(0)}%`} />
+        <MiniMetric label="5m Acc." value={!modelValidated || accuracy == null ? '--' : `${(Number(accuracy) * 100).toFixed(0)}%`} />
         <MiniMetric label="Avg 5m" value={complete.avg_return_5m == null ? '--' : `${Number(complete.avg_return_5m).toFixed(2)}%`} />
-        <MiniMetric label="Model" value={model?.status === 'trained' ? 'trained' : `${model?.samples ?? 0}/20`} />
+        <MiniMetric label="Model" value={modelValidated ? 'validated' : 'unvalidated'} />
       </div>
     </section>
   )

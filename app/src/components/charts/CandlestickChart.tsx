@@ -1,3 +1,4 @@
+import { formatMarketTime } from '../../lib/marketTime'
 'use client'
 
 interface Candle { time: string | number; open: number; high: number; low: number; close: number; volume?: number }
@@ -50,7 +51,7 @@ function shortTime(value: string | number) {
   const d = new Date(sec * 1000)
   const now = Date.now()
   const diff = now - d.getTime()
-  if (diff < 86400000) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  if (diff < 86400000) return formatMarketTime(d)
   return d.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 

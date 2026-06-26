@@ -30,7 +30,7 @@ function isCleanListedUsRow(row) {
   return US_EXCHANGES.has(exchange)
 }
 
-function recentArticleMatch(days = 2) {
+function recentArticleMatch(days = 3) {
   const n = Number(days || 0)
   if (!Number.isFinite(n) || n <= 0) return {}
 
@@ -120,7 +120,10 @@ function normalizeScreenerRow(doc = {}) {
   const changePct = nullableFixed(change, 2)
   const volume = nullableNumber(doc.volume)
   const avgVolume = nullableNumber(doc.avg_volume)
-  const relVolume = volume != null && avgVolume ? Number((volume / Math.max(1, avgVolume)).toFixed(2)) : null
+  const storedRelVolume = nullableNumber(doc.rel_volume ?? doc.relative_volume)
+  const relVolume = storedRelVolume != null
+    ? Number(storedRelVolume.toFixed(2))
+    : volume != null && avgVolume ? Number((volume / Math.max(1, avgVolume)).toFixed(2)) : null
   const marketCap = nullableNumber(doc.market_cap)
   const avgSentiment = Number(doc.avg_sentiment ?? doc.news_sentiment ?? doc.structured_sentiment ?? 0)
 
@@ -220,17 +223,36 @@ function socialTimeStages() {
   ]
 }
 
-async function loadArticleStatsForTickers(db, tickers, days = 2) {
+async function loadArticleStatsForTickers(db, tickers, days = 3) {
   const wanted = Array.from(new Set(tickers.map(t => String(t || '').toUpperCase()).filter(Boolean)))
   if (!wanted.length) return new Map()
 
   const rows = await db.collection('articles').aggregate([
-    { $match: { ...recentArticleMatch(days), ticker: { $exists: true, $nin: ['', null] } } },
+    { $match: {
+      $and: [
+        recentArticleMatch(days),
+        { $or: [
+          { ticker: { $exists: true, $nin: ['', null] } },
+          { tickers: { $type: 'array', $ne: [] } },
+        ] },
+      ],
+    } },
     {
       $addFields: {
         _ticker_parts: {
           $map: {
-            input: { $split: [{ $toUpper: { $toString: '$ticker' } }, ','] },
+            input: {
+              $setUnion: [
+                { $split: [{ $toUpper: { $toString: { $ifNull: ['$ticker', ''] } } }, ','] },
+                {
+                  $map: {
+                    input: { $cond: [{ $isArray: '$tickers' }, '$tickers', []] },
+                    as: 'ticker_value',
+                    in: { $toUpper: { $toString: '$$ticker_value' } },
+                  },
+                },
+              ],
+            },
             as: 'ticker_part',
             in: { $trim: { input: '$$ticker_part' } },
           },
@@ -239,6 +261,30 @@ async function loadArticleStatsForTickers(db, tickers, days = 2) {
     },
     { $unwind: '$_ticker_parts' },
     { $match: { _ticker_parts: { $in: wanted } } },
+    {
+      $addFields: {
+        _article_kind: {
+          $cond: [
+            { $eq: [{ $toLower: { $toString: { $ifNull: ['$article_kind', ''] } } }, 'structured'] },
+            'structured',
+            {
+              $cond: [
+                {
+                  $or: [
+                    { $in: [{ $toLower: { $toString: { $ifNull: ['$article_kind', ''] } } }, ['public', 'unstructured']] },
+                    { $in: ['$category', ['unstructured_public_title', 'public_news', 'public_market_news']] },
+                    { $eq: ['$collector', 'unstructured_news_title_only_v1'] },
+                  ],
+                },
+                'public',
+                'structured',
+              ],
+            },
+          ],
+        },
+      },
+    },
+    { $match: { _article_kind: 'structured' } },
     {
       $addFields: {
         _sentiment_direction: {
@@ -520,8 +566,10 @@ function enrichScreenerRow(row, articleRow, socialRow, windowOverride = null) {
     avg_sentiment: avgSentiment,
     structured_sentiment: newsScore,
     social_sentiment: socialScore,
-    social_message_sentiment: stocktwitsScore,
-    social_message_density: stocktwitsDensity,
+    social_message_sentiment: socialScore,
+    social_message_density: Number((socialCount / Math.max(1, rollingWindow)).toFixed(3)),
+    stocktwits_message_sentiment: stocktwitsScore,
+    stocktwits_message_density: stocktwitsDensity,
     stocktwits_message_count: stocktwitsCount,
     message_count: socialCount,
     news_article_count: articleCount,
@@ -537,7 +585,8 @@ function enrichScreenerRow(row, articleRow, socialRow, windowOverride = null) {
 // GET /api/screener
 router.get('/', async (req, res) => {
   try {
-    const { sector, signal, orderBy = 'ticker', orderDir = 'asc', limit = 1000, days = 2 } = req.query
+    const { sector, signal, orderBy = 'ticker', orderDir = 'asc', limit = 3000, days = 3 } = req.query
+    const compact = ['1', 'true', 'yes'].includes(String(req.query.compact || '').toLowerCase())
     const windowOverride = req.query.window_minutes ? Number(req.query.window_minutes) : null
     const filter = {
       exchange: { $in: Array.from(US_EXCHANGES) },
@@ -550,15 +599,21 @@ router.get('/', async (req, res) => {
     if (signal === 'unusual_volume') filter.volume = { $gte: 30000000 }
 
     const sort = { [orderBy]: orderDir === 'asc' ? 1 : -1 }
-    const requestedLimit = Math.max(1, Math.min(1500, Number(limit || 1000)))
-    let data = (await Screener.find(filter).sort(sort).limit(requestedLimit).lean())
+    const requestedLimit = Math.max(1, Math.min(5000, Number(limit || 3000)))
+    
+    // Use lean() with hint for faster execution
+    let data = (await Screener.find(filter)
+      .sort(sort)
+      .limit(requestedLimit)
+      .lean()
+      .hint({ exchange: 1, price: 1, ticker: 1 }))
       .map(normalizeScreenerRow)
       .filter(isCleanListedUsRow)
 
     if (mongoose.connection.db && data.length) {
       const tickers = data.map(row => row.ticker)
       const [articleMap, socialMap] = await Promise.all([
-        loadArticleStatsForTickers(mongoose.connection.db, tickers, Number(days || 2)),
+        loadArticleStatsForTickers(mongoose.connection.db, tickers, Number(days || 3)),
         loadAdaptiveSocialStatsForRows(mongoose.connection.db, data, windowOverride),
       ])
       data = data.map(row => enrichScreenerRow(row, articleMap.get(row.ticker), socialMap.get(row.ticker), windowOverride))
@@ -571,7 +626,9 @@ router.get('/', async (req, res) => {
 
     res.json({
       ok: true,
-      rows: data,
+      // `rows` is retained for legacy clients. The current dashboard requests
+      // compact mode so the same large array is not serialized twice.
+      ...(compact ? {} : { rows: data }),
       tickers: data,
       count: data.length,
       universe: 'NASDAQ / NYSE / AMEX listed stocks from numeric screeners',

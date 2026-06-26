@@ -4,7 +4,7 @@ services:
     container_name: feedflash-mongo
     restart: unless-stopped
     ports:
-      - "27017:27017"
+      - "127.0.0.1:27017:27017"
     volumes:
       - feedflash_mongo_data:/data/db
 
@@ -13,8 +13,8 @@ services:
     container_name: feedflash-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
-    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+      - "127.0.0.1:6379:6379"
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --save "" --appendonly no
     volumes:
       - feedflash_redis_data:/data
 
@@ -33,7 +33,7 @@ services:
     depends_on:
       - zookeeper
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -44,6 +44,10 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_RETENTION_HOURS: 168
+      # RAM-first: rely on the OS page cache and only flush segments to disk
+      # every ~5 minutes (or 1B messages), instead of fsync-ing constantly.
+      KAFKA_LOG_FLUSH_INTERVAL_MS: 300000
+      KAFKA_LOG_FLUSH_INTERVAL_MESSAGES: 1000000000
 
   kafka-init:
     image: confluentinc/cp-kafka:7.6.0
@@ -77,16 +81,32 @@ services:
       REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
       REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
       REDDIT_ACCESS_TOKEN: ${REDDIT_ACCESS_TOKEN:-}
-      SOCIAL_REDDIT_PUBLIC_FALLBACK: ${SOCIAL_REDDIT_PUBLIC_FALLBACK:-false}
+      SOCIAL_REDDIT_PUBLIC_FALLBACK: ${SOCIAL_REDDIT_PUBLIC_FALLBACK:-true}
       SOCIAL_REDDIT_TIMEOUT: ${SOCIAL_REDDIT_TIMEOUT:-4}
       SCHWAB_ACCESS_TOKEN: ${SCHWAB_ACCESS_TOKEN:-}
+      SCHWAB_TRADING_ENABLED: ${SCHWAB_TRADING_ENABLED:-false}
+      IBKR_HOST: ${IBKR_HOST:-host.docker.internal}
+      IBKR_PORT: ${IBKR_PORT:-7497}
+      IBKR_ENABLE_TRADING: ${IBKR_ENABLE_TRADING:-false}
       IBKR_ENABLE_NEWS: ${IBKR_ENABLE_NEWS:-false}
       OPTIONS_API_KEY: ${OPTIONS_API_KEY:-}
       FUTURES_API_KEY: ${FUTURES_API_KEY:-}
-      SEC_USER_AGENT: ${SEC_USER_AGENT:-FeedFlash Research Dashboard}
+      SEC_CONTACT_EMAIL: ${SEC_CONTACT_EMAIL:-otisemurray@icloud.com}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-FeedFlash/1.0 otisemurray@icloud.com}
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_TOPIC: flashfeed-events
+      KAFKA_PUBLISH_NEWS: ${KAFKA_PUBLISH_NEWS:-true}
+      KAFKA_NEWS_MAX_TICKERS: ${KAFKA_NEWS_MAX_TICKERS:-500}
+      RSS_FEED_ENTRY_LIMIT: ${RSS_FEED_ENTRY_LIMIT:-0}
+      ACCESS_NEWSWIRE_PAGE_SIZE: ${ACCESS_NEWSWIRE_PAGE_SIZE:-500}
       DEFAULT_FETCH_MODE: ${DEFAULT_FETCH_MODE:-fast}
+      ENABLE_QUOTE_FETCH: ${ENABLE_QUOTE_FETCH:-0}
+      QUOTE_MAX_TICKERS: ${QUOTE_MAX_TICKERS:-100}
+      FETCH_MIN_INTERVAL_MS: ${FETCH_MIN_INTERVAL_MS:-10000}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      API_TOKEN: ${API_TOKEN:-}
+      API_TOKEN_SCOPE: ${API_TOKEN_SCOPE:-write}
+      AUTO_REFRESH_ENABLED: ${AUTO_REFRESH_ENABLED:-true}
       NODE_ENV: development
     depends_on:
       mongo:
@@ -140,14 +160,21 @@ services:
       REDDIT_CLIENT_ID: ${REDDIT_CLIENT_ID:-}
       REDDIT_CLIENT_SECRET: ${REDDIT_CLIENT_SECRET:-}
       REDDIT_ACCESS_TOKEN: ${REDDIT_ACCESS_TOKEN:-}
-      SOCIAL_REDDIT_PUBLIC_FALLBACK: ${SOCIAL_REDDIT_PUBLIC_FALLBACK:-false}
+      SOCIAL_REDDIT_PUBLIC_FALLBACK: ${SOCIAL_REDDIT_PUBLIC_FALLBACK:-true}
       SOCIAL_REDDIT_TIMEOUT: ${SOCIAL_REDDIT_TIMEOUT:-4}
       SCHWAB_ACCESS_TOKEN: ${SCHWAB_ACCESS_TOKEN:-}
+      SCHWAB_TRADING_ENABLED: ${SCHWAB_TRADING_ENABLED:-false}
+      IBKR_HOST: ${IBKR_HOST:-host.docker.internal}
+      IBKR_PORT: ${IBKR_PORT:-7497}
+      IBKR_ENABLE_TRADING: ${IBKR_ENABLE_TRADING:-false}
       IBKR_ENABLE_NEWS: ${IBKR_ENABLE_NEWS:-false}
       OPTIONS_API_KEY: ${OPTIONS_API_KEY:-}
       FUTURES_API_KEY: ${FUTURES_API_KEY:-}
-      SEC_USER_AGENT: ${SEC_USER_AGENT:-FeedFlash Research Dashboard}
+      SEC_CONTACT_EMAIL: ${SEC_CONTACT_EMAIL:-otisemurray@icloud.com}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-FeedFlash/1.0 otisemurray@icloud.com}
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      RSS_FEED_ENTRY_LIMIT: ${RSS_FEED_ENTRY_LIMIT:-0}
+      ACCESS_NEWSWIRE_PAGE_SIZE: ${ACCESS_NEWSWIRE_PAGE_SIZE:-500}
     depends_on:
       mongo:
         condition: service_started
@@ -175,10 +202,15 @@ services:
       DOW_JONES_API_KEY: ${DOW_JONES_API_KEY:-}
       X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
       SCHWAB_ACCESS_TOKEN: ${SCHWAB_ACCESS_TOKEN:-}
+      SCHWAB_TRADING_ENABLED: ${SCHWAB_TRADING_ENABLED:-false}
+      IBKR_HOST: ${IBKR_HOST:-host.docker.internal}
+      IBKR_PORT: ${IBKR_PORT:-7497}
+      IBKR_ENABLE_TRADING: ${IBKR_ENABLE_TRADING:-false}
       IBKR_ENABLE_NEWS: ${IBKR_ENABLE_NEWS:-false}
       OPTIONS_API_KEY: ${OPTIONS_API_KEY:-}
       FUTURES_API_KEY: ${FUTURES_API_KEY:-}
-      SEC_USER_AGENT: ${SEC_USER_AGENT:-FeedFlash Research Dashboard}
+      SEC_CONTACT_EMAIL: ${SEC_CONTACT_EMAIL:-otisemurray@icloud.com}
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-FeedFlash/1.0 otisemurray@icloud.com}
       FINBERT_MODEL: ProsusAI/finbert
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     volumes:
@@ -192,6 +224,25 @@ services:
         condition: service_completed_successfully
     profiles:
       - worker
+
+
+  auto-refresh-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.auto-refresh
+    container_name: feedflash-auto-refresh
+    restart: unless-stopped
+    environment:
+      BACKEND_URL: http://backend:3001
+      AUTO_REFRESH_ENABLED: ${AUTO_REFRESH_ENABLED:-true}
+      AUTO_REFRESH_MODE: ${AUTO_REFRESH_MODE:-auto}
+      AUTO_REFRESH_INTERVAL_SECONDS: ${AUTO_REFRESH_INTERVAL_SECONDS:-60}
+      AUTO_REFRESH_TIMEOUT_SECONDS: ${AUTO_REFRESH_TIMEOUT_SECONDS:-55}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      API_TOKEN: ${API_TOKEN:-}
+    depends_on:
+      backend:
+        condition: service_started
 
 volumes:
   hf_sentiment_cache:

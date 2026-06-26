@@ -24,8 +24,8 @@ export function CorrelationTable({ entries }: Props) {
           <tr>
             {[
               { key: 'ticker' as keyof CorrelationEntry, label: 'TICKER' },
-              { key: 'correlation' as keyof CorrelationEntry, label: 'ALIGN SCORE' },
-              { key: 'direction' as keyof CorrelationEntry, label: 'ALIGN' },
+              { key: 'correlation' as keyof CorrelationEntry, label: 'CORRELATION' },
+              { key: 'direction' as keyof CorrelationEntry, label: 'DIRECTION' },
               { key: 'price' as keyof CorrelationEntry, label: 'PRICE' },
               { key: 'change_pct' as keyof CorrelationEntry, label: 'CHG%' },
               { key: 'combined_sentiment' as keyof CorrelationEntry, label: 'SENT' },

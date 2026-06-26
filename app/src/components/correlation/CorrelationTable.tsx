@@ -29,7 +29,7 @@ export function CorrelationTable({ entries, isLoading }: Props) {
   const handleExport = () => {
     const exportData = sorted.map(e => ({
       TICKER: e.ticker,
-      'ALIGN SCORE': e.correlation,
+      CORRELATION: e.correlation,
       PRICE: e.price,
       'CHG%': e.change_pct,
       SENT: e.combined_sentiment,
@@ -57,7 +57,7 @@ export function CorrelationTable({ entries, isLoading }: Props) {
           <tr>
             {[
               { key: 'ticker' as keyof CorrelationEntry, label: 'TICKER' },
-              { key: 'correlation' as keyof CorrelationEntry, label: 'ALIGN SCORE' },
+              { key: 'correlation' as keyof CorrelationEntry, label: 'CORRELATION' },
               { key: 'price' as keyof CorrelationEntry, label: 'PRICE' },
               { key: 'change_pct' as keyof CorrelationEntry, label: 'CHG%' },
               { key: 'combined_sentiment' as keyof CorrelationEntry, label: 'SENT' },

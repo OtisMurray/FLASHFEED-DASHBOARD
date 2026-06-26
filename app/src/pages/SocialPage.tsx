@@ -62,6 +62,60 @@ function sourceLabel(post: SocialPost) {
   return post.platform || post.source || 'Social'
 }
 
+const TRENDING_STOP_WORDS = new Set([
+  'about', 'after', 'again', 'all', 'also', 'and', 'any', 'are', 'because', 'been',
+  'before', 'being', 'but', 'can', 'could', 'day', 'did', 'does', 'doing', 'down',
+  'each', 'few', 'for', 'from', 'get', 'gets', 'getting', 'got', 'had', 'has',
+  'have', 'here', 'how', 'http', 'https', 'into', 'its', 'just', 'like', 'make',
+  'many', 'more', 'much', 'new', 'now', 'only', 'other', 'our', 'out', 'over',
+  'really', 'said', 'same', 'see', 'should', 'some', 'still', 'stock', 'than',
+  'that', 'the', 'their', 'them', 'then', 'there', 'these', 'they', 'thing',
+  'think', 'this', 'those', 'through', 'today', 'tomorrow', 'too', 'under',
+  'very', 'want', 'was', 'way', 'were', 'what', 'when', 'where', 'which',
+  'while', 'who', 'why', 'will', 'with', 'would', 'www', 'com', 'you', 'your',
+])
+
+function trendingPhrases(posts: SocialPost[]) {
+  const counts = new Map<string, number>()
+
+  for (const post of posts) {
+    const supplied = [
+      ...(post.finance_keywords || []),
+      ...(post.gossip_keywords || []),
+      ...(post.keywords || []),
+    ]
+      .map(value => String(value || '').trim().toLowerCase())
+      .filter(value => value.length >= 2)
+
+    const text = displayText(post)
+    const cashtags = (text.match(/\$[a-z][a-z0-9.-]{0,9}/gi) || []).map(tag => tag.toLowerCase())
+    const symbols = new Set([
+      String(post.ticker || post.symbol || '').toLowerCase(),
+      ...cashtags.map(tag => tag.slice(1)),
+      ...(text.match(/\b[A-Z]{2,5}\b/g) || []).map(tag => tag.toLowerCase()),
+    ])
+    const words = (text.toLowerCase().match(/[a-z][a-z'-]{2,}/g) || [])
+      .filter(token => !TRENDING_STOP_WORDS.has(token) && !symbols.has(token))
+      .slice(0, 80)
+    const phrases = words.slice(0, -1).map((word, index) => `${word} ${words[index + 1]}`)
+
+    // Count once per post so one repetitive account cannot own the trend list.
+    for (const phrase of new Set([...supplied, ...cashtags, ...phrases])) {
+      counts.set(phrase, (counts.get(phrase) || 0) + 1)
+    }
+  }
+
+  const repeated = Array.from(counts.entries()).filter(([, count]) => count >= 2)
+  const candidates = repeated.length ? repeated : Array.from(counts.entries())
+
+  const ranked = (rows: Array<[string, number]>) => rows.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  const phrases = ranked(candidates.filter(([phrase]) => phrase.includes(' ') && !phrase.startsWith('$'))).slice(0, 8)
+  const cashtags = ranked(candidates.filter(([phrase]) => phrase.startsWith('$'))).slice(0, 4)
+  const suppliedWords = ranked(candidates.filter(([phrase]) => !phrase.includes(' ') && !phrase.startsWith('$')))
+
+  return [...phrases, ...cashtags, ...suppliedWords].slice(0, 12)
+}
+
 
 function sentimentBadgeClass(sentiment?: string) {
   const s = String(sentiment || '').toLowerCase()
@@ -95,6 +149,7 @@ export default function SocialPage() {
   const [error, setError] = useState<string | null>(null)
   const [tickerSearch, setTickerSearch] = useState('')
   const [tickerFilter, setTickerFilter] = useState('')
+  const [phraseFilter, setPhraseFilter] = useState('')
   const [platformStatus, setPlatformStatus] = useState<PlatformStatus[]>([])
 
   async function loadSocial(filterTicker = tickerFilter) {
@@ -104,7 +159,7 @@ export default function SocialPage() {
     try {
       const params = new URLSearchParams()
       params.set('window_minutes', windowMinutes)
-      params.set('limit', '500')
+      params.set('limit', '200')
       if (active !== 'all') params.set('platform', active)
       if (filterTicker) params.set('ticker', filterTicker)
 
@@ -165,27 +220,21 @@ export default function SocialPage() {
     await loadSocial('')
   }
 
-  const trending = useMemo(() => {
-    const counts = new Map<string, number>()
+  const trending = useMemo(() => trendingPhrases(posts), [posts])
+  const visiblePosts = useMemo(() => {
+    const phrase = phraseFilter.trim().toLowerCase()
+    if (!phrase) return posts
+    return posts.filter(post => [
+      displayText(post),
+      post.ticker,
+      post.symbol,
+      ...(post.finance_keywords || []),
+      ...(post.gossip_keywords || []),
+      ...(post.keywords || []),
+    ].filter(Boolean).join(' ').toLowerCase().includes(phrase.replace(/^\$/, '')))
+  }, [posts, phraseFilter])
 
-    for (const post of posts) {
-      const words = [
-        ...(post.finance_keywords || []),
-        ...(post.gossip_keywords || []),
-        ...(post.keywords || []),
-      ]
-
-      for (const raw of words) {
-        const key = String(raw || '').trim()
-        if (!key || key.length < 2) continue
-        counts.set(key, (counts.get(key) || 0) + 1)
-      }
-    }
-
-    return Array.from(counts.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 12)
-  }, [posts])
+  useEffect(() => setPhraseFilter(''), [active, windowMinutes, tickerFilter])
 
   const platformCards = useMemo(() => {
     const byPlatform = new Map(platformStatus.map(row => [row.platform.toLowerCase(), row]))
@@ -251,7 +300,7 @@ export default function SocialPage() {
             <option value="1440">24h</option>
           </select>
           <div className="text-neutral text-lg">
-            {posts.length} posts
+            {phraseFilter ? `${visiblePosts.length} of ${posts.length} posts` : `${posts.length} posts`}
           </div>
         </div>
       </div>
@@ -289,13 +338,30 @@ export default function SocialPage() {
       </div>
 
       <div className="border border-slate-700 bg-slate-800/60 rounded-xl p-6 mb-6">
-        <h2 className="text-xl font-semibold mb-4">Trending Phrases</h2>
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <h2 className="text-xl font-semibold">Trending Phrases</h2>
+          {phraseFilter && (
+            <button
+              type="button"
+              onClick={() => setPhraseFilter('')}
+              className="rounded-md border border-sky-500/60 px-3 py-1 text-sm text-sky-200 hover:bg-sky-500/10"
+            >
+              Reset feed
+            </button>
+          )}
+        </div>
+        {phraseFilter && <p className="mb-3 text-sm text-neutral">Showing posts containing “{phraseFilter}”</p>}
         {trending.length ? (
           <div className="flex flex-wrap gap-2">
             {trending.map(([phrase, count]) => (
-              <span key={phrase} className="rounded-full bg-slate-900 border border-slate-700 px-3 py-1 text-sm">
-                {phrase} <span className="text-neutral">×{count}</span>
-              </span>
+              <button
+                key={phrase}
+                type="button"
+                onClick={() => setPhraseFilter(phrase)}
+                className={`rounded-full border px-3 py-1 text-sm transition ${phraseFilter === phrase ? 'border-sky-400 bg-sky-500/20 text-sky-100' : 'border-slate-700 bg-slate-900 hover:border-sky-500/60'}`}
+              >
+                {phrase.startsWith('$') ? phrase.toUpperCase() : phrase} <span className="text-neutral">×{count}</span>
+              </button>
             ))}
           </div>
         ) : (
@@ -311,15 +377,15 @@ export default function SocialPage() {
 
       {loading && posts.length === 0 ? (
         <div className="text-neutral text-center py-20">Loading social posts...</div>
-      ) : posts.length === 0 ? (
+      ) : visiblePosts.length === 0 ? (
         <div className="text-neutral text-center py-20">
           <div className="text-5xl mb-4">💬</div>
-          <div>No posts found for current filters</div>
-          <div className="text-sm mt-2">Try 24h, or run the social collector to populate the live 5m window.</div>
+          <div>{phraseFilter ? `No posts contain “${phraseFilter}”` : 'No posts found for current filters'}</div>
+          <div className="text-sm mt-2">{phraseFilter ? 'Reset the feed or choose another phrase.' : 'Try 24h, or run the social collector to populate the live 5m window.'}</div>
         </div>
       ) : (
         <div className="space-y-3">
-          {posts.map((post, idx) => {
+          {visiblePosts.map((post, idx) => {
             const text = displayText(post)
             const ticker = post.ticker || post.symbol
             return (

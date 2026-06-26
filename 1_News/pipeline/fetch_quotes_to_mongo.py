@@ -16,13 +16,33 @@ from pathlib import Path
 import requests
 from pymongo import MongoClient, UpdateOne
 
+
+
+# FlashFeed quote guard: skip yfinance quotes unless explicitly enabled
+_ENABLE_QUOTE_FETCH = str(os.getenv("ENABLE_QUOTE_FETCH", "")).lower() in ("1", "true", "yes")
+if not _ENABLE_QUOTE_FETCH:
+    print("Quote fetch skipped: ENABLE_QUOTE_FETCH is not enabled")
+    raise SystemExit(0)
+
+if os.getenv("QUOTE_SKIP", "0") == "1":
+    print("Quote fetch skipped: QUOTE_SKIP=1")
+    raise SystemExit(0)
+
+_REQUIRE_EXPLICIT_QUOTES = os.getenv("QUOTE_REQUIRE_EXPLICIT_TICKERS", "0") == "1"
+_QUOTE_TICKERS_ENV = os.getenv("QUOTE_TICKERS", "").strip()
+
+if _REQUIRE_EXPLICIT_QUOTES and not _QUOTE_TICKERS_ENV:
+    print("Quote fetch skipped: explicit tickers required but QUOTE_TICKERS is empty")
+    raise SystemExit(0)
+
+
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TICKER_FILE = ROOT / "config" / "social_tickers_100.txt"
 
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/feedflash")
 DB_NAME = os.getenv("MONGODB_DB", os.getenv("MONGO_DB", "feedflash"))
 TICKER_FILE = Path(os.getenv("QUOTE_TICKER_FILE", str(DEFAULT_TICKER_FILE)))
-MAX_TICKERS = int(os.getenv("QUOTE_MAX_TICKERS", "5000"))
+MAX_TICKERS = int(os.getenv("QUOTE_MAX_TICKERS", "100"))
 CHUNK_SIZE = int(os.getenv("QUOTE_CHUNK_SIZE", "40"))
 TIMEOUT = int(os.getenv("QUOTE_REQUEST_TIMEOUT", "20"))
 

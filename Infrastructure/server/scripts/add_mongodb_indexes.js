@@ -12,6 +12,8 @@ async function addIndexes() {
   // Articles collection - most important for performance
   const articlesIndexes = [
     { keys: { ticker: 1, publish_date: -1 }, name: 'ticker_publish_date' },
+    { keys: { tickers: 1, publish_date: -1 }, name: 'tickers_publish_date' },
+    { keys: { article_kind: 1, publish_date: -1 }, name: 'article_kind_publish_date' },
     { keys: { ticker: 1, sentiment: 1 }, name: 'ticker_sentiment' },
     { keys: { publish_date: -1 }, name: 'publish_date' },
     { keys: { source: 1, publish_date: -1 }, name: 'source_publish_date' },

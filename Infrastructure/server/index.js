@@ -4,8 +4,10 @@ import mongoose from 'mongoose'
 import cors    from 'cors'
 import fs from 'node:fs'
 import path from 'node:path'
+import net from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { connectDB } from './db.js'
+import Redis from 'ioredis'
 
 import articlesRouter    from './routes/articles.js'
 import screenerRouter    from './routes/screener.js'
@@ -44,6 +46,7 @@ const TRACKED_MARKETS = [
 ]
 const MAX_SIGNAL_CHANGE_PCT = Math.max(10, Number(process.env.MAX_SIGNAL_CHANGE_PCT || 300))
 const PRIVATE_TRACKED_TICKERS = new Set(['SPACEX'])
+const PUBLIC_SOCIAL_FALLBACK_TICKERS = ['AAPL', 'TSLA', 'NVDA', 'AMD', 'MSFT', 'AMZN', 'META', 'GOOGL', 'PLTR', 'RIVN']
 
 // ── Middleware ────────────────────────────────────────────
 const CORS_ORIGIN = process.env.CORS_ORIGIN || '*'
@@ -52,6 +55,419 @@ const corsOptions = CORS_ORIGIN === '*'
   : { origin: CORS_ORIGIN.split(',').map(s => s.trim()) }
 app.use(cors(corsOptions))
 app.use(express.json({ limit: '2mb' }))
+
+// ── RAM speed layer: Redis hot cache + Kafka→Redis feed reads ─────────────────
+// Redis holds (a) a short-TTL cache of the expensive Mongo aggregations so the
+// dashboard reads from RAM, and (b) the per-ticker hot window the Kafka consumer
+// streams in (feed:{TICKER} ZSet → event:{id} hashes). If Redis is unavailable,
+// every path transparently falls back to MongoDB — the app never breaks.
+const REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379'
+let redis = null
+try {
+  redis = new Redis(REDIS_URL, {
+    lazyConnect: true,
+    maxRetriesPerRequest: 2,
+    enableOfflineQueue: false,
+    enableAutoPipelining: true,
+    keepAlive: 30000,
+    retryStrategy: (n) => (n > 10 ? null : Math.min(n * 200, 2000)),
+  })
+  redis.on('error', () => {})                       // quiet; usage is guarded by status check
+  redis.on('ready', () => console.log('  Redis   →  connected (RAM cache + hot feed active)'))
+  redis.connect().catch(() => console.warn('  Redis   →  not reachable; serving from MongoDB only'))
+} catch (e) {
+  console.warn('  Redis   →  disabled:', e.message)
+  redis = null
+}
+const redisReady = () => !!redis && redis.status === 'ready'
+
+// ── Aman-style chart architecture: one ticker per request, RAM/Redis TTL cache ──
+const CHART_CANDLE_CACHE_TTL = Math.max(
+  15,
+  Number(process.env.CHART_CANDLE_CACHE_TTL_SECONDS || process.env.CACHE_TTL_CHARTS || 60)
+)
+
+const CHART_MEMORY_CACHE_MAX = Math.max(50, Number(process.env.CHART_MEMORY_CACHE_MAX || 300))
+const chartMemoryCache = new Map()
+
+function chartCacheKey(ticker, range, interval) {
+  return `chart:candles:v2:${String(ticker || '').toUpperCase()}:${String(range || '').toLowerCase()}:${String(interval || '').toLowerCase()}`
+}
+
+function pruneChartMemoryCache() {
+  while (chartMemoryCache.size > CHART_MEMORY_CACHE_MAX) {
+    const oldest = chartMemoryCache.keys().next().value
+    if (!oldest) break
+    chartMemoryCache.delete(oldest)
+  }
+}
+
+async function chartCacheGet(key) {
+  const now = Date.now()
+  const mem = chartMemoryCache.get(key)
+
+  if (mem && now - mem.ts < CHART_CANDLE_CACHE_TTL * 1000) {
+    return {
+      ...mem.value,
+      cache_hit: true,
+      cache_layer: "memory",
+      chart_cache_ttl_seconds: CHART_CANDLE_CACHE_TTL,
+    }
+  }
+
+  if (mem) chartMemoryCache.delete(key)
+
+  if (redisReady()) {
+    try {
+      const raw = await redis.get(key)
+
+      if (raw) {
+        const value = JSON.parse(raw)
+
+        const marked = {
+          ...value,
+          cache_hit: true,
+          cache_layer: "redis",
+          chart_cache_ttl_seconds: CHART_CANDLE_CACHE_TTL,
+        }
+
+        chartMemoryCache.set(key, { ts: now, value: marked })
+        pruneChartMemoryCache()
+
+        return marked
+      }
+    } catch (err) {
+      console.warn("chart redis cache get failed:", err.message)
+    }
+  }
+
+  return null
+}
+
+async function chartCacheSet(key, value) {
+  const clean = { ...value }
+  delete clean.cache_hit
+  delete clean.cache_layer
+
+  chartMemoryCache.set(key, {
+    ts: Date.now(),
+    value: clean,
+  })
+
+  pruneChartMemoryCache()
+
+  if (redisReady()) {
+    try {
+      await redis.set(key, JSON.stringify(clean), "EX", CHART_CANDLE_CACHE_TTL)
+    } catch (err) {
+      console.warn("chart redis cache set failed:", err.message)
+    }
+  }
+}
+
+function chartDateKeyEt(sec) {
+  const n = Number(sec || 0)
+  if (!Number.isFinite(n) || n <= 0) return ""
+
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date(n * 1000))
+
+    const obj = Object.fromEntries(parts.map(p => [p.type, p.value]))
+    return `${obj.year}-${obj.month}-${obj.day}`
+  } catch (_) {
+    return new Date(n * 1000).toISOString().slice(0, 10)
+  }
+}
+
+function latestSessionCandles(candles) {
+  const byDay = new Map()
+
+  for (const candle of candles || []) {
+    const key = chartDateKeyEt(candle.time)
+    if (!key) continue
+    if (!byDay.has(key)) byDay.set(key, [])
+    byDay.get(key).push(candle)
+  }
+
+  const latestKey = Array.from(byDay.keys()).sort().at(-1)
+
+  return {
+    date: latestKey || null,
+    candles: latestKey ? byDay.get(latestKey) : [],
+  }
+}
+
+
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ''
+const API_TOKEN = process.env.API_TOKEN || ''
+const API_TOKEN_SCOPE = String(process.env.API_TOKEN_SCOPE || "write").toLowerCase()
+
+function requestToken(req) {
+  const auth = String(req.get('authorization') || '')
+  const bearer = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7) : ''
+  const queryToken = ["1", "true", "yes"].includes(String(process.env.ALLOW_QUERY_API_TOKEN || "").toLowerCase())
+    ? String(req.query?.token || req.query?.api_token || "")
+    : ""
+  return String(req.get('x-api-token') || req.get('x-admin-token') || bearer || queryToken || '')
+}
+
+function tokenAllowed(req, tokens) {
+  const token = requestToken(req)
+  return Boolean(token && tokens.filter(Boolean).includes(token))
+}
+
+const adminGuard = (req, res, next) => {
+  if (!ADMIN_TOKEN && !API_TOKEN) return next()
+  if (tokenAllowed(req, [ADMIN_TOKEN, API_TOKEN])) return next()
+  return res.status(401).json({ ok: false, error: 'admin token required' })
+}
+
+const apiTokenGuard = (req, res, next) => {
+  if (!API_TOKEN || API_TOKEN_SCOPE === "off") return next()
+  if (req.path === "/health" || req.path === "/system/health") return next()
+  if (API_TOKEN_SCOPE !== "all" && ["GET", "HEAD", "OPTIONS"].includes(req.method)) return next()
+  if (tokenAllowed(req, [API_TOKEN, ADMIN_TOKEN])) return next()
+  return res.status(401).json({ ok: false, error: "api token required" })
+}
+
+app.use('/api', apiTokenGuard)
+
+function parseHostPort(value, fallbackHost, fallbackPort) {
+  const raw = String(value || '').split(',')[0].trim()
+  if (!raw) return { host: fallbackHost, port: fallbackPort }
+  const cleaned = raw.replace(/^\w+:\/\//, '')
+  const [host, portText] = cleaned.split(':')
+  return { host: host || fallbackHost, port: Number(portText || fallbackPort) }
+}
+
+function tcpProbe(host, port, timeoutMs = 900) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port, timeout: timeoutMs })
+    const done = (ok, error = null) => {
+      socket.removeAllListeners()
+      socket.destroy()
+      resolve({ ok, host, port, error })
+    }
+    socket.once('connect', () => done(true))
+    socket.once('timeout', () => done(false, 'timeout'))
+    socket.once('error', (err) => done(false, err.message))
+  })
+}
+
+let fetchInFlight = false
+let lastFetchStartedAt = 0
+
+function fetchMinIntervalMs() {
+  return Math.max(0, Number(process.env.FETCH_MIN_INTERVAL_MS || 60000))
+}
+
+function fetchCooldownRemainingMs(now = Date.now()) {
+  const minIntervalMs = fetchMinIntervalMs()
+  if (!minIntervalMs || !lastFetchStartedAt) return 0
+  return Math.max(0, minIntervalMs - (now - lastFetchStartedAt))
+}
+
+
+// Transparent response cache for the heaviest GETs — identical JSON shape, served
+// from RAM within the TTL window. Only successful (200) responses are cached.
+const CACHE_RULES = [
+  { match: (p) => p === '/api/stats',           ttl: Number(process.env.CACHE_TTL_STATS || 60) },
+  { match: (p) => p === '/api/status',          ttl: Number(process.env.CACHE_TTL_STATUS || 10) },
+  { match: (p) => p === '/api/screener',        ttl: Number(process.env.CACHE_TTL_SCREENER || 20) },
+  { match: (p) => p === '/api/social/rolling',  ttl: Number(process.env.CACHE_TTL_SOCIAL || 15) },
+  { match: (p) => p === '/api/social/rolling/stats', ttl: Number(process.env.CACHE_TTL_SOCIAL_STATS || 20) },
+  { match: (p) => p.startsWith('/api/charts/'), ttl: Number(process.env.CACHE_TTL_CHARTS || 20) },
+  { match: (p) => p === '/api/momentum',        ttl: Number(process.env.CACHE_TTL_MOMENTUM || 15) },
+  { match: (p) => p === '/api/momentum/trending', ttl: Number(process.env.CACHE_TTL_MOMENTUM || 15) },
+  { match: (p) => p === '/api/trade-watch',      ttl: Number(process.env.CACHE_TTL_MOMENTUM || 15) },
+  { match: (p) => p === '/api/prediction/signals', ttl: Number(process.env.CACHE_TTL_PREDICTION || 30) },
+  { match: (p) => p === '/api/market/status',    ttl: Number(process.env.CACHE_TTL_STATUS || 10) },
+  { match: (p) => p === '/api/sources/health',   ttl: Number(process.env.CACHE_TTL_SOURCE_HEALTH || 30) },
+  { match: (p) => p === '/api/finviz/movers',    ttl: Number(process.env.CACHE_TTL_FINVIZ_MOVERS || 15) },
+  { match: (p) => p === '/api/sentiment/audit' || p === '/api/sentiment/snapshot', ttl: Number(process.env.CACHE_TTL_SENTIMENT || 30) },
+  { match: (p) => p === '/api/correlation',     ttl: Number(process.env.CACHE_TTL_CORRELATION || 30) },
+  { match: (p) => p === '/api/articles',        ttl: Number(process.env.CACHE_TTL_ARTICLES || 15) },
+  { match: (p) => p.startsWith('/api/ai/'),     ttl: Number(process.env.CACHE_TTL_AI || 60) },
+]
+const cacheTtlFor = (p) => { const r = CACHE_RULES.find((rule) => rule.match(p)); return r ? r.ttl : 0 }
+app.use(async (req, res, next) => {
+  if (req.method !== 'GET' || !redisReady()) return next()
+  const ttl = cacheTtlFor(req.path)
+  if (!ttl) return next()
+  const key = 'cache:' + req.originalUrl
+  try {
+    const hit = await redis.get(key)
+    if (hit) { res.set('X-Cache', 'HIT'); return res.type('application/json').send(hit) }
+  } catch (_) { /* fall through to compute from Mongo */ }
+  const sendJson = res.json.bind(res)
+  res.json = (body) => {
+    if (res.statusCode === 200) {
+      res.set('X-Cache', 'MISS')
+      try { redis.set(key, JSON.stringify(body), 'EX', ttl).catch(() => {}) } catch (_) {}
+    }
+    return sendJson(body)
+  }
+  next()
+})
+
+async function invalidateDashboardResponseCache() {
+  if (!redisReady()) return
+  try {
+    let cursor = "0"
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, "MATCH", "cache:/api/*", "COUNT", 200)
+      cursor = nextCursor
+      if (keys.length) await redis.del(...keys)
+    } while (cursor !== "0")
+  } catch (err) {
+    console.warn("Dashboard cache invalidation failed:", err?.message || err)
+  }
+}
+
+// GET /api/feed/:ticker — RAM-speed read of the per-ticker hot window that the
+// Kafka consumer streams into Redis (feed:{TICKER} ZSet → event:{id} hashes).
+app.get('/api/feed/:ticker', async (req, res) => {
+  const ticker = String(req.params.ticker || '').toUpperCase().trim()
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 25))
+  if (!ticker) return res.status(400).json({ error: 'ticker required' })
+  if (!redisReady()) {
+    return res.status(503).json({ ticker, source: 'none', count: 0, events: [],
+      note: 'Redis not connected — start Redis and the Kafka consumer to use the hot feed.' })
+  }
+  try {
+    const ids = await redis.zrevrange(`feed:${ticker}`, 0, limit - 1)
+    if (!ids || !ids.length) return res.json({ ticker, source: 'redis', count: 0, events: [] })
+    const pipe = redis.pipeline()
+    ids.forEach((id) => pipe.hgetall(`event:${id}`))
+    const rows = await pipe.exec()
+    const events = rows
+      .map(([err, h]) => (err || !h || Object.keys(h).length === 0) ? null : h)
+      .filter(Boolean)
+      .map((h) => {
+        let s = Number(h.sentiment_score)
+        if (Number.isNaN(s) && h.payload) { try { s = Number(JSON.parse(h.payload).sentiment_score) } catch (_) {} }
+        return { ...h, sentiment_score: Number.isNaN(s) ? null : s }
+      })
+    const svals = events.map((e) => e.sentiment_score).filter((n) => typeof n === 'number')
+    const avg = svals.length ? +(svals.reduce((a, b) => a + b, 0) / svals.length).toFixed(3) : null
+    res.json({ ticker, source: 'redis', count: events.length, avg_sentiment: avg, events })
+  } catch (e) {
+    res.status(500).json({ ticker, error: e.message, events: [] })
+  }
+})
+
+// ── AI analysis: directional scores + market overview from recent news ────────
+// The "AI score" aggregates the per-article sentiment (already produced by the
+// FinBERT + LLM sentiment stage) over the last few days into a directional
+// -100..+100 score per ticker. Results are cached in Redis (RAM) for speed.
+const AI_ARTICLES_COLLECTION = process.env.ARTICLES_COLLECTION || 'articles'
+async function aiRecentArticles(db, days) {
+  const since = new Date(Date.now() - days * 24 * 3600 * 1000)
+  const q = { $or: [
+    { published_at: { $gte: since } }, { detected_at: { $gte: since } },
+    { createdAt: { $gte: since } }, { published: { $gte: since } }, { timestamp: { $gte: since } },
+  ] }
+  const projection = { tickers: 1, ticker: 1, symbol: 1, symbols: 1, sentiment_score: 1, sentiment: 1,
+    finbert_score: 1, gemini_sentiment: 1, title: 1, headline: 1, source: 1 }
+  try {
+    return await db.collection(AI_ARTICLES_COLLECTION).find(q, { projection }).limit(8000).toArray()
+  } catch (_) {
+    return await db.collection(AI_ARTICLES_COLLECTION).find({}, { projection }).sort({ _id: -1 }).limit(4000).toArray()
+  }
+}
+function aiSentiment(a) {
+  let v = a.sentiment_score ?? a.finbert_score ?? a.gemini_sentiment ?? a.sentiment
+  if (typeof v === 'string') {
+    const s = v.toLowerCase()
+    if (s.includes('bull') || s === 'positive') return 0.6
+    if (s.includes('bear') || s === 'negative') return -0.6
+    if (s === 'neutral') return 0
+    v = parseFloat(v)
+  }
+  return Number.isFinite(v) ? v : null
+}
+function aiTickers(a) {
+  if (Array.isArray(a.tickers)) return a.tickers
+  if (Array.isArray(a.symbols)) return a.symbols
+  if (a.ticker) return [a.ticker]
+  if (a.symbol) return [a.symbol]
+  return []
+}
+function aiScoreTickers(arts) {
+  const m = new Map()
+  for (const a of arts) {
+    const s = aiSentiment(a); if (s === null) continue
+    for (const t of aiTickers(a)) {
+      const k = String(t).toUpperCase().trim(); if (!k || k.length > 8) continue
+      const e = m.get(k) || { sum: 0, n: 0, pos: 0, neg: 0 }
+      e.sum += s; e.n += 1; if (s > 0.15) e.pos += 1; else if (s < -0.15) e.neg += 1
+      m.set(k, e)
+    }
+  }
+  return m
+}
+
+app.get('/api/ai/scores', async (req, res) => {
+  const days = Math.min(14, Math.max(1, Number(req.query.days) || 3))
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 30))
+  try {
+    const db = mongoose.connection.db
+    if (!db) return res.status(503).json({ error: 'MongoDB not connected', scores: [] })
+    const arts = await aiRecentArticles(db, days)
+    const scored = [...aiScoreTickers(arts).entries()]
+      .map(([ticker, e]) => {
+        const avg = e.sum / e.n
+        const score = Math.round(Math.max(-100, Math.min(100, avg * 100)))
+        return {
+          ticker, score,
+          direction: score > 8 ? 'up' : score < -8 ? 'down' : 'flat',
+          confidence: +Math.min(1, e.n / 20).toFixed(2),
+          article_count: e.n, bullish: e.pos, bearish: e.neg,
+        }
+      })
+      .filter((x) => x.article_count >= 2)
+      .sort((a, b) => Math.abs(b.score) - Math.abs(a.score))
+      .slice(0, limit)
+    res.json({ days, generated_at: Date.now(), model: 'news-sentiment-aggregate', scores: scored })
+  } catch (e) {
+    res.status(500).json({ error: e.message, scores: [] })
+  }
+})
+
+app.get('/api/ai/overview', async (req, res) => {
+  const days = Math.min(14, Math.max(1, Number(req.query.days) || 3))
+  try {
+    const db = mongoose.connection.db
+    if (!db) return res.status(503).json({ error: 'MongoDB not connected' })
+    const arts = await aiRecentArticles(db, days)
+    const sents = arts.map(aiSentiment).filter((n) => n !== null)
+    const avg = sents.length ? sents.reduce((a, b) => a + b, 0) / sents.length : 0
+    const ranked = [...aiScoreTickers(arts).entries()]
+      .filter(([, e]) => e.n >= 2)
+      .map(([ticker, e]) => ({ ticker, avg: e.sum / e.n, n: e.n }))
+    const bull = [...ranked].sort((a, b) => b.avg - a.avg).slice(0, 5)
+    const bear = [...ranked].sort((a, b) => a.avg - b.avg).slice(0, 5)
+    const mood = avg > 0.1 ? 'risk-on' : avg < -0.1 ? 'risk-off' : 'mixed'
+    const summary =
+      `Across ${arts.length} ticker-tagged articles in the last ${days} day(s), overall news sentiment is ` +
+      `${mood} (avg ${avg.toFixed(2)}). ` +
+      (bull.length ? `Strongest positive coverage: ${bull.map((b) => b.ticker).join(', ')}. ` : '') +
+      (bear.length ? `Most negative: ${bear.map((b) => b.ticker).join(', ')}.` : '')
+    res.json({
+      days, generated_at: Date.now(), model: 'news-sentiment-aggregate',
+      article_count: arts.length, avg_sentiment: +avg.toFixed(3), mood, summary,
+      top_bullish: bull.map((b) => ({ ticker: b.ticker, score: Math.round(b.avg * 100), article_count: b.n })),
+      top_bearish: bear.map((b) => ({ ticker: b.ticker, score: Math.round(b.avg * 100), article_count: b.n })),
+    })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
 
 const SUPPORTED_TRANSLATION_LANGUAGES = new Set(["en", "es", "fr", "de", "pt", "ja"])
 const UNSUPPORTED_TRANSLATION_SCRIPT_RE = /[\u3400-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/
@@ -472,9 +888,27 @@ function latestMarketCloseCutoff(now = new Date()) {
   return easternLocalToUtc(year, month, day, MARKET_WINDOW_CLOSE_HOUR)
 }
 
+function calendarWindowStart(days = 1, now = new Date()) {
+  const n = Math.max(1, Math.floor(Number(days) || 1))
+  const { year, month, day } = easternParts(now)
+  const shifted = shiftLocalDate(year, month, day, -(n - 1))
+  return easternLocalToUtc(shifted.year, shifted.month, shifted.day, 0).getTime()
+}
+
 function articleWindowMatch(cutoffMs) {
   const cutoffSec = Math.floor(cutoffMs / 1000)
   const cutoffDate = new Date(cutoffMs)
+  const ceilingMs = Date.now() + 5 * 60 * 1000
+  const ceilingSec = Math.floor(ceilingMs / 1000)
+  const ceilingDate = new Date(ceilingMs)
+  const rangeFor = (field) => ({
+    $or: [
+      { [field]: { $type: "date", $gte: cutoffDate, $lte: ceilingDate } },
+      { [field]: { $type: "int", $gte: cutoffSec, $lte: ceilingSec } },
+      { [field]: { $type: "long", $gte: cutoffSec, $lte: ceilingSec } },
+      { [field]: { $type: "double", $gte: cutoffSec, $lte: ceilingSec } },
+    ],
+  })
   const missingPublishDate = {
     $or: [
       { publish_date: { $exists: false } },
@@ -485,26 +919,28 @@ function articleWindowMatch(cutoffMs) {
 
   return {
     $or: [
-      { publish_date: { $type: "date", $gte: cutoffDate } },
-      { publish_date: { $type: "int", $gte: cutoffSec } },
-      { publish_date: { $type: "long", $gte: cutoffSec } },
-      { publish_date: { $type: "double", $gte: cutoffSec } },
       {
         $and: [
-          missingPublishDate,
           {
             $or: [
-              { fetched_date: { $type: "date", $gte: cutoffDate } },
-              { fetched_date: { $type: "int", $gte: cutoffSec } },
-              { fetched_date: { $type: "long", $gte: cutoffSec } },
-              { fetched_date: { $type: "double", $gte: cutoffSec } },
-              { detected_at: { $type: "date", $gte: cutoffDate } },
-              { detected_at: { $type: "int", $gte: cutoffSec } },
-              { detected_at: { $type: "long", $gte: cutoffSec } },
-              { detected_at: { $type: "double", $gte: cutoffSec } },
-              { createdAt: { $gte: cutoffDate } },
+              { publish_time_trusted: true },
+              {
+                $and: [
+                  { publish_time_trusted: { $exists: false } },
+                  { article_kind: { $nin: ["public", "unstructured"] } },
+                  { category: { $nin: ["unstructured_public_title", "public_news", "public_market_news"] } },
+                  { collector: { $ne: "unstructured_news_title_only_v1" } },
+                ],
+              },
             ],
           },
+          rangeFor("publish_date"),
+        ],
+      },
+      {
+        $and: [
+          { $or: [{ publish_time_trusted: false }, missingPublishDate] },
+          { $or: [rangeFor("first_seen_at"), rangeFor("createdAt")] },
         ],
       },
     ],
@@ -514,7 +950,7 @@ function articleWindowMatch(cutoffMs) {
 function recentArticleMatch(days = 0) {
   const n = Number(days || 0)
   const cutoffMs = Number.isFinite(n) && n > 0
-    ? Date.now() - n * 86_400_000
+    ? calendarWindowStart(n)
     : latestMarketCloseCutoff().getTime()
 
   return articleWindowMatch(cutoffMs)
@@ -524,10 +960,15 @@ function articleMatchStage(match) {
   return Object.keys(match).length ? [{ $match: match }] : []
 }
 
-function tickerArticlePipeline({ days = 2, limit = 150, ticker = "" } = {}) {
+function tickerArticlePipeline({ days = 3, limit = 150, ticker = "" } = {}) {
   const match = {
-    ...recentArticleMatch(days),
-    ticker: { $exists: true, $nin: ["", null] },
+    $and: [
+      recentArticleMatch(days),
+      { $or: [
+        { ticker: { $exists: true, $nin: ["", null] } },
+        { tickers: { $type: "array", $ne: [] } },
+      ] },
+    ],
   }
 
   const pipeline = [
@@ -536,7 +977,18 @@ function tickerArticlePipeline({ days = 2, limit = 150, ticker = "" } = {}) {
       $addFields: {
         _ticker_parts: {
           $map: {
-            input: { $split: [{ $toUpper: { $toString: "$ticker" } }, ","] },
+            input: {
+              $setUnion: [
+                { $split: [{ $toUpper: { $toString: { $ifNull: ["$ticker", ""] } } }, ","] },
+                {
+                  $map: {
+                    input: { $cond: [{ $isArray: "$tickers" }, "$tickers", []] },
+                    as: "ticker_value",
+                    in: { $toUpper: { $toString: "$$ticker_value" } },
+                  },
+                },
+              ],
+            },
             as: "ticker_part",
             in: { $trim: { input: "$$ticker_part" } }
           }
@@ -554,20 +1006,27 @@ function tickerArticlePipeline({ days = 2, limit = 150, ticker = "" } = {}) {
       $addFields: {
         _article_kind: {
           $cond: [
+            { $eq: [{ $toLower: { $toString: { $ifNull: ["$article_kind", ""] } } }, "structured"] },
+            "structured",
             {
-              $or: [
-                { $in: ["$category", ["unstructured_public_title", "public_news", "public_market_news"]] },
-                { $eq: ["$collector", "unstructured_news_title_only_v1"] },
+              $cond: [
                 {
-                  $regexMatch: {
-                    input: { $toLower: { $toString: { $ifNull: ["$source", ""] } } },
-                    regex: "unstructured"
-                  }
+                  $or: [
+                    { $in: [{ $toLower: { $toString: { $ifNull: ["$article_kind", ""] } } }, ["public", "unstructured"]] },
+                    { $in: ["$category", ["unstructured_public_title", "public_news", "public_market_news"]] },
+                    { $eq: ["$collector", "unstructured_news_title_only_v1"] },
+                    {
+                      $regexMatch: {
+                        input: { $toLower: { $toString: { $ifNull: ["$source", ""] } } },
+                        regex: "unstructured"
+                      }
+                    },
+                  ],
                 },
+                "unstructured",
+                "structured",
               ],
             },
-            "unstructured",
-            "structured",
           ],
         },
         _sentiment_direction: {
@@ -811,7 +1270,12 @@ function normalizeScreenerDoc(doc = {}) {
   const changePct = nullableFixed(change, 2)
   const volume = nullableNumber(doc.volume)
   const avgVolume = nullableNumber(doc.avg_volume)
-  const relVolume = volume != null && avgVolume ? Number((volume / Math.max(1, avgVolume)).toFixed(2)) : null
+  // Prefer the provider's relative-volume field because its baseline period is
+  // internally consistent. volume/avg_volume can mix intraday and daily units.
+  const storedRelVolume = nullableNumber(doc.rel_volume ?? doc.relative_volume)
+  const relVolume = storedRelVolume != null
+    ? Number(storedRelVolume.toFixed(2))
+    : volume != null && avgVolume ? Number((volume / Math.max(1, avgVolume)).toFixed(2)) : null
   const marketCap = nullableNumber(doc.market_cap)
   const avgSentiment = Number(doc.avg_sentiment ?? doc.news_sentiment ?? doc.structured_sentiment ?? 0)
 
@@ -1011,40 +1475,52 @@ function loadTrackedTickers(limit = TRACKED_TICKER_LIMIT) {
 
 async function loadArticleStats(db, days = 0) {
   const articles = db.collection("articles")
-  const match = recentArticleMatch(days)
   const trackedTickers = loadTrackedTickers()
-  const trackedMarketTickers = await loadTrackedMarketTickerSymbols(db, Number(process.env.TRACKED_MARKET_TICKER_LIMIT || 5000))
 
-  // Use a 2-day time cap for all stats to prevent unbounded growth
-  const maxDays = 2
-  const dayMatch = days > 0 && days <= maxDays ? recentArticleMatch(days) : recentArticleMatch(maxDays)
+  // Dashboard totals intentionally represent the rolling three-day cache.
+  const maxDays = 3
+  const effectiveDays = days > 0 && days <= maxDays ? days : maxDays
+  const dayMatch = recentArticleMatch(effectiveDays)
 
-  const [sources, categories, sentimentRows, tickerRows, total, totalAll] = await Promise.all([
-    articles.aggregate([
-      ...articleMatchStage(dayMatch),
-      { $group: { _id: "$source", count: { $sum: 1 } } },
-      { $project: { _id: 0, source: "$_id", count: 1 } },
-      { $sort: { count: -1 } }
-    ]).toArray(),
-    articles.aggregate([
-      ...articleMatchStage(dayMatch),
-      { $group: { _id: "$category", count: { $sum: 1 } } },
-      { $project: { _id: 0, category: "$_id", count: 1 } },
-      { $sort: { count: -1 } }
-    ]).toArray(),
+  const marketTickerQuery = {
+    ticker: { $exists: true, $nin: ["", null], $not: /\./ },
+    exchange: { $in: Array.from(US_EXCHANGES) },
+    quote_status: { $ne: "missing" },
+  }
+  const [statsRows, tickerRows, trackedMarketTickerCount] = await Promise.all([
     articles.aggregate([
       ...articleMatchStage(dayMatch),
       {
-        $group: {
-          _id: { $toLower: { $ifNull: ["$sentiment", "neutral"] } },
-          count: { $sum: 1 }
-        }
-      }
+        $facet: {
+          sources: [
+            { $group: { _id: "$source", count: { $sum: 1 } } },
+            { $project: { _id: 0, source: "$_id", count: 1 } },
+            { $sort: { count: -1 } },
+          ],
+          categories: [
+            { $group: { _id: "$category", count: { $sum: 1 } } },
+            { $project: { _id: 0, category: "$_id", count: 1 } },
+            { $sort: { count: -1 } },
+          ],
+          sentiments: [{
+            $group: {
+              _id: { $toLower: { $ifNull: ["$sentiment", "neutral"] } },
+              count: { $sum: 1 },
+            },
+          }],
+          totals: [{ $count: "count" }],
+        },
+      },
     ]).toArray(),
-    articles.aggregate(tickerArticlePipeline({ days: maxDays, limit: 500 })).toArray(),
-    articles.countDocuments(dayMatch),
-    articles.countDocuments(dayMatch),
+    articles.aggregate(tickerArticlePipeline({ days: maxDays, limit: 50 })).toArray(),
+    db.collection("screeners").countDocuments(marketTickerQuery),
   ])
+
+  const stats = statsRows[0] || {}
+  const sources = stats.sources || []
+  const categories = stats.categories || []
+  const sentimentRows = stats.sentiments || []
+  const total = Number(stats.totals?.[0]?.count || 0)
 
   const sentiment = { bullish: 0, bearish: 0, neutral: 0, unknown: 0 }
   for (const row of sentimentRows) {
@@ -1056,6 +1532,10 @@ async function loadArticleStats(db, days = 0) {
     total,
     total_recent: total,
     total_all: total,
+    window_days: effectiveDays,
+    window_mode: "calendar_days_et",
+    window_start: new Date(calendarWindowStart(effectiveDays)).toISOString(),
+    window_timezone: MARKET_WINDOW_TIME_ZONE,
     sources,
     categories,
     sentiment,
@@ -1067,9 +1547,37 @@ async function loadArticleStats(db, days = 0) {
     market_universe_label: "NASDAQ / NYSE / AMEX equities plus major US index markets",
     tracked_ticker_count: trackedTickers.length,
     tracked_tickers: trackedTickers,
-    tracked_market_ticker_count: trackedMarketTickers.length,
-    tracked_market_tickers: trackedMarketTickers.slice(0, 500),
+    tracked_market_ticker_count: trackedMarketTickerCount,
+    // The frontend only needs the count. Avoid transferring thousands of
+    // symbols on every Overview load.
+    tracked_market_tickers: [],
   }
+}
+
+const articleStatsMemory = new Map()
+const ARTICLE_STATS_MEMORY_TTL_MS = Math.max(10_000, Number(process.env.ARTICLE_STATS_MEMORY_TTL_MS || 60_000))
+
+async function cachedLoadArticleStats(db, days = 0) {
+  const normalizedDays = days > 0 && days <= 3 ? days : 3
+  const key = String(normalizedDays)
+  const now = Date.now()
+  const cached = articleStatsMemory.get(key)
+  if (cached?.value && now - cached.updatedAt < ARTICLE_STATS_MEMORY_TTL_MS) return cached.value
+  if (cached?.promise) return cached.promise
+
+  const promise = loadArticleStats(db, normalizedDays)
+    .then(value => {
+      articleStatsMemory.set(key, { value, updatedAt: Date.now(), promise: null })
+      return value
+    })
+    .catch(error => {
+      articleStatsMemory.delete(key)
+      throw error
+    })
+  articleStatsMemory.set(key, { value: cached?.value, updatedAt: cached?.updatedAt || 0, promise })
+  // Stale-while-revalidate prevents a periodic 20+ second pause when the
+  // aggregation expires while ingestion is writing to Mongo.
+  return cached?.value || promise
 }
 
 async function loadScreenerQuoteMap(db, tickers = []) {
@@ -1085,16 +1593,52 @@ async function loadAllScreenerRows(db) {
   return docs.map(normalizeScreenerDoc).filter(row => row.ticker)
 }
 
+async function loadMarketContext(db) {
+  const rows = (await loadAllScreenerRows(db)).filter(isCleanListedUsScreenerRow)
+  const changed = rows.filter(row => Number.isFinite(Number(row.change_pct)))
+  const advancing = changed.filter(row => Number(row.change_pct) > 0).length
+  const declining = changed.filter(row => Number(row.change_pct) < 0).length
+  const unchanged = changed.length - advancing - declining
+  const directional = advancing + declining
+  const breadthRatio = directional ? advancing / directional : 0.5
+  const avgChangePct = changed.length
+    ? changed.reduce((sum, row) => sum + Number(row.change_pct || 0), 0) / changed.length
+    : 0
+  const label = breadthRatio >= 0.58 && avgChangePct > 0
+    ? "Risk-on"
+    : breadthRatio <= 0.42 && avgChangePct < 0
+      ? "Risk-off"
+      : "Mixed"
+
+  return {
+    label,
+    advancing,
+    declining,
+    unchanged,
+    total: changed.length,
+    breadth_ratio: Number(breadthRatio.toFixed(3)),
+    avg_change_pct: Number(avgChangePct.toFixed(2)),
+  }
+}
+
 async function loadPositiveFinvizMoverRows(db, limit = 100) {
   const requestedLimit = Math.max(1, Math.min(300, Number(limit || 100)))
+  const freshFinvizCutoff = new Date(Date.now() - 30 * 60 * 1000)
   let docs = await db.collection("screeners").find({
     quote_source: "finviz_elite_screener",
     finviz_status: { $ne: "dropped" },
+    finviz_seen_at: { $gte: freshFinvizCutoff },
   }).toArray()
   if (!docs.length) docs = await db.collection("screeners").find({}).toArray()
-  return docs
+  let rows = docs
     .map(normalizeScreenerDoc)
     .filter(row => isCleanListedUsScreenerRow(row) && Number(row.change_pct || 0) >= 0.01)
+  if (!rows.length) {
+    rows = (await db.collection("screeners").find({}).toArray())
+      .map(normalizeScreenerDoc)
+      .filter(row => isCleanListedUsScreenerRow(row) && Number(row.change_pct || 0) >= 0.01)
+  }
+  return rows
     .sort((a, b) => {
       const changeDiff = Number(b.change_pct || 0) - Number(a.change_pct || 0)
       if (changeDiff !== 0) return changeDiff
@@ -1127,7 +1671,7 @@ async function loadTrackedMarketTickerSymbols(db, limit = 5000) {
   return normalizeTickerList(docs.map(row => row.ticker), requestedLimit, { ensurePrivate: false })
 }
 
-async function loadArticleStatsForTickers(db, tickers = [], days = 2) {
+async function loadArticleStatsForTickers(db, tickers = [], days = 3) {
   const wanted = new Set(tickers.map(t => String(t || "").toUpperCase()).filter(Boolean))
   if (!wanted.size) return new Map()
 
@@ -1146,7 +1690,8 @@ async function loadSocialStatsForTickers(db, tickers = [], windowMinutes = 1440)
   const wanted = normalizeTickerList(tickers, 300, { ensurePrivate: false })
   if (!wanted.length) return new Map()
 
-  const sinceSec = Math.floor(Date.now() / 1000) - Math.max(1, Number(windowMinutes || 1440)) * 60
+  const safeWindow = Math.max(1, Number(windowMinutes || 1440))
+  const sinceSec = Math.floor(Date.now() / 1000) - safeWindow * 60
   const rows = await db.collection("socials").aggregate([
     ...socialTimeStages(),
     { $match: { _event_sec: { $gte: sinceSec } } },
@@ -1177,8 +1722,47 @@ async function loadSocialStatsForTickers(db, tickers = [], windowMinutes = 1440)
           },
         },
         avg_sentiment_score: { $avg: "$_score" },
+        stocktwits_count: {
+          $sum: {
+            $cond: [{ $eq: ["$_norm_platform", "StockTwits"] }, 1, 0],
+          },
+        },
+        stocktwits_sentiment_sum: {
+          $sum: {
+            $cond: [{ $eq: ["$_norm_platform", "StockTwits"] }, "$_score", 0],
+          },
+        },
+        reddit_count: {
+          $sum: {
+            $cond: [{ $eq: ["$_norm_platform", "Reddit"] }, 1, 0],
+          },
+        },
+        bluesky_count: {
+          $sum: {
+            $cond: [{ $eq: ["$_norm_platform", "Bluesky"] }, 1, 0],
+          },
+        },
+        twitter_count: {
+          $sum: {
+            $cond: [{ $eq: ["$_norm_platform", "Twitter"] }, 1, 0],
+          },
+        },
         platforms: { $addToSet: "$_norm_platform" },
         latest_post: { $max: "$_event_sec" },
+      },
+    },
+    {
+      $addFields: {
+        window_minutes: safeWindow,
+        social_message_density: { $divide: ["$count", safeWindow] },
+        stocktwits_message_density: { $divide: ["$stocktwits_count", safeWindow] },
+        stocktwits_avg_sentiment_score: {
+          $cond: [
+            { $gt: ["$stocktwits_count", 0] },
+            { $divide: ["$stocktwits_sentiment_sum", "$stocktwits_count"] },
+            0,
+          ],
+        },
       },
     },
   ]).toArray()
@@ -1235,11 +1819,22 @@ function mergeMoverContext(row, articleRow, socialRow) {
   const structuredSentiment = articleRow ? kindSentimentScore(articleRow, "structured") : Number(row.structured_sentiment || 0)
   const unstructuredSentiment = articleRow ? kindSentimentScore(articleRow, "unstructured") : 0
   const socialCount = Number(socialRow?.count || 0)
+  const stocktwitsCount = Number(socialRow?.stocktwits_count || 0)
   const socialSentiment = socialCount
     ? Number((Number.isFinite(Number(socialRow.avg_sentiment_score))
       ? Number(socialRow.avg_sentiment_score)
       : ((socialRow.bullish || 0) - (socialRow.bearish || 0)) / Math.max(1, socialCount)).toFixed(3))
     : 0
+  const stocktwitsSentiment = stocktwitsCount
+    ? Number((Number(socialRow.stocktwits_avg_sentiment_score || 0)).toFixed(3))
+    : 0
+  const rollingWindowMinutes = Number(socialRow?.window_minutes || 0)
+  const allSocialDensity = rollingWindowMinutes
+    ? Number((socialCount / rollingWindowMinutes).toFixed(3))
+    : Number(Number(socialRow?.social_message_density || 0).toFixed(3))
+  const stocktwitsDensity = rollingWindowMinutes
+    ? Number((stocktwitsCount / rollingWindowMinutes).toFixed(3))
+    : Number(Number(socialRow?.stocktwits_message_density || 0).toFixed(3))
   const structuredWeight = 2
   const unstructuredWeight = 1
   const socialWeight = 0.75
@@ -1261,6 +1856,14 @@ function mergeMoverContext(row, articleRow, socialRow) {
     sentiment,
     article_sentiment: newsSentiment,
     social_sentiment: socialSentiment,
+    social_message_sentiment: socialSentiment,
+    social_message_density: allSocialDensity,
+    stocktwits_message_sentiment: stocktwitsSentiment,
+    stocktwits_message_density: stocktwitsDensity,
+    stocktwits_message_count: stocktwitsCount,
+    reddit_message_count: Number(socialRow?.reddit_count || 0),
+    bluesky_message_count: Number(socialRow?.bluesky_count || 0),
+    twitter_message_count: Number(socialRow?.twitter_count || 0),
     structured_sentiment: structuredSentiment,
     unstructured_sentiment: unstructuredSentiment,
     article_count: totalArticleCount,
@@ -1276,10 +1879,12 @@ function mergeMoverContext(row, articleRow, socialRow) {
       ...(articleRow?.sources || []),
       ...(socialRow?.platforms || []),
     ].filter(Boolean).slice(0, 8),
+    latest_publish: articleRow?.latest_publish || articleRow?.latest_fetch || null,
     latest_social: socialRow?.latest_post || null,
     momentum_score: Number((row.change_pct || 0).toFixed(2)),
     ai_numeric_rank: bracketOrder.confidence,
     bracket_order: bracketOrder,
+    rolling_window_minutes: rollingWindowMinutes || null,
   }
 }
 
@@ -1380,109 +1985,444 @@ function addTradeWatchFields(row) {
   }
 }
 
-const PREDICTION_HORIZONS_MINUTES = [5, 15, 60]
-const PREDICTION_MODEL_ID = "trade_watch_linear_v1"
+const PREDICTION_HORIZON_MINUTES = 5
+const PREDICTION_HORIZONS_MINUTES = [PREDICTION_HORIZON_MINUTES, 15, 60]
+const PREDICTION_MODEL_ID = "trade_watch_linear_v2"
+const PREDICTION_LABEL_VERSION = 2
+const PREDICTION_MAX_QUOTE_AGE_SECONDS = Math.max(60, Number(process.env.PREDICTION_MAX_QUOTE_AGE_SECONDS || 900))
+function predictionVersionFilter() {
+  return {
+    $or: [
+      { label_version: PREDICTION_LABEL_VERSION },
+      { label_version: null },
+      { label_version: { $exists: false } }
+    ]
+  }
+}
+
+function normalizePredictionFeatures(features = {}) {
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const n = Number(features?.[key])
+      if (Number.isFinite(n)) return n
+    }
+    return 0
+  }
+
+  const log1pSafe = (value) => Math.log1p(Math.max(0, numValue(value, 0)))
+  const clamp01 = (value) => Math.max(0, Math.min(1, numValue(value, 0)))
+
+  const price = pick("price", "entry_price", "entry_reference")
+  const previousClose = pick("previous_close", "prev_close")
+  const computedChangePct = price > 0 && previousClose > 0 ? ((price - previousClose) / previousClose) * 100 : 0
+  const changePct = pick("change_pct", "change_percent") || computedChangePct
+
+  const volume = pick("volume")
+  const avgVolume = Math.max(1, pick("avg_volume", "average_volume", "volume_avg"))
+  const relVolume = pick("relative_volume", "rel_volume") || (avgVolume > 0 ? volume / avgVolume : 0)
+
+  const marketCap = pick("market_cap")
+  const bucket = String(features?.market_cap_bucket || "").toLowerCase()
+  const microcap = bucket.includes("micro") || (marketCap > 0 && marketCap < 300_000_000) ? 1 : 0
+  const smallcap = bucket.includes("small") || (marketCap >= 300_000_000 && marketCap < 2_000_000_000) ? 1 : 0
+
+  const rsi = pick("rsi")
+  const rsiOverbought = Math.max(0, rsi - 70) / 30
+  const rsiOversold = Math.max(0, 30 - rsi) / 30
+
+  const platformSocialCount =
+    pick("stocktwits_message_count") +
+    pick("reddit_message_count") +
+    pick("bluesky_message_count") +
+    pick("twitter_message_count")
+
+  const socialCount = Math.max(
+    pick("social_count", "message_count", "messages", "mentions", "posts"),
+    platformSocialCount
+  )
+
+  const socialDensity = pick(
+    "social_density_per_minute",
+    "social_message_density",
+    "stocktwits_message_density"
+  ) || (socialCount > 0 ? socialCount / 60 : 0)
+
+  const articleCount = pick("article_count", "news_article_count")
+  const structuredArticleCount = pick("structured_article_count")
+  const unstructuredArticleCount = pick("unstructured_article_count")
+
+  const socialSentiment = pick("social_sentiment", "social_message_sentiment")
+  const articleSentiment = pick("article_sentiment", "avg_sentiment")
+  const structuredSentiment = pick("structured_sentiment")
+  const unstructuredSentiment = pick("unstructured_sentiment")
+  const weightedSentiment = pick("weighted_sentiment") || (
+    socialSentiment * 0.45 +
+    articleSentiment * 0.35 +
+    structuredSentiment * 0.15 +
+    unstructuredSentiment * 0.05
+  )
+  const sentimentScore = pick("sentiment_score", "sentiment") || weightedSentiment
+  const sentimentChange = pick("sentiment_change")
+
+  const evidenceScore = pick("evidence_score")
+  const tradeWatchScore = pick("trade_watch_score", "momentum_score", "ai_numeric_rank")
+  const agreement = pick("agreement")
+
+  const absChangePct = Math.abs(changePct)
+  const highRelVolume = relVolume >= 5 ? 1 : 0
+  const highSocialAttention = socialCount >= 50 || socialDensity >= 1 ? 1 : 0
+  const momentumExtreme = absChangePct >= 25 ? 1 : 0
+  const lowPrice = price > 0 && price < 5 ? 1 : 0
+
+  const socialLog = log1pSafe(socialCount)
+  const articleLog = log1pSafe(articleCount)
+  const relVolLog = log1pSafe(relVolume)
+
+  return {
+    return_1m: clampNumber(pick("return_1m", "price_change_1m_pct"), -50, 50),
+    return_3m: clampNumber(pick("return_3m", "price_change_3m_pct"), -75, 75),
+    return_5m: clampNumber(pick("return_5m", "price_change_5m_pct"), -100, 100),
+    return_15m: clampNumber(pick("return_15m", "price_change_15m_pct"), -150, 150),
+
+    price_log: log1pSafe(price),
+    low_price: lowPrice,
+    market_cap_log: log1pSafe(marketCap),
+    microcap,
+    smallcap,
+
+    volume_log: log1pSafe(volume),
+    relative_volume: clampNumber(relVolume, 0, 5000),
+    rel_volume_log: relVolLog,
+    high_rel_volume: highRelVolume,
+
+    change_pct: clampNumber(changePct, -300, 300),
+    abs_change_pct: clampNumber(absChangePct, 0, 300),
+    momentum_extreme: momentumExtreme,
+
+    rsi: clampNumber(rsi, 0, 100),
+    rsi_overbought: clampNumber(rsiOverbought, 0, 3),
+    rsi_oversold: clampNumber(rsiOversold, 0, 3),
+    rsi_pressure: clampNumber((rsi - 50) / 50, -1, 1),
+
+    social_count_log: socialLog,
+    social_density_per_minute: clampNumber(socialDensity, 0, 100),
+    high_social_attention: highSocialAttention,
+
+    article_count_log: articleLog,
+    structured_article_count_log: log1pSafe(structuredArticleCount),
+    unstructured_article_count_log: log1pSafe(unstructuredArticleCount),
+
+    sentiment_score: clampNumber(sentimentScore, -1, 1),
+    social_sentiment: clampNumber(socialSentiment, -1, 1),
+    article_sentiment: clampNumber(articleSentiment, -1, 1),
+    structured_sentiment: clampNumber(structuredSentiment, -1, 1),
+    unstructured_sentiment: clampNumber(unstructuredSentiment, -1, 1),
+    weighted_sentiment: clampNumber(weightedSentiment, -1, 1),
+    sentiment_change: clampNumber(sentimentChange, -2, 2),
+
+    evidence_score: clampNumber(evidenceScore, -5, 5),
+    trade_watch_score: clampNumber(tradeWatchScore, -5, 5),
+    agreement: clampNumber(agreement, -1, 1),
+
+    sentiment_x_social: clampNumber(sentimentScore * socialLog, -20, 20),
+    sentiment_x_news: clampNumber(articleSentiment * articleLog, -20, 20),
+    social_x_rel_volume: clampNumber(socialLog * relVolLog, 0, 100),
+    change_x_rel_volume: clampNumber(changePct * relVolLog, -500, 500),
+    change_x_sentiment: clampNumber(changePct * sentimentScore, -300, 300),
+    rsi_overbought_x_change: clampNumber(rsiOverbought * changePct, -300, 300),
+    trade_watch_x_evidence: clampNumber(tradeWatchScore * evidenceScore, -25, 25),
+    attention_score: clampNumber((socialLog * 0.45) + (articleLog * 0.25) + (relVolLog * 0.30), 0, 50),
+    liquidity_pressure: clampNumber(relVolLog * Math.sign(changePct || 0), -20, 20),
+    overextension_risk: clampNumber(momentumExtreme + highRelVolume + rsiOverbought + lowPrice + microcap, 0, 10)
+  }
+}
+
 const PREDICTION_FEATURE_KEYS = [
+  "return_1m",
+  "return_3m",
+  "return_5m",
+  "return_15m",
+
+  "price_log",
+  "low_price",
+  "market_cap_log",
+  "microcap",
+  "smallcap",
+
+  "volume_log",
+  "relative_volume",
+  "rel_volume_log",
+  "high_rel_volume",
+
   "change_pct",
-  "rel_volume",
-  "article_count",
+  "abs_change_pct",
+  "momentum_extreme",
+
+  "rsi",
+  "rsi_overbought",
+  "rsi_oversold",
+  "rsi_pressure",
+
+  "social_count_log",
+  "social_density_per_minute",
+  "high_social_attention",
+
+  "article_count_log",
+  "structured_article_count_log",
+  "unstructured_article_count_log",
+
+  "sentiment_score",
+  "social_sentiment",
   "article_sentiment",
   "structured_sentiment",
-  "social_count",
-  "social_density_per_minute",
-  "social_sentiment",
+  "unstructured_sentiment",
   "weighted_sentiment",
+  "sentiment_change",
+
   "evidence_score",
   "trade_watch_score",
   "agreement",
+
+  "sentiment_x_social",
+  "sentiment_x_news",
+  "social_x_rel_volume",
+  "change_x_rel_volume",
+  "change_x_sentiment",
+  "rsi_overbought_x_change",
+  "trade_watch_x_evidence",
+  "attention_score",
+  "liquidity_pressure",
+  "overextension_risk"
 ]
 
+function numValue(value, fallback = 0) {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : fallback
+}
+
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, numValue(value, 0)))
+}
+
 function predictionFeaturesFromMover(row, socialWindowMinutes = 60) {
-  const socialCount = Number(row.message_count || 0)
-  const articleCount = Number(row.article_count || 0)
-  const relVolume = Number(row.rel_volume || 0)
-  const changePct = Number(row.change_pct || 0)
-  const sentiment = Number(row.sentiment || 0)
-  const evidenceScore =
-    Number(row.article_sentiment || 0) * Math.min(1, articleCount / 5) +
-    Number(row.social_sentiment || 0) * Math.min(1, socialCount / 20)
+  const windowMinutes = Math.max(1, numValue(socialWindowMinutes, 60))
+  const changePct = numValue(row?.change_pct ?? row?.change_percent ?? row?.change)
+  const relativeVolume = numValue(row?.rel_volume ?? row?.relative_volume ?? row?.relativeVolume)
+  const volume = numValue(row?.volume)
+  const avgVolume = Math.max(1, numValue(row?.avg_volume ?? row?.average_volume ?? row?.volume_avg ?? volume))
+  const socialCount = numValue(row?.social_count ?? row?.message_count ?? row?.mentions ?? row?.posts)
+  const sentiment = numValue(row?.social_sentiment_score ?? row?.sentiment_score ?? row?.sentiment)
+  const previousSentiment = numValue(row?.prev_sentiment_score ?? row?.sentiment_prev ?? row?.sentiment_score_prev ?? sentiment)
+
+  const return1m = numValue(row?.return_1m ?? row?.price_change_1m_pct)
+  const return3m = numValue(row?.return_3m ?? row?.price_change_3m_pct)
+  const return5m = numValue(row?.return_5m ?? row?.price_change_5m_pct ?? changePct * 0.10)
+  const return15m = numValue(row?.return_15m ?? row?.price_change_15m_pct ?? changePct * 0.25)
+
+  const volumeZ = numValue(row?.volume_zscore, avgVolume > 0 ? (volume - avgVolume) / avgVolume : 0)
+  const volatility5m = Math.abs(numValue(row?.volatility_5m ?? row?.range_5m_pct ?? return5m))
+  const volatility15m = Math.abs(numValue(row?.volatility_15m ?? row?.range_15m_pct ?? return15m))
 
   return {
-    price: Number(row.price || 0),
-    change_pct: changePct,
-    volume: Number(row.volume || 0),
-    rel_volume: Number(relVolume.toFixed(3)),
-    market_cap: Number(row.market_cap || 0),
-    market_cap_bucket: row.market_cap_bucket || "Unknown",
-    rsi: row.rsi ?? null,
-    gap: row.gap ?? null,
-    perf_week: row.perf_week ?? null,
-    perf_month: row.perf_month ?? null,
-    article_count: articleCount,
-    structured_article_count: Number(row.structured_article_count || 0),
-    unstructured_article_count: Number(row.unstructured_article_count || 0),
-    article_sentiment: Number(Number(row.article_sentiment || 0).toFixed(3)),
-    structured_sentiment: Number(Number(row.structured_sentiment || 0).toFixed(3)),
-    unstructured_sentiment: Number(Number(row.unstructured_sentiment || 0).toFixed(3)),
-    social_count: socialCount,
-    social_density_per_minute: Number((socialCount / Math.max(1, socialWindowMinutes)).toFixed(3)),
-    social_sentiment: Number(Number(row.social_sentiment || 0).toFixed(3)),
-    weighted_sentiment: Number(sentiment.toFixed(3)),
-    evidence_score: Number(evidenceScore.toFixed(3)),
-    trade_watch_score: Number(row.trade_watch?.trade_watch_score || 0),
-    agreement: Number(row.trade_watch?.agreement || 0),
+    return_1m: clampNumber(return1m, -50, 50),
+    return_3m: clampNumber(return3m, -75, 75),
+    return_5m: clampNumber(return5m, -100, 100),
+    return_15m: clampNumber(return15m, -150, 150),
+    volume_zscore: clampNumber(volumeZ, -10, 25),
+    volatility_5m: clampNumber(volatility5m, 0, 150),
+    volatility_15m: clampNumber(volatility15m, 0, 250),
+    message_volume_5m: clampNumber(socialCount * Math.min(1, 5 / windowMinutes), 0, 500),
+    message_volume_30m: clampNumber(socialCount * Math.min(1, 30 / windowMinutes), 0, 2000),
+    sentiment_score: clampNumber(sentiment, -1, 1),
+    sentiment_change: clampNumber(sentiment - previousSentiment, -2, 2),
+    change_pct: clampNumber(changePct, -300, 300),
+    relative_volume: clampNumber(relativeVolume, 0, 500),
+    evidence_count: [
+      Number.isFinite(Number(row?.price)),
+      socialCount > 0,
+      Math.abs(sentiment) > 0.05,
+      relativeVolume > 1,
+      Math.abs(changePct) > 0.5
+    ].filter(Boolean).length
   }
 }
 
 function baselinePredictionFromMover(row) {
   const features = predictionFeaturesFromMover(row)
-  const tradeScore = Number(row.trade_watch?.trade_watch_score || 0)
-  const evidence = Number(features.evidence_score || 0)
-  const changePct = Number(row.change_pct || 0)
-  const relVolume = Number(row.rel_volume || 0)
-  const direction = evidence >= 0.12 && changePct > 0
-    ? "up"
-    : evidence <= -0.12 && changePct < 0
-      ? "down"
-      : "watch"
-  const confidence = clamp(
-    tradeScore * 0.45 +
-    Math.min(1, Math.abs(evidence)) * 0.25 +
-    Math.min(1, relVolume / 6) * 0.15 +
-    Math.min(1, Math.abs(changePct) / 25) * 0.15
+  const momentum = 0.20 * features.return_1m + 0.15 * features.return_3m + 0.10 * features.return_5m
+  const socialPulse = 0.08 * Math.log1p(features.message_volume_30m) + 0.35 * features.sentiment_score + 0.15 * features.sentiment_change
+  const liquidityPulse = 0.05 * Math.log1p(features.relative_volume)
+  const volatilityPenalty = features.volatility_5m > 8 ? 0.30 * Math.sign(momentum || features.change_pct || 1) : 0
+  const raw = momentum + socialPulse + liquidityPulse - volatilityPenalty
+  const predictedReturn = clampNumber(raw, -3, 3)
+
+  const confidence = clampNumber(
+    0.15 +
+      Math.min(0.30, Math.abs(predictedReturn) / 4) +
+      Math.min(0.25, features.evidence_count * 0.05) +
+      Math.min(0.20, Math.log1p(features.message_volume_30m) / 12),
+    0,
+    0.85
   )
+
+  let signal = "No Edge"
+  if (features.volatility_5m >= 8 || Math.abs(features.return_5m) >= 8) signal = "High Volatility"
+  else if (confidence < 0.35 || Math.abs(predictedReturn) < 0.20) signal = "No Edge"
+  else if (predictedReturn > 0) signal = "Bullish Watch"
+  else if (predictedReturn < 0) signal = "Bearish Risk"
+
   return {
-    direction,
-    confidence: Number(confidence.toFixed(3)),
-    model: "baseline_trade_watch_v1",
-    model_ready: Boolean(row.price && (row.article_count || row.message_count) && Number.isFinite(changePct)),
+    model: "baseline_watch_v3",
+    model_status: "baseline",
+    horizon_minutes: PREDICTION_HORIZON_MINUTES,
+    signal,
+    direction: predictedReturn > 0.20 ? "up" : predictedReturn < -0.20 ? "down" : "watch",
+    confidence: Number(confidence.toFixed(2)),
+    predicted_return_5m: Number(predictedReturn.toFixed(2)),
+    sample_count: 0,
+    features
   }
 }
 
-function sigmoid(value) {
-  return 1 / (1 + Math.exp(-value))
+function predictionOutcomeFromLabels(labels = {}) {
+  const vals = []
+  const r5 = Number(labels?.return_5m?.return_pct)
+  const r15 = Number(labels?.return_15m?.return_pct)
+  const r60 = Number(labels?.return_60m?.return_pct)
+
+  if (Number.isFinite(r5)) vals.push({ value: r5, weight: 0.45 })
+  if (Number.isFinite(r15)) vals.push({ value: r15, weight: 0.35 })
+  if (Number.isFinite(r60)) vals.push({ value: r60, weight: 0.20 })
+
+  if (!vals.length) return null
+
+  const weightSum = vals.reduce((s, row) => s + row.weight, 0)
+  const composite = vals.reduce((s, row) => s + row.value * row.weight, 0) / Math.max(1e-9, weightSum)
+  const maxReturn = Math.max(...vals.map(row => row.value))
+  const minReturn = Math.min(...vals.map(row => row.value))
+
+  return {
+    composite_return: clampNumber(composite, -50, 50),
+    max_return: clampNumber(maxReturn, -50, 50),
+    min_return: clampNumber(minReturn, -50, 50),
+    horizons_used: vals.length
+  }
 }
 
 function applyPredictionModel(features = {}, model = null) {
-  if (!model?.weights || !model?.feature_stats) return null
-  let score = Number(model.intercept || 0)
-  for (const key of model.feature_keys || PREDICTION_FEATURE_KEYS) {
-    const stat = model.feature_stats[key] || { mean: 0, std: 1 }
-    const std = Number(stat.std || 1) || 1
-    const raw = Number(features[key])
-    const normalized = Number.isFinite(raw) ? (raw - Number(stat.mean || 0)) / std : 0
-    score += Number(model.weights[key] || 0) * normalized
+  const normalized = normalizePredictionFeatures(features || {})
+  const featureKeys = model?.feature_keys || PREDICTION_FEATURE_KEYS
+
+  const sigmoid = (x) => {
+    const z = Math.max(-30, Math.min(30, Number(x) || 0))
+    return 1 / (1 + Math.exp(-z))
   }
-  const predictedReturn = Number(score.toFixed(3))
-  const probabilityUp = Number(sigmoid(score / Math.max(0.25, Number(model.target_std || 1))).toFixed(3))
+
+  const dotModel = (weights = {}, intercept = 0) => {
+    let score = Number(intercept || 0)
+    for (const key of featureKeys) {
+      const raw = Number(normalized?.[key] || 0)
+      const stat = model?.feature_stats?.[key] || { mean: 0, std: 1 }
+      const x = (raw - Number(stat.mean || 0)) / Math.max(1e-6, Number(stat.std || 1))
+      score += x * Number(weights?.[key] || 0)
+    }
+    return score
+  }
+
+  const sampleCount = numValue(model?.samples ?? model?.sample_count)
+  const metrics = model?.metrics || {}
+  const directionalAccuracy = numValue(metrics.directional_accuracy_5m)
+  const actionableSamples = numValue(metrics.actionable_samples)
+  const qualityThreshold = Number(process.env.PREDICTION_MIN_DIRECTIONAL_ACCURACY || 0.45)
+  const modelReady = Boolean(
+    model &&
+    model.weights_up &&
+    model.weights_down &&
+    model.weights_return &&
+    sampleCount >= Number(process.env.PREDICTION_MIN_TRAINING_SAMPLES || 20) &&
+    actionableSamples >= Number(process.env.PREDICTION_MIN_ACTIONABLE_SAMPLES || 30) &&
+    (directionalAccuracy >= qualityThreshold || (actionableSamples >= 30 && directionalAccuracy >= 0.30))
+  )
+
+  const expectedReturn = model?.weights_return
+    ? dotModel(model.weights_return, model.intercept_return)
+    : 0
+
+  const probabilityUp = model?.weights_up ? sigmoid(dotModel(model.weights_up, model.intercept_up)) : 0
+  const probabilityDown = model?.weights_down ? sigmoid(dotModel(model.weights_down, model.intercept_down)) : 0
+
+  const edgeThreshold = Number(model?.edge_threshold_pct || process.env.PREDICTION_EDGE_THRESHOLD_PCT || 0.10)
+  const upEdge = probabilityUp - probabilityDown
+  const downEdge = probabilityDown - probabilityUp
+  const maxEdge = Math.max(probabilityUp, probabilityDown)
+  const confidence = clampNumber(Math.abs(probabilityUp - probabilityDown), 0, 1)
+
+  const overextension = numValue(normalized.overextension_risk)
+  const changePct = numValue(normalized.change_pct)
+  const rsi = numValue(normalized.rsi)
+  const sentiment = numValue(normalized.weighted_sentiment || normalized.sentiment_score)
+  const attention = numValue(normalized.attention_score)
+  const tradeWatch = numValue(normalized.trade_watch_score)
+  const relVol = numValue(normalized.relative_volume)
+
+  let signal = "No Edge"
+  let direction = "watch"
+  let reason = "Flat/noisy 5m target or weak edge"
+
+  if (modelReady) {
+    if (maxEdge < 0.515 || Math.abs(expectedReturn) < edgeThreshold * 0.15) {
+      signal = "No Edge"
+      direction = "watch"
+      reason = "Model sees weak 5m edge"
+    } else if (upEdge > 0.08 && expectedReturn > 0) {
+      signal = "Bullish Edge"
+      direction = "up"
+      reason = "Model up probability and expected return agree"
+    } else if (downEdge > 0.08 && expectedReturn < 0) {
+      signal = "Pullback Risk"
+      direction = "down"
+      reason = "Model down probability and expected return agree"
+    } else {
+      signal = "Mixed Signal"
+      direction = "watch"
+      reason = "Model probabilities and return estimate disagree"
+    }
+  } else {
+    // Fallback risk engine when trained model exists but failed the quality gate.
+    if (overextension >= 4 || (changePct >= 50 && rsi >= 75) || relVol >= 500) {
+      signal = "High Volatility"
+      direction = "watch"
+      reason = "Extreme move / relative volume / overextension risk"
+    } else if (tradeWatch >= 0.75 && sentiment >= 0.25 && attention >= 2.5) {
+      signal = "Momentum Watch"
+      direction = "up"
+      reason = "Strong trade-watch evidence, sentiment, and attention"
+    } else if (tradeWatch >= 0.65 && sentiment <= -0.15) {
+      signal = "Sentiment Risk"
+      direction = "down"
+      reason = "Mover has weak/negative sentiment support"
+    } else {
+      signal = "No Edge"
+      direction = "watch"
+      reason = model?.weights_up
+        ? "Trained model failed quality gate; using conservative edge fallback"
+        : "Insufficient trained model; using conservative edge fallback"
+    }
+  }
+
   return {
-    model: model.model_id || PREDICTION_MODEL_ID,
-    model_version: model.version || 1,
-    direction: predictedReturn > 0.05 ? "up" : predictedReturn < -0.05 ? "down" : "watch",
-    predicted_return_5m: predictedReturn,
-    probability_up: probabilityUp,
-    confidence: Number(Math.abs(probabilityUp - 0.5).toFixed(3)),
-    trained_samples: Number(model.samples || 0),
+    model: model?.model_id || PREDICTION_MODEL_ID,
+    model_status: modelReady ? "trained_edge_model" : (model?.weights_up ? "low_quality_model_risk_engine" : "baseline_risk_engine"),
+    signal,
+    direction,
+    confidence: Number(confidence.toFixed(3)),
+    predicted_return_5m: Number(expectedReturn.toFixed(3)),
+    probability_up: Number(probabilityUp.toFixed(3)),
+    probability_down: Number(probabilityDown.toFixed(3)),
+    edge_threshold_pct: edgeThreshold,
+    sample_count: sampleCount,
+    metrics,
+    reason
   }
 }
 
@@ -1490,7 +2430,7 @@ async function loadLatestPredictionModel(db) {
   return db.collection("prediction_models").findOne({ _id: PREDICTION_MODEL_ID })
 }
 
-async function loadEnrichedTradeWatchRows(db, { limit = 10, days = 2, socialWindow = 60 } = {}) {
+async function loadEnrichedTradeWatchRows(db, { limit = 10, days = 3, socialWindow = 60 } = {}) {
   const requestedLimit = Math.max(1, Math.min(50, Number(limit || 10)))
   const movers = await loadPositiveFinvizMoverRows(db, Math.max(requestedLimit * 6, 100))
   const articleMap = await loadArticleStatsForTickers(db, movers.map(row => row.ticker), days)
@@ -1507,7 +2447,7 @@ async function loadEnrichedTradeWatchRows(db, { limit = 10, days = 2, socialWind
     .slice(0, requestedLimit)
 }
 
-async function captureTradeWatchPredictionSignals(db, { limit = 10, days = 2, socialWindow = 60 } = {}) {
+async function captureTradeWatchPredictionSignals(db, { limit = 10, days = 3, socialWindow = 60 } = {}) {
   const nowSec = Math.floor(Date.now() / 1000)
   const minuteBucket = Math.floor(nowSec / 60) * 60
   const [rows, model] = await Promise.all([
@@ -1515,9 +2455,13 @@ async function captureTradeWatchPredictionSignals(db, { limit = 10, days = 2, so
     loadLatestPredictionModel(db),
   ])
   const docs = rows
-    .filter(row => Number(row.price || 0) > 0)
+    .filter(row => {
+      const quoteSec = timestampSeconds(row.quote_time || row.quote_updated_at)
+      const quoteAge = nowSec - quoteSec
+      return Number(row.price || 0) > 0 && quoteSec > 0 && quoteAge >= -300 && quoteAge <= PREDICTION_MAX_QUOTE_AGE_SECONDS
+    })
     .map((row, index) => {
-      const signalId = `${row.ticker}:${minuteBucket}`
+      const signalId = `v${PREDICTION_LABEL_VERSION}:${row.ticker}:${minuteBucket}`
       const features = predictionFeaturesFromMover(row, socialWindow)
       const baseline = baselinePredictionFromMover(row)
       const modelSignal = applyPredictionModel(features, model)
@@ -1529,10 +2473,12 @@ async function captureTradeWatchPredictionSignals(db, { limit = 10, days = 2, so
         exchange: row.exchange || "",
         sector: row.sector || "",
         source: "trade_watch",
+        label_version: PREDICTION_LABEL_VERSION,
         signal_sec: minuteBucket,
         signal_at: new Date(minuteBucket * 1000),
         entry_price: Number(row.price || 0),
         entry_quote_source: row.quote_source || null,
+        entry_quote_time: row.quote_time || null,
         entry_quote_updated_at: row.quote_updated_at || null,
         rank: index + 1,
         decision: row.trade_watch?.decision || "Monitor",
@@ -1569,47 +2515,66 @@ async function labelMaturePredictionSignals(db, { limit = 500 } = {}) {
   const nowSec = Math.floor(Date.now() / 1000)
   const oldestDueSec = nowSec - Math.min(...PREDICTION_HORIZONS_MINUTES) * 60
   const docs = await db.collection("prediction_signals").find({
+    label_version: PREDICTION_LABEL_VERSION,
     signal_sec: { $lte: oldestDueSec },
     entry_price: { $gt: 0 },
   }).sort({ signal_sec: -1 }).limit(Math.max(1, Math.min(2000, Number(limit || 500)))).toArray()
   if (!docs.length) return { checked: 0, labeled: 0 }
 
   const tickers = Array.from(new Set(docs.map(doc => String(doc.ticker || "").toUpperCase()).filter(Boolean)))
-  const quoteMap = await loadScreenerQuoteMap(db, tickers)
+  const candleEntries = await Promise.all(tickers.map(async ticker => {
+    try {
+      return [ticker, await fetchYahooCandles(ticker, "5d", "1m")]
+    } catch (err) {
+      console.warn(`Prediction candle fetch failed for ${ticker}:`, err?.message || err)
+      return [ticker, []]
+    }
+  }))
+  const candleMap = new Map(candleEntries)
   const updates = []
   let labeled = 0
 
   for (const doc of docs) {
-    const quote = quoteMap.get(String(doc.ticker || "").toUpperCase())
-    const currentPrice = Number(quote?.price || 0)
-    const entryPrice = Number(doc.entry_price || 0)
-    if (!currentPrice || !entryPrice) continue
+    const candles = candleMap.get(String(doc.ticker || "").toUpperCase()) || []
+    const base = candleAtOrAfterWithin(candles, Number(doc.signal_sec || 0), 8 * 60)
+    const entryPrice = Number(base?.close || 0)
+    if (!entryPrice) continue
 
-    const setFields = { updated_at: new Date() }
+    const setFields = {
+      updated_at: new Date(),
+      entry_price: Number(entryPrice.toFixed(4)),
+      entry_candle_sec: Number(base.time || 0),
+    }
+    let docLabelsAdded = 0
     for (const horizon of PREDICTION_HORIZONS_MINUTES) {
       const key = `return_${horizon}m`
       if (doc.labels?.[key]?.labeled) continue
       const due = nowSec - Number(doc.signal_sec || 0) >= horizon * 60
       if (!due) continue
 
-      const returnPct = ((currentPrice - entryPrice) / entryPrice) * 100
+      const targetSec = Number(doc.signal_sec || 0) + horizon * 60
+      const labelCandle = candleAtOrAfterWithin(candles, targetSec, 8 * 60)
+      const labelPrice = Number(labelCandle?.close || 0)
+      if (!labelPrice) continue
+      const returnPct = ((labelPrice - entryPrice) / entryPrice) * 100
       const direction = doc.baseline_signal?.direction || "watch"
       setFields[`labels.${key}`] = {
         labeled: true,
         horizon_minutes: horizon,
         return_pct: Number(returnPct.toFixed(3)),
         entry_price: Number(entryPrice.toFixed(4)),
-        label_price: Number(currentPrice.toFixed(4)),
+        label_price: Number(labelPrice.toFixed(4)),
         labeled_at: new Date(),
-        label_sec: nowSec,
-        label_delay_seconds: nowSec - Number(doc.signal_sec || 0) - horizon * 60,
-        quote_source: quote.quote_source || null,
+        label_sec: Number(labelCandle.time || 0),
+        label_delay_seconds: Number(labelCandle.time || 0) - targetSec,
+        quote_source: "yahoo_chart_1m",
         direction_correct: direction === "up" ? returnPct > 0 : direction === "down" ? returnPct < 0 : null,
       }
       labeled += 1
+      docLabelsAdded += 1
     }
 
-    if (Object.keys(setFields).length > 1) {
+    if (docLabelsAdded > 0) {
       setFields.label_status = "partially_labeled"
       if (PREDICTION_HORIZONS_MINUTES.every(h => setFields[`labels.return_${h}m`] || doc.labels?.[`return_${h}m`]?.labeled)) {
         setFields.label_status = "complete"
@@ -1622,20 +2587,38 @@ async function labelMaturePredictionSignals(db, { limit = 500 } = {}) {
   return { checked: docs.length, labeled }
 }
 
-async function trainPredictionModel(db, { limit = 2000, minSamples = 20 } = {}) {
-  const docs = await db.collection("prediction_signals").find({
+async function trainPredictionModel(db, { limit = 5000, minSamples = 100 } = {}) {
+  const edgeThreshold = Number(process.env.PREDICTION_EDGE_THRESHOLD_PCT || 0.10)
+  const raw = await db.collection("prediction_signals").find({
+    ...predictionVersionFilter(),
     "labels.return_5m.labeled": true,
-    "labels.return_5m.return_pct": { $type: "number" },
-    features: { $exists: true },
-  }).sort({ signal_sec: -1 }).limit(Math.max(50, Math.min(10000, Number(limit || 2000)))).toArray()
+    "labels.return_5m.return_pct": { $type: "number" }
+  }).sort({ signal_sec: -1 }).limit(limit).toArray()
 
-  const samples = docs
-    .map(doc => ({
-      target: Number(doc.labels?.return_5m?.return_pct),
-      features: doc.features || {},
-      baseline_direction: doc.baseline_signal?.direction || "watch",
-    }))
-    .filter(row => Number.isFinite(row.target))
+  const docs = raw.reverse()
+
+  const samples = docs.map(doc => {
+    const outcome = predictionOutcomeFromLabels(doc.labels || {})
+    if (!outcome) return null
+
+    const target = Number(outcome.composite_return)
+    if (!Number.isFinite(target)) return null
+
+    const features = normalizePredictionFeatures(doc.features || {})
+    const upMove = Math.max(outcome.composite_return, outcome.max_return)
+    const downMove = Math.min(outcome.composite_return, outcome.min_return)
+
+    return {
+      ticker: doc.ticker,
+      signal_sec: Number(doc.signal_sec || 0),
+      features,
+      target: clampNumber(target, -25, 25),
+      target_up: upMove >= edgeThreshold ? 1 : 0,
+      target_down: downMove <= -edgeThreshold ? 1 : 0,
+      target_flat: Math.abs(upMove) < edgeThreshold && Math.abs(downMove) < edgeThreshold ? 1 : 0,
+      outcome
+    }
+  }).filter(Boolean)
 
   if (samples.length < minSamples) {
     const model = {
@@ -1644,81 +2627,222 @@ async function trainPredictionModel(db, { limit = 2000, minSamples = 20 } = {}) 
       status: "insufficient_samples",
       samples: samples.length,
       min_samples: minSamples,
+      edge_threshold_pct: edgeThreshold,
       feature_keys: PREDICTION_FEATURE_KEYS,
       updated_at: new Date(),
-      note: "Collect more labeled prediction_signals before training the statistical model.",
+      note: "Collect more labeled prediction_signals before training the large-scale edge model."
     }
     await db.collection("prediction_models").updateOne({ _id: PREDICTION_MODEL_ID }, { $set: model }, { upsert: true })
     return model
   }
 
-  const targetMean = samples.reduce((sum, row) => sum + row.target, 0) / samples.length
-  const targetVar = samples.reduce((sum, row) => sum + (row.target - targetMean) ** 2, 0) / Math.max(1, samples.length - 1)
-  const targetStd = Math.sqrt(targetVar) || 1
-  const featureStats = {}
-  const weights = {}
+  const split = Math.max(1, Math.floor(samples.length * 0.8))
+  const train = samples.slice(0, split)
+  const test = samples.slice(split).length ? samples.slice(split) : samples.slice(0, Math.min(samples.length, 500))
 
+  const featureStats = {}
   for (const key of PREDICTION_FEATURE_KEYS) {
-    const vals = samples.map(row => Number(row.features?.[key])).map(value => Number.isFinite(value) ? value : 0)
-    const mean = vals.reduce((sum, value) => sum + value, 0) / vals.length
-    const variance = vals.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, vals.length - 1)
-    const std = Math.sqrt(variance) || 1
-    const covariance = vals.reduce((sum, value, index) => sum + ((value - mean) / std) * (samples[index].target - targetMean), 0) / Math.max(1, vals.length - 1)
-    const weight = clamp(covariance / targetStd, -0.8, 0.8)
-    featureStats[key] = { mean: Number(mean.toFixed(5)), std: Number(std.toFixed(5)) }
-    weights[key] = Number((weight * 0.35).toFixed(5))
+    const values = train.map(row => Number(row.features?.[key] || 0)).filter(Number.isFinite)
+    const mean = values.reduce((a, b) => a + b, 0) / Math.max(1, values.length)
+    const variance = values.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / Math.max(1, values.length)
+    featureStats[key] = {
+      mean: Number(mean.toFixed(6)),
+      std: Number(Math.max(1e-6, Math.sqrt(variance)).toFixed(6))
+    }
   }
 
-  const predictions = samples.map(row => {
-    const signal = applyPredictionModel(row.features, {
-      model_id: PREDICTION_MODEL_ID,
-      version: Date.now(),
-      intercept: targetMean,
-      target_std: targetStd,
-      weights,
-      feature_stats: featureStats,
-      feature_keys: PREDICTION_FEATURE_KEYS,
-      samples: samples.length,
-    })
+  const vector = (row) => PREDICTION_FEATURE_KEYS.map(key => {
+    const stat = featureStats[key] || { mean: 0, std: 1 }
+    return (Number(row.features?.[key] || 0) - Number(stat.mean || 0)) / Math.max(1e-6, Number(stat.std || 1))
+  })
+
+  const trainLinear = (targetKey, { logistic = false, iterations = 450, lr = 0.018, l2 = 0.015 } = {}) => {
+    const weights = Object.fromEntries(PREDICTION_FEATURE_KEYS.map(k => [k, 0]))
+    let intercept = 0
+
+    const positives = train.filter(row => Number(row[targetKey]) === 1).length
+    const negatives = Math.max(1, train.length - positives)
+    const posWeight = positives ? train.length / (2 * positives) : 1
+    const negWeight = train.length / (2 * negatives)
+
+    const sigmoid = (x) => {
+      const z = Math.max(-30, Math.min(30, Number(x) || 0))
+      return 1 / (1 + Math.exp(-z))
+    }
+
+    for (let iter = 0; iter < iterations; iter++) {
+      const rate = lr / Math.sqrt(1 + iter / 50)
+      for (const row of train) {
+        const x = vector(row)
+        const y = targetKey === "target_return_scaled" ? Number(row.target || 0) : Number(row[targetKey] || 0)
+        let z = intercept
+        for (let j = 0; j < PREDICTION_FEATURE_KEYS.length; j++) z += weights[PREDICTION_FEATURE_KEYS[j]] * x[j]
+
+        const pred = logistic ? sigmoid(z) : z
+        const weight = logistic ? (y ? posWeight : negWeight) : 1
+        const err = (pred - y) * weight
+
+        intercept -= rate * err
+        for (let j = 0; j < PREDICTION_FEATURE_KEYS.length; j++) {
+          const key = PREDICTION_FEATURE_KEYS[j]
+          weights[key] -= rate * (err * x[j] + l2 * weights[key])
+        }
+      }
+    }
+
+    return {
+      intercept: Number(intercept.toFixed(6)),
+      weights: Object.fromEntries(Object.entries(weights).map(([k, v]) => [k, Number(v.toFixed(6))]))
+    }
+  }
+
+  const trainReturnRows = train.map(row => ({
+    ...row,
+    target_return_scaled: row.target
+  }))
+
+  const originalTrain = train.slice()
+  train.splice(0, train.length, ...trainReturnRows)
+  const returnModel = trainLinear("target_return_scaled", { logistic: false, iterations: 350, lr: 0.012, l2: 0.025 })
+
+  train.splice(0, train.length, ...originalTrain)
+  const upModel = trainLinear("target_up", { logistic: true, iterations: 500, lr: 0.020, l2: 0.020 })
+  const downModel = trainLinear("target_down", { logistic: true, iterations: 500, lr: 0.020, l2: 0.020 })
+
+  const sigmoid = (x) => {
+    const z = Math.max(-30, Math.min(30, Number(x) || 0))
+    return 1 / (1 + Math.exp(-z))
+  }
+
+  const score = (row, weights, intercept) => {
+    const x = vector(row)
+    let z = Number(intercept || 0)
+    for (let j = 0; j < PREDICTION_FEATURE_KEYS.length; j++) z += Number(weights[PREDICTION_FEATURE_KEYS[j]] || 0) * x[j]
+    return z
+  }
+
+  const preds = test.map(row => {
+    const predictedReturn = score(row, returnModel.weights, returnModel.intercept)
+    const probabilityUp = sigmoid(score(row, upModel.weights, upModel.intercept))
+    const probabilityDown = sigmoid(score(row, downModel.weights, downModel.intercept))
+    const edge = Math.abs(probabilityUp - probabilityDown)
+
+    let predictedDirection = "flat"
+    if (edge >= 0.01 && probabilityUp > probabilityDown && predictedReturn > edgeThreshold * 0.10) predictedDirection = "up"
+    if (edge >= 0.01 && probabilityDown > probabilityUp && predictedReturn < -edgeThreshold * 0.10) predictedDirection = "down"
+
+    const actualDirection = row.target >= edgeThreshold ? "up" : row.target <= -edgeThreshold ? "down" : "flat"
     return {
       target: row.target,
-      predicted: signal?.predicted_return_5m || 0,
-      correct: signal?.direction === "up" ? row.target > 0 : signal?.direction === "down" ? row.target < 0 : null,
+      predictedReturn,
+      probabilityUp,
+      probabilityDown,
+      edge,
+      predictedDirection,
+      actualDirection,
+      actionable: predictedDirection !== "flat",
+      correct: predictedDirection !== "flat" && predictedDirection === actualDirection
     }
   })
-  const actionable = predictions.filter(row => row.correct != null)
-  const mae = predictions.reduce((sum, row) => sum + Math.abs(row.predicted - row.target), 0) / predictions.length
-  const directionalAccuracy = actionable.length
-    ? actionable.reduce((sum, row) => sum + (row.correct ? 1 : 0), 0) / actionable.length
-    : null
+
+  const mae = preds.reduce((s, row) => s + Math.abs(row.predictedReturn - row.target), 0) / Math.max(1, preds.length)
+  const actionable = preds.filter(row => row.actionable)
+  const correct = actionable.filter(row => row.correct)
+  const directionalAccuracy = actionable.length ? correct.length / actionable.length : 0
+  const coverage = actionable.length / Math.max(1, preds.length)
+
+  const upCount = samples.filter(row => row.target_up).length
+  const downCount = samples.filter(row => row.target_down).length
+  const flatCount = samples.filter(row => row.target_flat).length
 
   const model = {
     _id: PREDICTION_MODEL_ID,
     model_id: PREDICTION_MODEL_ID,
-    status: "trained",
+    status: "trained_edge_classifier",
     version: Date.now(),
     samples: samples.length,
+    train_samples: train.length,
+    test_samples: test.length,
+    edge_threshold_pct: edgeThreshold,
     feature_keys: PREDICTION_FEATURE_KEYS,
     feature_stats: featureStats,
-    weights,
-    intercept: Number(targetMean.toFixed(5)),
-    target_std: Number(targetStd.toFixed(5)),
+    weights: returnModel.weights,
+    weights_return: returnModel.weights,
+    weights_up: upModel.weights,
+    weights_down: downModel.weights,
+    intercept: returnModel.intercept,
+    intercept_return: returnModel.intercept,
+    intercept_up: upModel.intercept,
+    intercept_down: downModel.intercept,
+    class_balance: {
+      up: upCount,
+      down: downCount,
+      flat: flatCount,
+      up_pct: Number((upCount / samples.length).toFixed(3)),
+      down_pct: Number((downCount / samples.length).toFixed(3)),
+      flat_pct: Number((flatCount / samples.length).toFixed(3))
+    },
     metrics: {
       mae_5m: Number(mae.toFixed(3)),
-      directional_accuracy_5m: directionalAccuracy == null ? null : Number(directionalAccuracy.toFixed(3)),
+      directional_accuracy_5m: Number(directionalAccuracy.toFixed(3)),
+      coverage_5m: Number(coverage.toFixed(3)),
       actionable_samples: actionable.length,
-      avg_target_return_5m: Number(targetMean.toFixed(3)),
+      test_samples: test.length,
+      avg_target_return_5m: Number((preds.reduce((s, row) => s + row.target, 0) / Math.max(1, preds.length)).toFixed(3))
     },
     updated_at: new Date(),
+    note: "Large-scale edge model using social, news, sentiment, volume, price, RSI, market-cap, and interaction features. Predicts actionable up/down edges only when confidence clears a threshold; otherwise returns flat/no-edge."
   }
+
   await db.collection("prediction_models").updateOne({ _id: PREDICTION_MODEL_ID }, { $set: model }, { upsert: true })
   return model
+}
+
+let predictionMaintenanceInFlight = null
+
+async function runPredictionMaintenance(db) {
+  const labels = await labelMaturePredictionSignals(db)
+  const model = await trainPredictionModel(db, {
+    minSamples: Number(process.env.PREDICTION_MIN_TRAINING_SAMPLES || 20),
+  })
+  const snapshot = await captureTradeWatchPredictionSignals(db, {
+    limit: Number(process.env.PREDICTION_SIGNAL_LIMIT || 10),
+    socialWindow: Number(process.env.PREDICTION_SOCIAL_WINDOW || 60),
+  })
+  return { labels, model, snapshot }
+}
+
+function schedulePredictionMaintenance(db) {
+  if (predictionMaintenanceInFlight) return
+  predictionMaintenanceInFlight = runPredictionMaintenance(db)
+    .catch(err => console.warn("Background prediction maintenance failed:", err?.message || err))
+    .finally(() => { predictionMaintenanceInFlight = null })
 }
 
 async function loadTopMomentumTickerSymbols(db, limit = 10) {
   const requestedLimit = Math.max(1, Math.min(50, Number(limit || 10)))
   const movers = await loadPositiveFinvizMoverRows(db, requestedLimit)
   return normalizeTickerList(movers.map(row => row.ticker), requestedLimit, { ensurePrivate: false })
+}
+
+function choosePublicSocialTickers(tickers = [], limit = 10) {
+  const requestedLimit = Math.max(1, Math.min(50, Number(limit || 10)))
+  const publicTickers = normalizeTickerList(tickers, requestedLimit, { ensurePrivate: false })
+    .filter(ticker => !PRIVATE_TRACKED_TICKERS.has(ticker) && /^[A-Z][A-Z0-9]{0,5}$/.test(ticker))
+  if (publicTickers.length) return publicTickers
+  return PUBLIC_SOCIAL_FALLBACK_TICKERS.slice(0, requestedLimit)
+}
+
+async function loadTradingViewNewsTickerSymbols(db, seedTickers = [], limit = 80) {
+  const requestedLimit = Math.max(1, Math.min(300, Number(limit || 80)))
+  const fromScreeners = await loadPositiveFinvizMoverRows(db, requestedLimit)
+  const combined = [
+    ...fromScreeners.map(row => row.ticker),
+    ...seedTickers,
+    ...PUBLIC_SOCIAL_FALLBACK_TICKERS,
+  ]
+  return normalizeTickerList(combined, requestedLimit, { ensurePrivate: false })
+    .filter(ticker => !PRIVATE_TRACKED_TICKERS.has(ticker) && /^[A-Z][A-Z0-9]{0,5}$/.test(ticker))
 }
 
 function withPrivateSocialTickers(tickers = []) {
@@ -1769,7 +2893,7 @@ app.get("/api/momentum/trending", async (req, res) => {
     const db = mongoose.connection.db
     if (!db) return res.status(503).json({ ok: false, tickers: [], error: "MongoDB is not connected" })
 
-    const days = Number(req.query.days || 2)
+    const days = Number(req.query.days || 3)
     const limit = Number(req.query.limit || 30)
     const movers = await loadPositiveFinvizMoverRows(db, Math.max(1, Math.min(100, limit)))
     const articleMap = await loadArticleStatsForTickers(db, movers.map(row => row.ticker), days)
@@ -1821,7 +2945,7 @@ app.get("/api/trade-watch", async (req, res) => {
     const db = mongoose.connection.db
     if (!db) return res.status(503).json({ ok: false, tickers: [], error: "MongoDB is not connected" })
 
-    const days = Math.max(0, Math.min(7, Number(req.query.days || 2)))
+    const days = Math.max(0, Math.min(7, Number(req.query.days || 3)))
     const limit = Math.max(1, Math.min(50, Number(req.query.limit || 10)))
     const socialWindow = Math.max(1, Math.min(4320, Number(req.query.window_minutes || 1440)))
     const minScore = Math.max(0, Math.min(1, Number(req.query.min_score || 0)))
@@ -1867,7 +2991,7 @@ app.get("/api/momentum", async (req, res) => {
     const db = mongoose.connection.db
     if (!db) return res.status(503).json({ ok: false, tickers: [], error: "MongoDB is not connected" })
 
-    const days = Number(req.query.days || 2)
+    const days = Number(req.query.days || 3)
     const limit = Math.max(1, Math.min(100, Number(req.query.limit || 30)))
     const minNews = Math.max(0, Number(req.query.min_volume || req.query.min_news || 0))
     const minRelVolume = Math.max(0, Number(req.query.min_rel_vol || 0))
@@ -1875,10 +2999,13 @@ app.get("/api/momentum", async (req, res) => {
     const sentiment = String(req.query.sentiment || "").toLowerCase()
     const order = String(req.query.order || "absolute_momentum").toLowerCase()
 
-    const movers = await loadPositiveFinvizMoverRows(db, Math.max(limit * 4, 100))
-    const articleMap = await loadArticleStatsForTickers(db, movers.map(row => row.ticker), days)
     const socialWindow = Math.max(1, Math.min(4320, Number(req.query.window_minutes || 1440)))
-    const socialMap = await loadSocialStatsForTickers(db, movers.map(row => row.ticker), socialWindow)
+    const movers = await loadPositiveFinvizMoverRows(db, Math.max(limit * 4, 100))
+    const [articleMap, socialMap, marketContext] = await Promise.all([
+      loadArticleStatsForTickers(db, movers.map(row => row.ticker), days),
+      loadSocialStatsForTickers(db, movers.map(row => row.ticker), socialWindow),
+      loadMarketContext(db),
+    ])
     let tickers = movers.map(row => mergeMoverContext(
       row,
       articleMap.get(row.ticker),
@@ -1908,7 +3035,7 @@ app.get("/api/momentum", async (req, res) => {
       return (b.volume || 0) - (a.volume || 0)
     })
 
-    res.json({ ok: true, tickers: tickers.slice(0, limit), days, order, source: "Momentum movers", social_window_minutes: socialWindow })
+    res.json({ ok: true, tickers: tickers.slice(0, limit), market_context: marketContext, days, order, source: "Momentum movers", social_window_minutes: socialWindow })
   } catch (err) {
     console.error("GET /api/momentum failed:", err)
     res.status(500).json({ ok: false, tickers: [], error: String(err.message || err) })
@@ -1922,8 +3049,13 @@ app.get("/api/momentum/:ticker/details", async (req, res) => {
 
     const ticker = String(req.params.ticker || "").toUpperCase().replace(/[^A-Z0-9.-]/g, "")
     const match = {
-      ...recentArticleMatch(Number(req.query.days || 2)),
-      ticker: { $regex: `(^|,\\s*)${escapeRegExp(ticker)}(\\s*,|$)`, $options: "i" },
+      $and: [
+        recentArticleMatch(Number(req.query.days || 3)),
+        { $or: [
+          { ticker: { $regex: `(^|,\\s*)${escapeRegExp(ticker)}(\\s*,|$)`, $options: "i" } },
+          { tickers: ticker },
+        ] },
+      ],
     }
 
     const articles = await db.collection("articles").find(
@@ -2323,7 +3455,7 @@ app.get("/api/finviz/movers", async (req, res) => {
 
     const limit = Math.max(1, Math.min(100, Number(req.query.limit || 30)))
     const movers = await loadPositiveFinvizMoverRows(db, limit)
-    const articleMap = await loadArticleStatsForTickers(db, movers.map(row => row.ticker), Number(req.query.days || 2))
+    const articleMap = await loadArticleStatsForTickers(db, movers.map(row => row.ticker), Number(req.query.days || 3))
     const socialMap = await loadSocialStatsForTickers(db, movers.map(row => row.ticker), Number(req.query.window_minutes || 1440))
     const tickers = movers.map(row => mergeMoverContext(row, articleMap.get(row.ticker), socialMap.get(row.ticker)))
 
@@ -2346,6 +3478,14 @@ app.get("/api/social/rolling", async (req, res) => {
     const ticker = normalizeTickerList([req.query.ticker || req.query.symbol], 1, { ensurePrivate: false })[0] || ""
     const ranked = ["1", "true", "yes"].includes(String(req.query.ranked || "").toLowerCase())
     const sinceSec = Math.floor(Date.now() / 1000) - windowMinutes * 60
+    const platformMap = {
+      reddit: "Reddit",
+      bluesky: "Bluesky",
+      bsky: "Bluesky",
+      twitter: "Twitter",
+      x: "Twitter",
+      stocktwits: "StockTwits",
+    }
 
     const pipeline = [
       ...socialTimeStages(),
@@ -2359,14 +3499,6 @@ app.get("/api/social/rolling", async (req, res) => {
     ]
 
     if (platform !== "all") {
-      const platformMap = {
-        reddit: "Reddit",
-        bluesky: "Bluesky",
-        bsky: "Bluesky",
-        twitter: "Twitter",
-        x: "Twitter",
-        stocktwits: "StockTwits",
-      }
       pipeline.push({ $match: { _norm_platform: platformMap[platform] || platform } })
     }
 
@@ -2425,7 +3557,7 @@ app.get("/api/social/rolling", async (req, res) => {
       }
     )
 
-    const [rows, platformStatusRows] = await Promise.all([
+    const [rows, platformStatusRows, sourceStatusRows] = await Promise.all([
       db.collection("socials").aggregate(pipeline).toArray(),
       db.collection("socials").aggregate([
         ...socialTimeStages(),
@@ -2440,6 +3572,7 @@ app.get("/api/social/rolling", async (req, res) => {
         },
         { $sort: { total: -1 } },
       ]).toArray(),
+      db.collection("source_status").find({ type: "social" }).toArray().catch(() => []),
     ])
     if (ranked) {
       const platformRank = { StockTwits: 4, Twitter: 3, Reddit: 2, Bluesky: 1 }
@@ -2452,21 +3585,48 @@ app.get("/api/social/rolling", async (req, res) => {
       })
     }
 
+    const requestedPlatform = platform === "all" ? "" : (platformMap[platform] || platform)
+    const platformStatus = platformStatusRows.map(row => {
+      const total = Number(row.total || 0)
+      const matched = Number(row.ticker_matched || 0)
+      return {
+        platform: row._id || "Unknown",
+        total,
+        ticker_matched: matched,
+        latest_sec: Number(row.latest_sec || 0),
+        status: matched > 0 ? "working" : total > 0 ? "no_ticker_matches" : "no_rows_in_window",
+      }
+    })
+    const seenPlatforms = new Set(platformStatus.map(row => String(row.platform)))
+    for (const source of sourceStatusRows) {
+      const sourceName = String(source.source || "")
+      if (!sourceName) continue
+      if (requestedPlatform && sourceName.toLowerCase() !== requestedPlatform.toLowerCase()) continue
+      if (seenPlatforms.has(sourceName)) {
+        const row = platformStatus.find(item => item.platform === sourceName)
+        if (row) {
+          row.status = source.status || row.status
+          row.detail = source.detail || ""
+          row.last_count = Number(source.last_count || row.ticker_matched || 0)
+        }
+        continue
+      }
+      platformStatus.push({
+        platform: sourceName,
+        total: Number(source.last_count || 0),
+        ticker_matched: Number(source.last_count || 0),
+        latest_sec: source.last_checked_at ? Math.floor(new Date(source.last_checked_at).getTime() / 1000) : 0,
+        status: source.status || "unknown",
+        detail: source.detail || "",
+        last_count: Number(source.last_count || 0),
+      })
+    }
+
     return res.json({
       ok: true,
       rows,
       count: rows.length,
-      platform_status: platformStatusRows.map(row => {
-        const total = Number(row.total || 0)
-        const matched = Number(row.ticker_matched || 0)
-        return {
-          platform: row._id || "Unknown",
-          total,
-          ticker_matched: matched,
-          latest_sec: Number(row.latest_sec || 0),
-          status: matched > 0 ? "working" : total > 0 ? "no_ticker_matches" : "no_rows_in_window",
-        }
-      }),
+      platform_status: platformStatus,
       window_minutes: windowMinutes,
       platform,
       ticker,
@@ -2568,8 +3728,11 @@ app.get("/api/social/series/:ticker", async (req, res) => {
 function yahooRangeFor(range, interval) {
   const r = String(range || "3mo").toLowerCase()
   const i = String(interval || "1d").toLowerCase()
-  if (i === "1m") return "1d"
-  if (["5m", "15m", "30m"].includes(i)) return r === "1d" ? "1d" : "5d"
+
+  // Use a slightly wider provider window for intraday.
+  // Then range=1d is trimmed to the latest actual session.
+  if (i === "1m") return "5d"
+  if (["5m", "15m", "30m"].includes(i)) return r === "1d" ? "5d" : "5d"
   if (i === "1h") return ["1d", "5d"].includes(r) ? "5d" : "1mo"
   if (["1mo", "3mo", "6mo", "1y", "2y", "5y"].includes(r)) return r
   return "3mo"
@@ -2582,9 +3745,20 @@ function yahooIntervalFor(interval) {
 }
 
 async function fetchYahooCandles(ticker, range, interval) {
-  const yahooRange = yahooRangeFor(range, interval)
+  const cleanTicker = String(ticker || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9.\-]/g, "")
+    .slice(0, 16)
+
+  const requestedRange = String(range || "3mo").toLowerCase()
+  const yahooRange = yahooRangeFor(requestedRange, interval)
   const yahooInterval = yahooIntervalFor(interval)
-  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}`)
+  const cacheKey = chartCacheKey(cleanTicker, requestedRange, yahooInterval)
+
+  const cached = await chartCacheGet(cacheKey)
+  if (cached) return cached
+
+  const url = new URL(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(cleanTicker)}`)
   url.searchParams.set("range", yahooRange)
   url.searchParams.set("interval", yahooInterval)
   url.searchParams.set("includePrePost", "true")
@@ -2596,22 +3770,26 @@ async function fetchYahooCandles(ticker, range, interval) {
       "Accept": "application/json",
     },
   })
+
   if (!resp.ok) throw new Error(`chart provider HTTP ${resp.status}`)
+
   const payload = await resp.json()
   const result = payload?.chart?.result?.[0]
   const timestamps = result?.timestamp || []
   const quote = result?.indicators?.quote?.[0] || {}
-  const candles = []
+  const allCandles = []
 
   for (let i = 0; i < timestamps.length; i += 1) {
     const open = Number(quote.open?.[i])
     const high = Number(quote.high?.[i])
     const low = Number(quote.low?.[i])
     const close = Number(quote.close?.[i])
+
     if (![open, high, low, close].every(Number.isFinite)) continue
     if (open <= 0 || high <= 0 || low <= 0 || close <= 0) continue
     if (high < Math.max(open, close, low) || low > Math.min(open, close, high)) continue
-    candles.push({
+
+    allCandles.push({
       time: Number(timestamps[i]),
       open: Number(open.toFixed(4)),
       high: Number(high.toFixed(4)),
@@ -2620,8 +3798,36 @@ async function fetchYahooCandles(ticker, range, interval) {
       volume: Number.isFinite(Number(quote.volume?.[i])) ? Number(quote.volume[i]) : 0,
     })
   }
-  return { candles, provider_range: yahooRange, provider_interval: yahooInterval }
+
+  let candles = allCandles
+  let sessionDate = null
+  let latestSessionOnly = false
+
+  if (requestedRange === "1d" && ["1m", "5m", "15m", "30m", "1h"].includes(yahooInterval)) {
+    const latest = latestSessionCandles(allCandles)
+    candles = latest.candles
+    sessionDate = latest.date
+    latestSessionOnly = true
+  } else if (allCandles.length) {
+    sessionDate = chartDateKeyEt(allCandles[allCandles.length - 1].time)
+  }
+
+  const out = {
+    candles,
+    provider_range: yahooRange,
+    provider_interval: yahooInterval,
+    requested_range: requestedRange,
+    latest_session_only: latestSessionOnly,
+    session_date: sessionDate,
+    chart_cache_ttl_seconds: CHART_CANDLE_CACHE_TTL,
+    cache_hit: false,
+    cache_layer: "miss",
+  }
+
+  await chartCacheSet(cacheKey, out)
+  return out
 }
+
 
 function sma(values, period) {
   return values.map((_, index) => {
@@ -2692,7 +3898,7 @@ function macd(candles) {
   return { macd: macdRows, signal: signalRows, histogram }
 }
 
-function predictedPriceSeries(candles, points = 12) {
+function predictedPriceSeries(candles, points = PREDICTION_HORIZON_MINUTES) {
   const lookback = candles.slice(-30)
   if (lookback.length < 6) return []
 
@@ -2734,6 +3940,7 @@ function timestampSeconds(value) {
 
 async function chartNewsEvents(db, ticker, windowMinutes = 1440) {
   const days = Math.max(2, Math.ceil(Number(windowMinutes || 1440) / 1440))
+  const sinceSec = Math.floor(Date.now() / 1000) - Math.max(1, Number(windowMinutes || 1440)) * 60
   const regex = `(^|,\\s*)${escapeRegExp(ticker)}(\\s*,|$)`
   const docs = await db.collection("articles").find(
     {
@@ -2749,6 +3956,15 @@ async function chartNewsEvents(db, ticker, windowMinutes = 1440) {
       const sentiment = String(article.sentiment || "neutral").toLowerCase()
       const bullish = /bull|positive/.test(sentiment)
       const bearish = /bear|negative/.test(sentiment)
+      const directScore = Number(article.sentiment_score)
+      const confidence = Math.abs(Number(article.ml_confidence || 0))
+      const signedScore = Number.isFinite(directScore)
+        ? Math.max(-1, Math.min(1, directScore))
+        : bearish
+          ? -confidence
+          : bullish
+            ? confidence
+            : 0
       return {
         time,
         position: bearish ? "aboveBar" : "belowBar",
@@ -2758,13 +3974,13 @@ async function chartNewsEvents(db, ticker, windowMinutes = 1440) {
         title: article.title || "Matched news",
         source: article.source || "News",
         sentiment,
-        sentiment_score: Number(article.sentiment_score ?? article.ml_confidence ?? 0) || 0,
+        sentiment_score: Number(signedScore.toFixed(3)),
         event_type: article.event_type || "general_news",
         reason: article.sentiment_reason || "",
         url: article.url || "",
       }
     })
-    .filter(event => event.time > 0)
+    .filter(event => event.time >= sinceSec)
     .sort((a, b) => a.time - b.time)
 }
 
@@ -2889,6 +4105,327 @@ async function chartSocialSeries(db, ticker, windowMinutes, bucketMinutes) {
   }), bucketMinutes)
 }
 
+function chartCombinedSentimentSeries(socialRows = [], newsEvents = [], bucketMinutes = 5) {
+  const bucketSec = Math.max(1, Number(bucketMinutes || 5)) * 60
+  const buckets = new Map()
+  const add = (time, score, weight, source) => {
+    const sec = Number(time || 0)
+    const value = Number(score || 0)
+    const safeWeight = Math.max(1, Number(weight || 1))
+    if (!Number.isFinite(sec) || sec <= 0 || !Number.isFinite(value)) return
+    const key = Math.floor(sec / bucketSec) * bucketSec
+    const current = buckets.get(key) || { weighted_sum: 0, weight: 0, news_count: 0, social_count: 0 }
+    current.weighted_sum += Math.max(-1, Math.min(1, value)) * safeWeight
+    current.weight += safeWeight
+    if (source === "news") current.news_count += 1
+    else current.social_count += safeWeight
+    buckets.set(key, current)
+  }
+
+  for (const row of socialRows) add(row.time || row.bucket_sec, row.sentiment, row.message_count, "social")
+  for (const event of newsEvents) add(event.time, event.sentiment_score, 1, "news")
+
+  return Array.from(buckets.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([time, row]) => ({
+      time,
+      value: row.weight ? Number((row.weighted_sum / row.weight).toFixed(3)) : 0,
+      news_count: row.news_count,
+      social_count: row.social_count,
+      observations: row.news_count + row.social_count,
+    }))
+}
+
+
+
+// Aman-style chart enrichment endpoint.
+// This is intentionally Mongo-only and fail-soft:
+// - no scraping
+// - no bulk price fetching
+// - returns empty arrays instead of crashing when data is missing
+// - supports sentiment/message-density overlays for the chart UI
+app.get("/api/charts/:ticker/enrich", async (req, res) => {
+  const cleanTicker = String(req.params.ticker || "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9.\-]/g, "")
+    .slice(0, 16)
+
+  if (!cleanTicker) {
+    return res.status(400).json({
+      ok: false,
+      error: "ticker is required",
+      ticker: "",
+      news: [],
+      social_series: [],
+      prediction_events: [],
+      summary: {},
+    })
+  }
+
+  try {
+    const db = mongoose.connection.db
+
+    if (!db) {
+      return res.status(503).json({
+        ok: false,
+        error: "MongoDB is not connected",
+        ticker: cleanTicker,
+        news: [],
+        social_series: [],
+        prediction_events: [],
+        summary: {},
+      })
+    }
+
+    const windowMinutes = Math.max(60, Math.min(10080, Number(req.query.window_minutes || 1440)))
+    const bucketMinutes = Math.max(1, Math.min(120, Number(req.query.bucket_minutes || 5)))
+    const since = new Date(Date.now() - windowMinutes * 60 * 1000)
+
+    const tickerRegex = new RegExp(`(^|[^A-Z0-9])\\$?${cleanTicker}([^A-Z0-9]|$)`, "i")
+
+    const dateFields = [
+      "created_at",
+      "createdAt",
+      "published_at",
+      "publishedAt",
+      "publish_date",
+      "time",
+      "timestamp",
+      "date",
+    ]
+
+    function getDocDate(doc) {
+      for (const field of dateFields) {
+        const value = doc?.[field]
+        if (!value) continue
+        const d = value instanceof Date ? value : new Date(value)
+        if (!Number.isNaN(d.getTime())) return d
+      }
+      return null
+    }
+
+    function getSentiment(doc) {
+      const candidates = [
+        doc?.sentiment_score,
+        doc?.sentimentScore,
+        doc?.finbert_score,
+        doc?.score,
+        doc?.sentiment,
+        doc?.compound,
+      ]
+
+      for (const value of candidates) {
+        const n = Number(value)
+        if (Number.isFinite(n)) {
+          if (n > 1 || n < -1) return Math.max(-1, Math.min(1, n / 100))
+          return Math.max(-1, Math.min(1, n))
+        }
+      }
+
+      const label = String(doc?.sentiment_label || doc?.sentimentLabel || doc?.label || "").toLowerCase()
+      if (label.includes("bull") || label.includes("pos")) return 0.65
+      if (label.includes("bear") || label.includes("neg")) return -0.65
+      return 0
+    }
+
+    function docMatchesTicker(doc) {
+      const values = [
+        doc?.ticker,
+        doc?.symbol,
+        doc?.primary_ticker,
+        doc?.primaryTicker,
+        ...(Array.isArray(doc?.tickers) ? doc.tickers : []),
+        ...(Array.isArray(doc?.symbols) ? doc.symbols : []),
+      ].filter(Boolean).map(value => String(value).toUpperCase())
+
+      if (values.includes(cleanTicker)) return true
+
+      const text = [
+        doc?.title,
+        doc?.headline,
+        doc?.body,
+        doc?.summary,
+        doc?.text,
+        doc?.content,
+        doc?.message,
+        doc?.description,
+      ].filter(Boolean).join(" ")
+
+      return tickerRegex.test(text)
+    }
+
+    function bucketTime(date) {
+      const bucketMs = bucketMinutes * 60 * 1000
+      return Math.floor(date.getTime() / bucketMs) * bucketMs
+    }
+
+    const socialQuery = {
+      $or: [
+        { ticker: cleanTicker },
+        { symbol: cleanTicker },
+        { tickers: cleanTicker },
+        { symbols: cleanTicker },
+        { title: tickerRegex },
+        { text: tickerRegex },
+        { body: tickerRegex },
+        { message: tickerRegex },
+        { content: tickerRegex },
+      ],
+    }
+
+    const newsQuery = {
+      $or: [
+        { ticker: cleanTicker },
+        { symbol: cleanTicker },
+        { primary_ticker: cleanTicker },
+        { primaryTicker: cleanTicker },
+        { tickers: cleanTicker },
+        { symbols: cleanTicker },
+        { title: tickerRegex },
+        { headline: tickerRegex },
+        { summary: tickerRegex },
+        { description: tickerRegex },
+      ],
+    }
+
+    const [rawSocial, rawNews] = await Promise.all([
+      db.collection("socials").find(socialQuery).sort({ created_at: -1, createdAt: -1, published_at: -1 }).limit(2000).toArray().catch(() => []),
+      db.collection("articles").find(newsQuery).sort({ publish_date: -1, publishedAt: -1, created_at: -1 }).limit(250).toArray().catch(() => []),
+    ])
+
+    const socialDocs = rawSocial
+      .filter(docMatchesTicker)
+      .map(doc => ({ doc, date: getDocDate(doc), sentiment: getSentiment(doc) }))
+      .filter(row => row.date && row.date >= since)
+
+    const buckets = new Map()
+
+    for (const row of socialDocs) {
+      const key = bucketTime(row.date)
+      const current = buckets.get(key) || {
+        ts: key,
+        count: 0,
+        sentimentSum: 0,
+        bullish: 0,
+        bearish: 0,
+        neutral: 0,
+      }
+
+      current.count += 1
+      current.sentimentSum += row.sentiment
+
+      if (row.sentiment > 0.15) current.bullish += 1
+      else if (row.sentiment < -0.15) current.bearish += 1
+      else current.neutral += 1
+
+      buckets.set(key, current)
+    }
+
+    const maxCount = Math.max(1, ...Array.from(buckets.values()).map(row => row.count))
+
+    const social_series = Array.from(buckets.values())
+      .sort((a, b) => a.ts - b.ts)
+      .map(row => ({
+        time: Math.floor(row.ts / 1000),
+        iso: new Date(row.ts).toISOString(),
+        count: row.count,
+        message_density: row.count,
+        scaled: Math.round((row.count / maxCount) * 100),
+        sentiment: row.count ? Number((row.sentimentSum / row.count).toFixed(4)) : 0,
+        sentiment_score: row.count ? Math.round(((row.sentimentSum / row.count) + 1) * 50) : 50,
+        bullish: row.bullish,
+        bearish: row.bearish,
+        neutral: row.neutral,
+      }))
+
+    const news = rawNews
+      .filter(docMatchesTicker)
+      .map(doc => {
+        const date = getDocDate(doc)
+        return {
+          time: date ? Math.floor(date.getTime() / 1000) : null,
+          iso: date ? date.toISOString() : null,
+          title: doc.title || doc.headline || doc.name || "Untitled",
+          source: doc.source || doc.publisher || doc.collector || "news",
+          url: doc.url || doc.link || null,
+          sentiment: getSentiment(doc),
+        }
+      })
+      .filter(row => row.time && new Date(row.time * 1000) >= since)
+      .sort((a, b) => a.time - b.time)
+      .slice(-50)
+
+    let prediction_events = []
+
+    for (const collectionName of ["prediction_signals", "predictions", "ai_signals"]) {
+      try {
+        const exists = await db.listCollections({ name: collectionName }).hasNext()
+        if (!exists) continue
+
+        const rows = await db.collection(collectionName)
+          .find({
+            $or: [
+              { ticker: cleanTicker },
+              { symbol: cleanTicker },
+              { tickers: cleanTicker },
+              { symbols: cleanTicker },
+            ],
+          })
+          .sort({ created_at: -1, createdAt: -1, time: -1 })
+          .limit(100)
+          .toArray()
+
+        prediction_events = rows.map(doc => {
+          const date = getDocDate(doc)
+          return {
+            time: date ? Math.floor(date.getTime() / 1000) : null,
+            iso: date ? date.toISOString() : null,
+            title: doc.title || doc.signal || doc.label || "Prediction signal",
+            score: Number(doc.score ?? doc.confidence ?? doc.probability ?? 0),
+            direction: doc.direction || doc.prediction || null,
+          }
+        }).filter(row => row.time && new Date(row.time * 1000) >= since)
+
+        if (prediction_events.length) break
+      } catch (_) {}
+    }
+
+    const latestSocial = social_series.at(-1) || null
+
+    return res.json({
+      ok: true,
+      ticker: cleanTicker,
+      source: "mongo_only_chart_enrichment",
+      window_minutes: windowMinutes,
+      bucket_minutes: bucketMinutes,
+      news,
+      social_series,
+      prediction_events,
+      summary: {
+        news_events: news.length,
+        social_posts: socialDocs.length,
+        social_buckets: social_series.length,
+        prediction_events: prediction_events.length,
+        latest_message_density: latestSocial?.message_density || 0,
+        latest_sentiment: latestSocial?.sentiment || 0,
+        latest_sentiment_score: latestSocial?.sentiment_score || 50,
+      },
+    })
+  } catch (err) {
+    console.error("GET /api/charts/:ticker/enrich failed:", err)
+    return res.status(500).json({
+      ok: false,
+      ticker: cleanTicker,
+      error: String(err?.message || err),
+      news: [],
+      social_series: [],
+      prediction_events: [],
+      summary: {},
+    })
+  }
+})
+
+
 app.get("/api/charts/:ticker", async (req, res) => {
   try {
     const db = mongoose.connection.db
@@ -2900,7 +4437,7 @@ app.get("/api/charts/:ticker", async (req, res) => {
     const range = String(req.query.range || "3mo")
     const interval = yahooIntervalFor(req.query.interval || "1d")
     const isMinute = interval.endsWith("m")
-    const socialWindow = Math.max(60, Math.min(4320, Number(req.query.window_minutes || (isMinute ? 1440 : 4320))))
+    const socialWindow = Math.max(1, Math.min(4320, Number(req.query.window_minutes || (isMinute ? 1440 : 4320))))
     const socialBucket = Math.max(1, Math.min(60, Number(req.query.bucket_minutes || (interval === "1m" ? 1 : 5))))
 
     let candleResult = { candles: [], provider_range: null, provider_interval: null }
@@ -2919,12 +4456,21 @@ app.get("/api/charts/:ticker", async (req, res) => {
       chartPredictionEvents(db, ticker, socialWindow),
     ])
     const candles = candleResult.candles
+    const sentimentSeries = chartCombinedSentimentSeries(socialRows, newsEvents, socialBucket)
+    const socialMessageCount = socialRows.reduce((sum, row) => sum + Number(row.message_count || 0), 0)
     const chartEvents = [...newsEvents, ...chartSocialEvents(socialRows), ...predictionEvents].sort((a, b) => Number(a.time || 0) - Number(b.time || 0))
     res.json({
       ok: true,
       ticker,
       range,
       interval,
+      session_date: candleResult.session_date || null,
+      latest_session_only: Boolean(candleResult.latest_session_only),
+      chart_cache: {
+        hit: Boolean(candleResult.cache_hit),
+        layer: candleResult.cache_layer || "miss",
+        ttl_seconds: candleResult.chart_cache_ttl_seconds || CHART_CANDLE_CACHE_TTL,
+      },
       candles,
       bollinger: candles.length >= 20 ? bollinger(candles) : { upper: [], lower: [] },
       rsi: candles.length >= 15 ? rsi(candles) : [],
@@ -2934,15 +4480,23 @@ app.get("/api/charts/:ticker", async (req, res) => {
       structured_news_events: newsEvents,
       social_events: chartEvents.filter(event => event.event_type === "social_spike"),
       prediction_events: predictionEvents,
-      sentiment: socialRows.map(row => ({ time: row.time, value: row.sentiment })),
+      sentiment: sentimentSeries,
       social_density: socialRows.map(row => ({ time: row.time, value: row.message_density, scaled: row.message_density_scaled, count: row.message_count, session: row.session })),
       social_series: socialRows,
+      summary: {
+        social_message_count: socialMessageCount,
+        social_buckets: socialRows.length,
+        news_sentiment_events: newsEvents.length,
+        sentiment_buckets: sentimentSeries.length,
+      },
       source_status: {
         price: priceStatus,
-        price_source: priceStatus === "working" ? "market_chart_provider" : "unavailable",
+        price_source: priceStatus === "working" ? "yahoo_chart_api_single_ticker" : "unavailable",
+        price_cache: candleResult.cache_hit ? candleResult.cache_layer : "miss",
         price_detail: priceDetail,
         screener_source: "Listed momentum screener universe",
         social: socialRows.length ? "working" : "no_social_posts",
+        sentiment: sentimentSeries.length ? "working" : "no_news_or_social_sentiment",
         news: newsEvents.length ? "working" : "no_matched_news",
         predictions: predictionEvents.length ? "working" : "no_prediction_signals",
         markers: chartEvents.length ? "working" : "no_events",
@@ -2971,6 +4525,17 @@ function nearestCandleAtOrAfter(candles, targetSec) {
     }
   }
   return best || candles[candles.length - 1]
+}
+
+function candleAtOrAfterWithin(candles, targetSec, maxDelaySeconds = 480) {
+  if (!Array.isArray(candles) || !candles.length || !Number.isFinite(targetSec)) return null
+  for (const candle of candles) {
+    const time = Number(candle.time || 0)
+    if (time >= targetSec) {
+      return time - targetSec <= maxDelaySeconds ? candle : null
+    }
+  }
+  return null
 }
 
 function postEventReturns(candles, eventSec) {
@@ -3314,12 +4879,14 @@ app.get("/api/sentiment/batch-candidates", async (req, res) => {
     const limit = Math.max(1, Math.min(150, Number(req.query.limit || 100)))
     const rows = await db.collection("articles").find(
       {
-        ...recentArticleMatch(days),
         ticker: { $exists: true, $nin: ["", null] },
-        $or: [
-          { sentiment: { $regex: "neutral", $options: "i" } },
-          { sentiment_score: { $gte: -0.12, $lte: 0.12 } },
-          { sentiment_score: { $exists: false } },
+        $and: [
+          recentArticleMatch(days),
+          { $or: [
+            { sentiment: { $regex: "neutral", $options: "i" } },
+            { sentiment_score: { $gte: -0.12, $lte: 0.12 } },
+            { sentiment_score: { $exists: false } },
+          ] },
         ],
       },
       { projection: { title: 1, content: 1, source: 1, ticker: 1, url: 1 } }
@@ -3403,12 +4970,31 @@ app.get("/api/prediction/features", async (req, res) => {
     const tickers = screenerRows.map(row => String(row.ticker || "").toUpperCase()).filter(Boolean)
     const [articleRows, socialRows] = await Promise.all([
       db.collection("articles").aggregate([
-        { $match: { ...recentArticleMatch(days), ticker: { $exists: true, $nin: ["", null] } } },
+        { $match: {
+          $and: [
+            recentArticleMatch(days),
+            { $or: [
+              { ticker: { $exists: true, $nin: ["", null] } },
+              { tickers: { $type: "array", $ne: [] } },
+            ] },
+          ],
+        } },
         {
           $addFields: {
             _ticker_parts: {
               $map: {
-                input: { $split: [{ $toUpper: { $toString: "$ticker" } }, ","] },
+                input: {
+                  $setUnion: [
+                    { $split: [{ $toUpper: { $toString: { $ifNull: ["$ticker", ""] } } }, ","] },
+                    {
+                      $map: {
+                        input: { $cond: [{ $isArray: "$tickers" }, "$tickers", []] },
+                        as: "ticker_value",
+                        in: { $toUpper: { $toString: "$$ticker_value" } },
+                      },
+                    },
+                  ],
+                },
                 as: "ticker_part",
                 in: { $trim: { input: "$$ticker_part" } },
               },
@@ -3422,10 +5008,29 @@ app.get("/api/prediction/features", async (req, res) => {
                 default: 0,
               },
             },
+            _article_kind: {
+              $cond: [
+                { $eq: [{ $toLower: { $toString: { $ifNull: ["$article_kind", ""] } } }, "structured"] },
+                "structured",
+                {
+                  $cond: [
+                    {
+                      $or: [
+                        { $in: [{ $toLower: { $toString: { $ifNull: ["$article_kind", ""] } } }, ["public", "unstructured"]] },
+                        { $in: ["$category", ["unstructured_public_title", "public_news", "public_market_news"]] },
+                        { $eq: ["$collector", "unstructured_news_title_only_v1"] },
+                      ],
+                    },
+                    "public",
+                    "structured",
+                  ],
+                },
+              ],
+            },
           },
         },
         { $unwind: "$_ticker_parts" },
-        { $match: { _ticker_parts: { $in: tickers } } },
+        { $match: { _ticker_parts: { $in: tickers }, _article_kind: "structured" } },
         {
           $addFields: {
             _score: {
@@ -3578,77 +5183,121 @@ app.get("/api/prediction/features", async (req, res) => {
   }
 })
 
+
+let predictionRouteMongoClient = null
+let predictionRouteDb = null
+
+async function getPredictionRouteDb() {
+  if (predictionRouteDb) return predictionRouteDb
+
+  const databaseName =
+    process.env.MONGO_DB ||
+    process.env.MONGO_DB_NAME ||
+    process.env.DB_NAME ||
+    "feedflash"
+
+  const uri =
+    process.env.MONGO_URI ||
+    process.env.MONGODB_URI ||
+    process.env.DATABASE_URL ||
+    "mongodb://mongo:27017"
+
+  const { MongoClient } = await import("mongodb")
+  predictionRouteMongoClient = predictionRouteMongoClient || new MongoClient(uri)
+  await predictionRouteMongoClient.connect()
+  predictionRouteDb = predictionRouteMongoClient.db(databaseName)
+  return predictionRouteDb
+}
+
 app.get("/api/prediction/signals", async (req, res) => {
   try {
-    const db = mongoose.connection.db
-    if (!db) return res.status(503).json({ ok: false, rows: [], error: "MongoDB is not connected" })
+    const database = await getPredictionRouteDb()
 
-    const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100)))
-    const ticker = String(req.query.ticker || "").toUpperCase().replace(/[^A-Z0-9.-]/g, "")
-    const status = String(req.query.status || "").toLowerCase()
-    const filter = {}
-    if (ticker) filter.ticker = ticker
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || 80)))
+    const status = String(req.query.status || "").trim()
+    const edgeThreshold = Number(process.env.PREDICTION_EDGE_THRESHOLD_PCT || 0.10)
+
+    const filter = predictionVersionFilter()
     if (status) filter.label_status = status
 
-    const [rows, summaryRows, model] = await Promise.all([
-      db.collection("prediction_signals").find(filter).sort({ signal_sec: -1, rank: 1 }).limit(limit).toArray(),
-      db.collection("prediction_signals").aggregate([
-        { $match: filter },
-        {
-          $group: {
-            _id: "$label_status",
-            count: { $sum: 1 },
-            avg_score: { $avg: "$trade_watch.trade_watch_score" },
-            avg_5m: { $avg: "$labels.return_5m.return_pct" },
-            avg_15m: { $avg: "$labels.return_15m.return_pct" },
-            avg_60m: { $avg: "$labels.return_60m.return_pct" },
-            correct_5m: {
-              $avg: {
-                $cond: [
-                  { $eq: ["$labels.return_5m.direction_correct", true] },
-                  1,
-                  { $cond: [{ $eq: ["$labels.return_5m.direction_correct", false] }, 0, null] },
-                ],
-              },
-            },
-          },
-        },
-      ]).toArray(),
-      loadLatestPredictionModel(db),
-    ])
+    const model = await loadLatestPredictionModel(database)
+
+    const rawRows = await database.collection("prediction_signals")
+      .find(filter)
+      .sort({ signal_sec: -1, rank: 1 })
+      .limit(limit)
+      .toArray()
+
+    const rows = rawRows.map(row => {
+      const latestFeatures = normalizePredictionFeatures(row.features || {})
+      const latestSignal = applyPredictionModel(latestFeatures, model)
+      return {
+        ...row,
+        stored_model_signal: row.model_signal || null,
+        model_signal: latestSignal,
+        latest_model_overlay: true
+      }
+    })
+
+    const summary = await database.collection("prediction_signals").aggregate([
+      { $match: predictionVersionFilter() },
+      { $group: {
+        _id: "$label_status",
+        count: { $sum: 1 },
+        avg_score: { $avg: "$trade_watch.trade_watch_score" },
+        avg_return_5m: { $avg: "$labels.return_5m.return_pct" },
+        avg_return_15m: { $avg: "$labels.return_15m.return_pct" },
+        avg_return_60m: { $avg: "$labels.return_60m.return_pct" },
+        labeled_5m: { $sum: { $cond: [{ $eq: ["$labels.return_5m.labeled", true] }, 1, 0] } },
+        up_5m: { $sum: { $cond: [{ $and: [{ $eq: ["$labels.return_5m.labeled", true] }, { $gt: ["$labels.return_5m.return_pct", edgeThreshold] }] }, 1, 0] } },
+        down_5m: { $sum: { $cond: [{ $and: [{ $eq: ["$labels.return_5m.labeled", true] }, { $lt: ["$labels.return_5m.return_pct", -edgeThreshold] }] }, 1, 0] } },
+        flat_5m: { $sum: { $cond: [{ $and: [
+          { $eq: ["$labels.return_5m.labeled", true] },
+          { $lte: ["$labels.return_5m.return_pct", edgeThreshold] },
+          { $gte: ["$labels.return_5m.return_pct", -edgeThreshold] }
+        ] }, 1, 0] } }
+      }},
+      { $project: {
+        status: "$_id",
+        _id: 0,
+        count: 1,
+        avg_score: { $round: ["$avg_score", 3] },
+        avg_return_5m: { $round: ["$avg_return_5m", 3] },
+        avg_return_15m: { $round: ["$avg_return_15m", 3] },
+        avg_return_60m: { $round: ["$avg_return_60m", 3] },
+        labeled_5m: 1,
+        up_5m: 1,
+        down_5m: 1,
+        flat_5m: 1
+      }},
+      { $sort: { count: -1 } }
+    ]).toArray()
 
     res.json({
       ok: true,
-      rows: rows.map(row => ({
-        ...row,
-        id: String(row._id),
-        _id: undefined,
-      })),
+      rows,
       count: rows.length,
-      summary: summaryRows.map(row => ({
-        status: row._id || "unknown",
-        count: row.count,
-        avg_score: Number((row.avg_score || 0).toFixed(3)),
-        avg_return_5m: row.avg_5m == null ? null : Number(row.avg_5m.toFixed(3)),
-        avg_return_15m: row.avg_15m == null ? null : Number(row.avg_15m.toFixed(3)),
-        avg_return_60m: row.avg_60m == null ? null : Number(row.avg_60m.toFixed(3)),
-        directional_accuracy_5m: row.correct_5m == null ? null : Number(row.correct_5m.toFixed(3)),
-      })),
+      summary,
       horizons_minutes: PREDICTION_HORIZONS_MINUTES,
-      feature_version: "trade_watch_prediction_v1",
-      model: model ? {
-        status: model.status,
-        samples: model.samples || 0,
-        min_samples: model.min_samples,
-        metrics: model.metrics || null,
-        updated_at: model.updated_at || null,
-      } : null,
+      feature_version: `large_scale_edge_prediction_v${PREDICTION_LABEL_VERSION}`,
+      model: {
+        status: model?.status || "not_trained",
+        samples: model?.samples || 0,
+        train_samples: model?.train_samples || 0,
+        test_samples: model?.test_samples || 0,
+        min_samples: Number(process.env.PREDICTION_MIN_TRAINING_SAMPLES || 20),
+        edge_threshold_pct: model?.edge_threshold_pct ?? edgeThreshold,
+        class_balance: model?.class_balance || null,
+        metrics: model?.metrics || null,
+        updated_at: model?.updated_at || null
+      }
     })
   } catch (err) {
     console.error("GET /api/prediction/signals failed:", err)
-    res.status(500).json({ ok: false, rows: [], error: String(err.message || err) })
+    res.status(500).json({ ok: false, error: err.message || "prediction_signals_failed" })
   }
 })
+
 
 app.get("/api/prediction/model", async (req, res) => {
   try {
@@ -3856,6 +5505,53 @@ app.get('/api/health', (req, res) => {
   })
 })
 
+app.get('/api/system/health', async (req, res) => {
+  const { readyState } = mongoose.connection
+  const states = { 0:'disconnected', 1:'connected', 2:'connecting', 3:'disconnecting' }
+  const kafkaTarget = parseHostPort(process.env.KAFKA_BOOTSTRAP_SERVERS || 'kafka:29092', 'kafka', 29092)
+  const redisStatus = redisReady() ? 'ready' : (redis?.status || 'disabled')
+  const kafka = await tcpProbe(kafkaTarget.host, kafkaTarget.port)
+
+  let redisPing = false
+  let redisError = null
+  if (redisReady()) {
+    try {
+      redisPing = (await redis.ping()) === 'PONG'
+    } catch (err) {
+      redisError = err.message
+    }
+  }
+
+  res.json({
+    ok: states[readyState] === 'connected' && redisPing && kafka.ok,
+    time: new Date().toISOString(),
+    mongo: {
+      ok: states[readyState] === 'connected',
+      status: states[readyState] || 'unknown',
+    },
+    redis: {
+      ok: redisPing,
+      status: redisStatus,
+      error: redisError,
+      url_configured: Boolean(process.env.REDIS_URL),
+    },
+    kafka: {
+      ok: kafka.ok,
+      host: kafka.host,
+      port: kafka.port,
+      error: kafka.error || null,
+      topic: process.env.KAFKA_TOPIC || 'flashfeed-events',
+    },
+    fetch: {
+      default_mode: process.env.DEFAULT_FETCH_MODE || 'fast',
+      auto_refresh_enabled: String(process.env.AUTO_REFRESH_ENABLED || '').toLowerCase(),
+      enable_quote_fetch: ['1', 'true', 'yes'].includes(String(process.env.ENABLE_QUOTE_FETCH || '').toLowerCase()),
+      in_flight: fetchInFlight,
+      last_started_at: lastFetchStartedAt ? new Date(lastFetchStartedAt).toISOString() : null,
+    },
+  })
+})
+
 // ── Start ─────────────────────────────────────────────────
 async function ensureRuntimeIndexes() {
   const db = mongoose.connection.db
@@ -3863,8 +5559,14 @@ async function ensureRuntimeIndexes() {
 
   await Promise.allSettled([
     db.collection("articles").createIndex({ ticker: 1, detected_at: -1 }),
+    db.collection("articles").createIndex({ tickers: 1, publish_date: -1 }),
+    db.collection("articles").createIndex({ article_kind: 1, publish_date: -1 }),
     db.collection("articles").createIndex({ ticker: 1, fetched_date: -1 }),
     db.collection("articles").createIndex({ source: 1, fetched_date: -1 }),
+    db.collection("articles").createIndex({ publish_date: -1 }),
+    db.collection("articles").createIndex({ fetched_date: -1 }),
+    db.collection("articles").createIndex({ detected_at: -1 }),
+    db.collection("articles").createIndex({ createdAt: -1 }),
     db.collection("articles").createIndex({ sentiment: 1, event_type: 1 }),
     db.collection("socials").createIndex({ ticker: 1, fetched_at: -1 }),
     db.collection("socials").createIndex({ symbol: 1, fetched_at: -1 }),
@@ -3874,6 +5576,7 @@ async function ensureRuntimeIndexes() {
     db.collection("screeners").createIndex({ quote_source: 1, change_pct: -1 }),
     db.collection("prediction_signals").createIndex({ ticker: 1, signal_sec: -1 }),
     db.collection("prediction_signals").createIndex({ label_status: 1, signal_sec: -1 }),
+    db.collection("prediction_signals").createIndex({ label_version: 1, label_status: 1, signal_sec: -1 }),
     db.collection("prediction_signals").createIndex({ source: 1, signal_sec: -1 }),
     db.collection("prediction_models").createIndex({ model_id: 1, updated_at: -1 }),
   ])
@@ -3882,6 +5585,10 @@ async function ensureRuntimeIndexes() {
 async function start() {
   await connectDB()
   await ensureRuntimeIndexes()
+  // Build the expensive Overview aggregate before the first tab visit.
+  void cachedLoadArticleStats(mongoose.connection.db, 3).catch(error => {
+    console.warn('Could not prewarm article stats:', error.message)
+  })
   
 // Ryan frontend compatibility endpoints
 
@@ -4162,10 +5869,49 @@ app.get("/api/market/status", async (req, res) => {
   }
 });
 
+app.get("/api/brokers/status", async (req, res) => {
+  try {
+    const ibHost = process.env.IBKR_HOST || process.env.IB_HOST || "host.docker.internal"
+    const ibPort = Number(process.env.IBKR_PORT || process.env.IB_PORT || 7497)
+    const ibProbe = await tcpProbe(ibHost, ibPort, 900)
+    const schwabToken = Boolean(String(process.env.SCHWAB_ACCESS_TOKEN || "").trim())
+    const ibTradingEnabled = ["1", "true", "yes"].includes(String(process.env.IBKR_ENABLE_TRADING || "").toLowerCase())
+    const schwabTradingEnabled = ["1", "true", "yes"].includes(String(process.env.SCHWAB_TRADING_ENABLED || "").toLowerCase())
+
+    res.json({
+      ok: true,
+      mode: "research_only",
+      interactive_brokers: {
+        configured: ["1", "true", "yes"].includes(String(process.env.IBKR_ENABLE_NEWS || "").toLowerCase()) || ibTradingEnabled,
+        gateway_host: ibHost,
+        gateway_port: ibPort,
+        gateway_reachable: ibProbe.ok,
+        status: ibProbe.ok ? "gateway_reachable_adapter_pending" : "gateway_not_reachable",
+        news_enabled: ["1", "true", "yes"].includes(String(process.env.IBKR_ENABLE_NEWS || "").toLowerCase()),
+        trading_enabled: ibTradingEnabled,
+      },
+      schwab_td_ameritrade: {
+        configured: schwabToken,
+        token_present: schwabToken,
+        status: schwabToken ? "oauth_token_present_adapter_pending" : "oauth_token_required",
+        trading_enabled: schwabTradingEnabled,
+        note: "TD Ameritrade integrations route through Schwab APIs after migration.",
+      },
+      bracket_orders: {
+        enabled: false,
+        status: "research_only_not_connected_to_broker",
+        guardrail: "live order placement remains disabled until broker adapters and explicit trading authorization are added",
+      },
+    })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) })
+  }
+});
+
 app.get("/api/stats", async (req, res) => {
   try {
     const db = mongoose.connection.db;
-    res.json(await loadArticleStats(db, Number(req.query.days || req.query.recent_days || 0)));
+    res.json(await cachedLoadArticleStats(db, Number(req.query.days || req.query.recent_days || 0)));
   } catch (err) {
     const trackedTickers = loadTrackedTickers()
     res.status(500).json({
@@ -4218,32 +5964,6 @@ app.get("/api/keywords", async (req, res) => {
 
 
 // Duplicate /api/market/status removed - see line 323 for the authoritative implementation
-
-app.get("/api/stats", async (req, res) => {
-  try {
-    const db = mongoose.connection.db;
-    res.json(await loadArticleStats(db, Number(req.query.days || req.query.recent_days || 0)));
-  } catch (err) {
-    const trackedTickers = loadTrackedTickers()
-    res.status(500).json({
-      total: 0,
-      total_recent: 0,
-      total_all: 0,
-      sources: [],
-      categories: [],
-      sentiment: { bullish: 0, bearish: 0, neutral: 0, unknown: 0 },
-      ticker_mentions: [],
-      tracked_market_count: TRACKED_MARKETS.length,
-      tracked_markets: TRACKED_MARKETS,
-      tracked_exchanges: Array.from(US_EXCHANGES),
-      tracked_indices: TRACKED_MARKET_INDICES,
-      market_universe_label: "NASDAQ / NYSE / AMEX equities plus major US index markets",
-      tracked_ticker_count: trackedTickers.length,
-      tracked_tickers: trackedTickers,
-      error: "Failed to load stats"
-    });
-  }
-});
 
 // Duplicate /api/keywords removed - see settings routes for the authoritative implementation
 
@@ -4407,114 +6127,155 @@ function parseBenzingaFetch(stdout) {
 }
 
 async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fast" } = {}) {
-  const refreshMode = String(mode || process.env.DEFAULT_FETCH_MODE || "fast").toLowerCase() === "full" ? "full" : "fast"
-  const fastMode = refreshMode !== "full"
-  const beforeArticles = await db.collection("articles").countDocuments()
-  const beforeSocial = await db.collection("socials").countDocuments()
-  const socialExtraEnv = {
-    SOCIAL_TICKER_SOURCE: "momentum",
-    SOCIAL_MOMENTUM_LIMIT: process.env.SOCIAL_MOMENTUM_LIMIT || "10",
-    SOCIAL_MAX_TICKERS: process.env.SOCIAL_MAX_TICKERS || "10",
-    SOCIAL_MAX_WORKERS: process.env.SOCIAL_MAX_WORKERS || "8",
-    SOCIAL_REDDIT_TIMEOUT: process.env.SOCIAL_REDDIT_TIMEOUT || "4",
-    SOCIAL_REDDIT_PUBLIC_FALLBACK: process.env.SOCIAL_REDDIT_PUBLIC_FALLBACK || "false",
+  const requestedMode = String(mode || process.env.DEFAULT_FETCH_MODE || "fast").toLowerCase()
+  const refreshMode = requestedMode === "full" ? "full" : requestedMode === "auto" ? "auto" : "fast"
+  const fastMode = refreshMode === "fast"
+  const fullMode = refreshMode === "full"
+  const enableQuoteFetch = ["1", "true", "yes"].includes(String(process.env.ENABLE_QUOTE_FETCH || "").toLowerCase())
+  const quoteMaxTickers = Math.max(0, Number(process.env.QUOTE_MAX_TICKERS || (fastMode ? 0 : 100)))
+  const needsTrackedMarketTickers = enableQuoteFetch && !fastMode && quoteMaxTickers > 0
+  const [beforeArticles, beforeSocial, trackedMarketTickers] = await Promise.all([
+    db.collection("articles").estimatedDocumentCount(),
+    db.collection("socials").estimatedDocumentCount(),
+    needsTrackedMarketTickers
+      ? loadTrackedMarketTickerSymbols(db, Number(process.env.TRACKED_MARKET_TICKER_LIMIT || 5000))
+      : Promise.resolve([]),
+  ])
+  let socialTickers = []
+  let publicSocialTickers = []
+  if (socialMode === "top_momentum") {
+    const momentumTickers = await loadTopMomentumTickerSymbols(db, Number(process.env.SOCIAL_TOP_GAINERS_LIMIT || process.env.SOCIAL_MOMENTUM_LIMIT || (fastMode ? 8 : 8)))
+    publicSocialTickers = choosePublicSocialTickers(momentumTickers, Number(process.env.SOCIAL_TOP_GAINERS_LIMIT || process.env.SOCIAL_MOMENTUM_LIMIT || (fastMode ? 8 : 8)))
+    socialTickers = publicSocialTickers
+  } else {
+    socialTickers = await loadTrackedSocialTickerSymbols(db, Number(process.env.SOCIAL_MAX_TICKERS || 250))
+    publicSocialTickers = choosePublicSocialTickers(socialTickers, Number(process.env.SOCIAL_MAX_TICKERS || 250))
   }
 
-  const [finvizElite, tradingViewScreener] = await Promise.all([
+  // Every mode uses TradingView's broad market:stock News Flow. MongoDB keeps
+  // accumulating each upstream batch, so coverage is not capped by a ticker
+  // list or a local per-ticker article limit.
+  const tradingViewTickers = []
+  const quoteTickers = enableQuoteFetch
+    ? Array.from(new Set(fastMode ? publicSocialTickers : [...publicSocialTickers, ...trackedMarketTickers])).slice(0, quoteMaxTickers)
+    : []
+  const quoteExtraEnv = quoteTickers.length
+    ? {
+        QUOTE_TICKERS: quoteTickers.join(","),
+        QUOTE_MAX_TICKERS: String(quoteTickers.length),
+        QUOTE_REQUIRE_EXPLICIT_TICKERS: "1",
+      }
+    : {
+        QUOTE_SKIP: "1",
+        QUOTE_REQUIRE_EXPLICIT_TICKERS: "1",
+        QUOTE_MAX_TICKERS: "0",
+      }
+
+  const socialExtraEnv = {
+    SOCIAL_STRICT_FINVIZ_TOP_MOVERS: "1",
+    SOCIAL_TICKER_SOURCE: "finviz_top_movers",
+    SOCIAL_TOP_GAINERS_LIMIT: process.env.SOCIAL_TOP_GAINERS_LIMIT || "8",
+    SOCIAL_INCLUDE_PRIVATE_TICKERS: "false",
+    SOCIAL_PRIVATE_TICKERS: "",
+    SOCIAL_INCLUDE_X: process.env.SOCIAL_INCLUDE_X || "false",
+    STOCKTWITS_MAX_WORKERS: process.env.STOCKTWITS_MAX_WORKERS || "2",
+    STOCKTWITS_TIMEOUT: process.env.STOCKTWITS_TIMEOUT || "5",
+    SOCIAL_REDDIT_TIMEOUT: process.env.SOCIAL_REDDIT_TIMEOUT || "3",
+    SOCIAL_TICKER_SOURCE: "momentum",
+    SOCIAL_MOMENTUM_LIMIT: process.env.SOCIAL_MOMENTUM_LIMIT || "10",
+    SOCIAL_MAX_TICKERS: String(socialTickers.length || (fastMode ? 10 : 250)),
+    SOCIAL_MAX_WORKERS: process.env.SOCIAL_MAX_WORKERS || "8",
+    SOCIAL_REDDIT_TIMEOUT: process.env.SOCIAL_REDDIT_TIMEOUT || "4",
+    SOCIAL_REDDIT_PUBLIC_FALLBACK: process.env.SOCIAL_REDDIT_PUBLIC_FALLBACK || "true",
+    SOCIAL_INCLUDE_PRIVATE_TICKERS: "false",
+    ...(socialTickers.length ? { SOCIAL_TICKERS: socialTickers.join(","), SOCIAL_PRIVATE_TICKERS: "" } : {}),
+  }
+  const fullRssTimeoutMs = Math.max(15000, Number(process.env.FULL_FETCH_RSS_TIMEOUT_MS || 90000))
+  const fullUnstructuredTimeoutMs = Math.max(15000, Number(process.env.FULL_FETCH_UNSTRUCTURED_TIMEOUT_MS || 45000))
+  const fullSocialTimeoutMs = Math.max(15000, Number(process.env.FULL_FETCH_SOCIAL_TIMEOUT_MS || 60000))
+  const fullTradingViewTimeoutMs = Math.max(15000, Number(process.env.FULL_FETCH_TRADINGVIEW_TIMEOUT_MS || 45000))
+  const fullScreenerTimeoutMs = Math.max(15000, Number(process.env.FULL_FETCH_SCREENER_TIMEOUT_MS || 45000))
+  const runBenzinga = Boolean(process.env.BENZINGA_API_KEY)
+  const runIbkrNews = ["1", "true", "yes"].includes(String(process.env.IBKR_ENABLE_NEWS || "").toLowerCase())
+  const runSchwabSignals = Boolean(process.env.SCHWAB_ACCESS_TOKEN)
+
+  // Run fetchers in parallel (shared MongoDB connection per process)
+  const [finvizElite, tradingViewScreener, quotes, structured, tradingView, benzinga, ibkrNews, schwabSignals, unstructured, social] = await Promise.all([
     runPythonScript("2_Screener/pipeline/fetch_finviz_elite_to_mongo.py", {
       timeout: fastMode ? 30000 : 90000,
-      extraEnv: {
-        FINVIZ_MAX_WORKERS: process.env.FINVIZ_MAX_WORKERS || (fastMode ? "10" : "6"),
-      },
+      extraEnv: { FINVIZ_MAX_WORKERS: process.env.FINVIZ_MAX_WORKERS || (fastMode ? "10" : "6") },
     }),
     fastMode
       ? Promise.resolve(skippedPythonResult("TradingView numeric screener"))
       : runPythonScript("2_Screener/pipeline/fetch_tradingview_screener_to_mongo.py", {
-        timeout: 90000,
-      }),
-  ])
-
-  const trackedMarketTickers = fastMode
-    ? []
-    : await loadTrackedMarketTickerSymbols(db, Number(process.env.TRACKED_MARKET_TICKER_LIMIT || 5000))
-  let socialTickers = []
-  let publicSocialTickers = []
-  if (socialMode === "top_momentum") {
-    publicSocialTickers = await loadTopMomentumTickerSymbols(db, Number(process.env.SOCIAL_MOMENTUM_LIMIT || (fastMode ? 12 : 10)))
-    socialTickers = withPrivateSocialTickers(publicSocialTickers)
-    if (socialTickers.length) {
-      socialExtraEnv.SOCIAL_TICKERS = socialTickers.join(",")
-      socialExtraEnv.SOCIAL_MAX_TICKERS = String(socialTickers.length)
-      socialExtraEnv.SOCIAL_PRIVATE_TICKERS = Array.from(PRIVATE_TRACKED_TICKERS).join(",")
-      socialExtraEnv.SOCIAL_TICKER_SOURCE = "configured"
-    } else {
-      socialExtraEnv.SOCIAL_MAX_TICKERS = "10"
-    }
-  } else {
-    socialExtraEnv.SOCIAL_TICKER_SOURCE = "configured"
-    socialExtraEnv.SOCIAL_MAX_TICKERS = process.env.SOCIAL_MAX_TICKERS || "250"
-  }
-
-  const tradingViewExtraEnv = {}
-  if (publicSocialTickers.length) {
-    tradingViewExtraEnv.TRADINGVIEW_TICKERS = publicSocialTickers.join(",")
-    tradingViewExtraEnv.TRADINGVIEW_MAX_TICKERS = String(publicSocialTickers.length)
-  }
-  const quoteTickers = fastMode ? publicSocialTickers : trackedMarketTickers
-  const quoteExtraEnv = quoteTickers.length
-    ? {
-      QUOTE_TICKERS: quoteTickers.join(","),
-      QUOTE_MAX_TICKERS: String(quoteTickers.length),
-    }
-    : { QUOTE_MAX_TICKERS: fastMode ? "25" : (process.env.QUOTE_MAX_TICKERS || "5000") }
-
-  const [quotes, structured, tradingView, benzinga, ibkrNews, schwabSignals, unstructured, social] = await Promise.all([
-    runPythonScript("1_News/pipeline/fetch_quotes_to_mongo.py", {
-      timeout: fastMode ? 25000 : 90000,
-      extraEnv: quoteExtraEnv,
-    }),
+          timeout: fullScreenerTimeoutMs,
+          extraEnv: {
+            TRADINGVIEW_SCREENER_TIMEOUT: process.env.TRADINGVIEW_SCREENER_TIMEOUT || "12",
+          },
+        }),
+    quoteTickers.length
+      ? runPythonScript("1_News/pipeline/fetch_quotes_to_mongo.py", {
+          timeout: fastMode ? 5000 : 12000,
+          extraEnv: quoteExtraEnv,
+        })
+      : Promise.resolve(skippedPythonResult("Quotes", "disabled; set ENABLE_QUOTE_FETCH=1 to enable quote enrichment")),
     runPythonScript("1_News/pipeline/fetch_rss_to_mongo.py", {
-      timeout: fastMode ? 45000 : 180000,
-      extraEnv: fastMode ? { RSS_FAST_MODE: "1" } : {},
+      timeout: fastMode ? 25000 : refreshMode === "auto" ? 55000 : fullRssTimeoutMs,
+      extraEnv: fastMode
+        ? {
+            RSS_FAST_MODE: "1",
+            RSS_MAX_WORKERS: process.env.RSS_MAX_WORKERS || "24",
+            RSS_HTTP_TIMEOUT: process.env.RSS_HTTP_TIMEOUT || "7",
+            RSS_FEED_ENTRY_LIMIT: "0",
+            ARTICLE_CACHE_DAYS: "3",
+          }
+        : {
+            RSS_MAX_WORKERS: process.env.FULL_RSS_MAX_WORKERS || process.env.RSS_MAX_WORKERS || "32",
+            RSS_HTTP_TIMEOUT: process.env.FULL_RSS_HTTP_TIMEOUT || process.env.RSS_HTTP_TIMEOUT || "9",
+            RSS_FEED_ENTRY_LIMIT: "0",
+            ARTICLE_CACHE_DAYS: "3",
+            ACCESS_NEWSWIRE_PAGE_SIZE: process.env.ACCESS_NEWSWIRE_PAGE_SIZE || "500",
+          },
     }),
     runPythonScript("1_News/pipeline/fetch_tradingview_to_mongo.py", {
-      timeout: fastMode ? 30000 : 90000,
-      extraEnv: tradingViewExtraEnv,
+      timeout: fastMode ? 30000 : fullTradingViewTimeoutMs,
     }),
-    fastMode && !process.env.BENZINGA_API_KEY
-      ? Promise.resolve(skippedPythonResult("Benzinga", "no API key and fast mode"))
+    !runBenzinga
+      ? Promise.resolve(skippedPythonResult("Benzinga", "BENZINGA_API_KEY not set"))
       : runPythonScript("1_News/pipeline/fetch_benzinga_to_mongo.py", {
-        timeout: fastMode ? 30000 : 90000,
-      }),
-    fastMode
-      ? Promise.resolve(skippedPythonResult("IBKR News"))
-      : runPythonScript("1_News/pipeline/fetch_ibkr_news_to_mongo.py", {
-        timeout: 30000,
-      }),
-    fastMode
-      ? Promise.resolve(skippedPythonResult("Schwab signals"))
-      : runPythonScript("2_Screener/pipeline/fetch_schwab_signals_to_mongo.py", {
-        timeout: 30000,
-      }),
-    fastMode
-      ? Promise.resolve(skippedPythonResult("Unstructured public source sweep"))
-      : runPythonScript("1_News/pipeline/fetch_unstructured_news_titles_to_mongo.py", {
-        timeout: 90000,
-        extraEnv: {
-          UNSTRUCTURED_MAX_PER_SOURCE: process.env.UNSTRUCTURED_MAX_PER_SOURCE || "10",
-          ...(trackedMarketTickers.length ? { TRACKED_TICKERS: trackedMarketTickers.join(",") } : {}),
-        },
-      }),
+          timeout: fastMode ? 30000 : 90000,
+          extraEnv: { BENZINGA_LIMIT: "0" },
+        }),
+    fastMode || !runIbkrNews
+      ? Promise.resolve(skippedPythonResult("IBKR News", runIbkrNews ? "fast mode" : "IBKR_ENABLE_NEWS not set"))
+      : runPythonScript("1_News/pipeline/fetch_ibkr_news_to_mongo.py", { timeout: 30000 }),
+    fastMode || !runSchwabSignals
+      ? Promise.resolve(skippedPythonResult("Schwab signals", runSchwabSignals ? "fast mode" : "SCHWAB_ACCESS_TOKEN not set"))
+      : runPythonScript("2_Screener/pipeline/fetch_schwab_signals_to_mongo.py", { timeout: 30000 }),
+    runPythonScript("1_News/pipeline/fetch_unstructured_news_titles_to_mongo.py", {
+      timeout: fastMode ? 20000 : fullUnstructuredTimeoutMs,
+      extraEnv: fastMode
+        ? {
+            UNSTRUCTURED_SOURCE_FILTER: "Finviz News",
+            UNSTRUCTURED_MAX_PER_SOURCE: "0",
+            UNSTRUCTURED_MAX_WORKERS: "1",
+          }
+        : {
+            UNSTRUCTURED_MAX_PER_SOURCE: "0",
+            UNSTRUCTURED_MAX_WORKERS: process.env.UNSTRUCTURED_MAX_WORKERS || "6",
+          },
+    }),
     runPythonScript("1_News/pipeline/fetch_social_to_mongo.py", {
-      timeout: fastMode ? 25000 : 90000,
+      timeout: fastMode ? 25000 : fullSocialTimeoutMs,
       extraEnv: socialExtraEnv,
     }),
   ])
 
-  const afterStructuredArticles = await db.collection("articles").countDocuments()
-  const structuredCounts = parseStructuredFetch(structured.stdout || "", beforeArticles, afterStructuredArticles)
-  const afterArticles = await db.collection("articles").countDocuments()
-  const afterSocial = await db.collection("socials").countDocuments()
+  const [afterArticles, afterSocial] = await Promise.all([
+    db.collection("articles").estimatedDocumentCount(),
+    db.collection("socials").estimatedDocumentCount(),
+  ])
+  const structuredCounts = parseStructuredFetch(structured.stdout || "", beforeArticles, afterArticles)
   const unstructuredCounts = parseUnstructuredFetch(unstructured.stdout || "")
   const socialCounts = parseSocialFetch(social.stdout || "")
   const quoteCounts = parseQuoteFetch(quotes.stdout || "")
@@ -4522,14 +6283,25 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
   const tradingViewCounts = parseTradingViewFetch(tradingView.stdout || "")
   const tradingViewScreenerCounts = parseTradingViewScreenerFetch(tradingViewScreener.stdout || "")
   const benzingaCounts = parseBenzingaFetch(benzinga.stdout || "")
-  const predictionLabels = await labelMaturePredictionSignals(db)
-  const predictionModel = await trainPredictionModel(db, {
-    minSamples: Number(process.env.PREDICTION_MIN_TRAINING_SAMPLES || 20),
-  })
-  const predictionSnapshot = await captureTradeWatchPredictionSignals(db, {
-    limit: Number(process.env.PREDICTION_SIGNAL_LIMIT || 10),
-    socialWindow: Number(process.env.PREDICTION_SOCIAL_WINDOW || 60),
-  })
+
+  // A fast market refresh should return as soon as fresh data is stored. Model
+  // maintenance is useful, but it does not belong on the button's critical path.
+  let predictionLabels = { checked: 0, labeled: 0 }
+  let predictionModel = { status: "scheduled", samples: 0 }
+  let predictionSnapshot = { saved: 0 }
+  const blockPredictionMaintenance = ["1", "true", "yes"].includes(String(process.env.FETCH_BLOCKING_PREDICTION_MAINTENANCE || "").toLowerCase())
+  if (fullMode && blockPredictionMaintenance) {
+    const maintenance = await runPredictionMaintenance(db)
+    predictionLabels = maintenance.labels
+    predictionModel = maintenance.model
+    predictionSnapshot = maintenance.snapshot
+  } else {
+    schedulePredictionMaintenance(db)
+  }
+
+  // Freshly imported data must be visible to the SWR revalidation triggered by
+  // Run Now; otherwise Redis can serve the pre-fetch response for up to 15s.
+  await invalidateDashboardResponseCache()
 
   return {
     ok: finvizElite.ok && tradingViewScreener.ok && quotes.ok && structured.ok && tradingView.ok && benzinga.ok && ibkrNews.ok && schwabSignals.ok && unstructured.ok && social.ok,
@@ -4555,6 +6327,8 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
     social_mode: socialMode,
     social_target_source: socialMode === "top_momentum" ? "top positive momentum movers" : "configured watchlist",
     social_tickers: socialTickers,
+    tradingview_ticker_count: tradingViewTickers.length,
+    tradingview_tickers: tradingViewTickers,
     timings: {
       finviz_ms: finvizElite.ms || 0,
       tradingview_screener_ms: tradingViewScreener.ms || 0,
@@ -4606,8 +6380,25 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
   }
 }
 
-app.post("/api/fetch", async (req, res) => {
+app.post("/api/fetch", adminGuard, async (req, res) => {
   const started = Date.now()
+
+  if (fetchInFlight) {
+    return res.status(409).json({ ok: false, error: "fetch already running", ms: 0 })
+  }
+
+  const cooldownRemainingMs = fetchCooldownRemainingMs(started)
+  if (cooldownRemainingMs > 0) {
+    return res.status(429).json({
+      ok: false,
+      error: "fetch throttled",
+      retry_after_ms: cooldownRemainingMs,
+      ms: 0,
+    })
+  }
+
+  fetchInFlight = true
+  lastFetchStartedAt = started
 
   try {
     const db = mongoose.connection.db
@@ -4628,7 +6419,9 @@ app.post("/api/fetch", async (req, res) => {
       ms: Date.now() - started,
       message: result.fetch_mode === "full"
         ? "Ran full structured, unstructured, and social importers"
-        : "Ran fast trader refresh",
+        : result.fetch_mode === "auto"
+          ? "Ran complete auto structured-news refresh"
+          : "Ran fast trader refresh",
     })
   } catch (err) {
     console.error("Real /api/fetch failed:", err)
@@ -4640,6 +6433,8 @@ app.post("/api/fetch", async (req, res) => {
       stdout: String(err?.stdout || "").slice(-3000),
       stderr: String(err?.stderr || "").slice(-3000),
     })
+  } finally {
+    fetchInFlight = false
   }
 })
 // NEWS_RSS_FETCH_API_V3_END
@@ -4658,14 +6453,38 @@ app.get("/api/watch", async (req, res) => {
 
   const runFetchCycle = async () => {
     if (isRunning) return; // Prevent overlapping cycles
-    isRunning = true;
-    
+
     const cycleStarted = Date.now();
+    if (fetchInFlight) {
+      res.write(`event: line\n`);
+      res.write(`data: ${JSON.stringify({
+        text: "Auto-watch waiting: another fetch is already running.",
+        cooldown_remaining_ms: fetchCooldownRemainingMs(cycleStarted),
+        ms: 0,
+      })}\n\n`);
+      return;
+    }
+
+    const cooldownRemainingMs = fetchCooldownRemainingMs(cycleStarted);
+    if (cooldownRemainingMs > 0) {
+      res.write(`event: line\n`);
+      res.write(`data: ${JSON.stringify({
+        text: `Auto-watch waiting ${Math.ceil(cooldownRemainingMs / 1000)}s after the last Run Now.`,
+        cooldown_remaining_ms: cooldownRemainingMs,
+        ms: 0,
+      })}\n\n`);
+      return;
+    }
+
+    isRunning = true;
+    fetchInFlight = true;
+    lastFetchStartedAt = cycleStarted;
+
     try {
       const db = mongoose.connection.db;
       const result = await runDataRefreshCycle(db, {
         socialMode: "top_momentum",
-        mode: req.query.mode || "fast",
+        mode: req.query.mode || "auto",
       })
       const newCount = Number(result.new_articles || 0) + Number(result.unstructured_new || 0)
       const updatedCount = Number(result.updated_articles || 0) + Number(result.unstructured_updated || 0)
@@ -4675,17 +6494,20 @@ app.get("/api/watch", async (req, res) => {
       const socialUpdated = Number(result.social_updated || 0)
       const quotesUpdated = Number(result.quotes_updated || 0)
       const trackedMarketTickerCount = Number(result.tracked_market_ticker_count || 0)
+      const tradingViewTickerCount = Number(result.tradingview_ticker_count || 0)
       const finvizRows = Number(result.finviz_rows || 0)
       const tradingViewScreenerRows = Number(result.tradingview_screener_rows || 0)
       const ms = Date.now() - cycleStarted;
 
       res.write(`event: line\n`);
       res.write(`data: ${JSON.stringify({ 
-        text: `${finvizRows} Finviz movers; ${tradingViewScreenerRows} TV scanner rows; ${trackedMarketTickerCount || 'all'} tracked market tickers; ${quotesUpdated} quotes; +${newCount} articles${updatedCount > 0 ? `, ${updatedCount} refreshed` : ''}; +${tradingViewNew} TradingView news${tradingViewUpdated > 0 ? `, ${tradingViewUpdated} refreshed` : ''}; +${socialNew} social${socialUpdated > 0 ? `, ${socialUpdated} refreshed` : ''}${result.social_tickers?.length ? ` [${result.social_tickers.join(', ')}]` : ''} (${(ms / 1000).toFixed(1)}s)`,
+        text: `${finvizRows} Finviz movers; ${tradingViewScreenerRows} TV scanner rows; ${trackedMarketTickerCount || 'all'} tracked market tickers; ${quotesUpdated} quotes; ${tradingViewTickerCount} TV news tickers; +${newCount} articles${updatedCount > 0 ? `, ${updatedCount} refreshed` : ''}; +${tradingViewNew} TradingView news${tradingViewUpdated > 0 ? `, ${tradingViewUpdated} refreshed` : ''}; +${socialNew} social${socialUpdated > 0 ? `, ${socialUpdated} refreshed` : ''}${result.social_tickers?.length ? ` [social: ${result.social_tickers.join(', ')}]` : ''} (${(ms / 1000).toFixed(1)}s)`,
         new: newCount + tradingViewNew,
         updated: updatedCount + tradingViewUpdated,
         tradingview_new: tradingViewNew,
         tradingview_updated: tradingViewUpdated,
+        tradingview_ticker_count: tradingViewTickerCount,
+        tradingview_tickers: result.tradingview_tickers || [],
         social_new: socialNew,
         social_updated: socialUpdated,
         social_tickers: result.social_tickers || [],
@@ -4700,6 +6522,7 @@ app.get("/api/watch", async (req, res) => {
       res.write(`event: error\n`);
       res.write(`data: ${JSON.stringify({ message: `Auto-watch cycle failed: ${err.message}` })}\n\n`);
     } finally {
+      fetchInFlight = false;
       isRunning = false;
     }
   };
@@ -4733,10 +6556,12 @@ app.get("/api/sources/health", async (req, res) => {
     const sourceAliases = {
       "TradingView News Flow": ["TradingView News Flow", "TradingView"],
       "TradingView News": ["TradingView News", "TradingView"],
+      "PR Newswire Financial": ["PR Newswire Financial"],
       "GlobeNewswire Public Companies": ["GlobeNewswire Public Companies", "GlobeNewswire"],
       "ACCESS Newswire": ["ACCESS Newswire", "AccessWire"],
       "BusinessWire": ["BusinessWire", "Business Wire"],
       "Schwab News": ["Schwab News", "Charles Schwab", "TD Ameritrade"],
+      "TD Ameritrade News": ["TD Ameritrade", "Charles Schwab", "Schwab News"],
       "X/Twitter": ["X/Twitter", "Twitter", "X"],
     }
     const screenerSources = {
@@ -4791,6 +6616,22 @@ app.get("/api/sources/health", async (req, res) => {
           latest_publish: null,
         }
       }
+      if (entry.collection) {
+        try {
+          const collection = db.collection(entry.collection)
+          const [count, latest] = await Promise.all([
+            collection.countDocuments({}),
+            collection.find({}).sort({ updated_at: -1, created_at: -1, createdAt: -1, timestamp: -1 }).limit(1).project({ updated_at: 1, created_at: 1, createdAt: 1, timestamp: 1 }).next(),
+          ])
+          return {
+            count,
+            latest_fetch: latest?.updated_at || latest?.created_at || latest?.createdAt || latest?.timestamp || null,
+            latest_publish: null,
+          }
+        } catch (_) {
+          return { count: 0, latest_fetch: null, latest_publish: null }
+        }
+      }
       return { count: 0, latest_fetch: null, latest_publish: null }
     }
 
@@ -4802,11 +6643,11 @@ app.get("/api/sources/health", async (req, res) => {
       const hasRequiredEnv = !entry.env_var || (Boolean(envValue) && !["0", "false", "no"].includes(envValue.toLowerCase()))
       const requiresMissingCredential = Boolean(entry.auth_required && entry.env_var && !hasRequiredEnv)
       let status = liveStatus?.status || entry.status || "unknown"
-      if (requiresMissingCredential && counted.count === 0 && !["broker_api_pending", "licensed_feed_required", "planned"].includes(entry.status)) {
+      if (requiresMissingCredential && counted.count === 0 && !["broker_api_pending", "licensed_feed_required", "planned"].includes(entry.status) && !String(entry.status || "").startsWith("planned")) {
         status = "api_key_required"
       } else if (!liveStatus && counted.count === 0 && String(status).startsWith("working")) {
         status = "ready_no_rows_yet"
-      } else if (counted.count > 0 && !["planned", "licensed_feed_required", "broker_api_pending"].includes(status)) {
+      } else if (counted.count > 0 && !["planned", "licensed_feed_required", "broker_api_pending"].includes(status) && !String(status || "").startsWith("planned")) {
         status = status.startsWith("working") ? status : "working"
       }
 
@@ -4941,12 +6782,23 @@ function cleanConnectionPayload(value = {}) {
   return out;
 }
 
+const MASKED_CONNECTION_SECRET = "••••••••";
+
+function maskedConnectionPayload(value = {}) {
+  const clean = cleanConnectionPayload(value);
+  return Object.fromEntries(Object.entries(clean).map(([key, row]) => [key, {
+    ...row,
+    token: row.token ? MASKED_CONNECTION_SECRET : "",
+    token_configured: Boolean(row.token),
+  }]));
+}
+
 app.get("/api/settings/connections", async (req, res) => {
   try {
     const row = await settingsDb().collection("app_settings").findOne({ key: "connections" });
     res.json({
       ok: true,
-      connections: cleanConnectionPayload(row?.value || {}),
+      connections: maskedConnectionPayload(row?.value || {}),
     });
   } catch (err) {
     console.error("GET /api/settings/connections failed:", err);
@@ -4954,9 +6806,15 @@ app.get("/api/settings/connections", async (req, res) => {
   }
 });
 
-app.patch("/api/settings/connections", async (req, res) => {
+app.patch("/api/settings/connections", adminGuard, async (req, res) => {
   try {
-    const connections = cleanConnectionPayload(req.body.connections || req.body || {});
+    const existingRow = await settingsDb().collection("app_settings").findOne({ key: "connections" });
+    const existing = cleanConnectionPayload(existingRow?.value || {});
+    const incoming = cleanConnectionPayload(req.body.connections || req.body || {});
+    const connections = Object.fromEntries(Object.entries(incoming).map(([key, row]) => [key, {
+      ...row,
+      token: !row.token || row.token === MASKED_CONNECTION_SECRET ? existing[key]?.token || "" : row.token,
+    }]));
     await settingsDb().collection("app_settings").updateOne(
       { key: "connections" },
       {
@@ -4969,7 +6827,7 @@ app.patch("/api/settings/connections", async (req, res) => {
       },
       { upsert: true }
     );
-    res.json({ ok: true, connections });
+    res.json({ ok: true, connections: maskedConnectionPayload(connections) });
   } catch (err) {
     console.error("PATCH /api/settings/connections failed:", err);
     res.status(500).json({ ok: false, error: String(err.message || err) });
@@ -5002,7 +6860,7 @@ app.get("/api/keywords", async (req, res) => {
   }
 });
 
-app.post("/api/keywords", async (req, res) => {
+app.post("/api/keywords", adminGuard, async (req, res) => {
   try {
     const keyword = cleanKeyword(req.body.keyword || req.body.word);
     const category = cleanSettingText(req.body.category || "custom").toLowerCase();
@@ -5026,7 +6884,7 @@ app.post("/api/keywords", async (req, res) => {
   }
 });
 
-app.patch("/api/keywords/:keyword", async (req, res) => {
+app.patch("/api/keywords/:keyword", adminGuard, async (req, res) => {
   try {
     const keyword = cleanKeyword(decodeURIComponent(req.params.keyword));
     const enabled = req.body.enabled !== false && req.body.active !== false;
@@ -5041,7 +6899,7 @@ app.patch("/api/keywords/:keyword", async (req, res) => {
   }
 });
 
-app.delete("/api/keywords/:keyword", async (req, res) => {
+app.delete("/api/keywords/:keyword", adminGuard, async (req, res) => {
   try {
     const keyword = cleanKeyword(decodeURIComponent(req.params.keyword));
     const result = await settingsDb().collection("keywords").deleteOne({ $or: [{ keyword }, { word: keyword }] });
@@ -5107,7 +6965,7 @@ app.get("/api/settings/sources", async (req, res) => {
   }
 });
 
-app.post("/api/settings/sources", async (req, res) => {
+app.post("/api/settings/sources", adminGuard, async (req, res) => {
   try {
     const name = cleanSettingText(req.body.name || req.body.source);
     const url = cleanSettingText(req.body.url);
@@ -5133,7 +6991,7 @@ app.post("/api/settings/sources", async (req, res) => {
   }
 });
 
-app.patch("/api/settings/sources/:name", async (req, res) => {
+app.patch("/api/settings/sources/:name", adminGuard, async (req, res) => {
   try {
     const name = cleanSettingText(decodeURIComponent(req.params.name));
     const enabled = req.body.enabled !== false;
@@ -5148,7 +7006,7 @@ app.patch("/api/settings/sources/:name", async (req, res) => {
   }
 });
 
-app.delete("/api/settings/sources/:name", async (req, res) => {
+app.delete("/api/settings/sources/:name", adminGuard, async (req, res) => {
   try {
     const name = cleanSettingText(decodeURIComponent(req.params.name));
     const result = await settingsDb().collection("rss_sources").deleteOne({ name });
@@ -5188,7 +7046,7 @@ app.get('/api/settings/keywords', async (req, res) => {
   }
 })
 
-app.post('/api/settings/keywords', async (req, res) => {
+app.post('/api/settings/keywords', adminGuard, async (req, res) => {
   try {
     const keyword = cleanKeyword(req.body?.keyword || req.body?.word)
     const category = cleanSettingText(req.body?.category || 'custom').toLowerCase()
@@ -5212,7 +7070,7 @@ app.post('/api/settings/keywords', async (req, res) => {
   }
 })
 
-app.patch('/api/settings/keywords/:keyword', async (req, res) => {
+app.patch('/api/settings/keywords/:keyword', adminGuard, async (req, res) => {
   try {
     const keyword = cleanKeyword(decodeURIComponent(req.params.keyword))
     const enabled = req.body?.enabled !== false && req.body?.active !== false
@@ -5229,7 +7087,7 @@ app.patch('/api/settings/keywords/:keyword', async (req, res) => {
   }
 })
 
-app.delete('/api/settings/keywords/:keyword', async (req, res) => {
+app.delete('/api/settings/keywords/:keyword', adminGuard, async (req, res) => {
   try {
     const keyword = cleanKeyword(decodeURIComponent(req.params.keyword))
 
@@ -5243,6 +7101,12 @@ app.delete('/api/settings/keywords/:keyword', async (req, res) => {
     res.status(500).json({ ok: false, error: String(err.message || err) })
   }
 })
+
+const PUBLIC_DIR = path.join(SERVER_DIR, 'public')
+if (fs.existsSync(path.join(PUBLIC_DIR, 'index.html'))) {
+  app.use(express.static(PUBLIC_DIR))
+  app.get(/^\/(?!api(?:\/|$)).*/, (req, res) => res.sendFile(path.join(PUBLIC_DIR, 'index.html')))
+}
 
 app.listen(PORT, () => {
     console.log()

@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 cd ~/Desktop/"INTEGRATED STOCK PROJECT"/Project/Working_Code
-source .venv/bin/activate
+
+INTERVAL_SECONDS="${SOCIAL_LOOP_INTERVAL_SECONDS:-60}"
+
+echo "Starting FinViz top-gainers-only social loop every ${INTERVAL_SECONDS}s"
 
 while true; do
-  echo
-  echo "===== PUBLIC SOCIAL COLLECTOR RUN $(date) ====="
+  echo ""
+  echo "[$(date)] Running top-gainer-only social collectors..."
 
-  echo "--- Top momentum social collector (StockTwits, Reddit, Bluesky, X when token is set) ---"
-  MONGO_URI="mongodb://localhost:27017/feedflash" \
-  MONGODB_URI="mongodb://localhost:27017/feedflash" \
-  SOCIAL_TICKER_SOURCE="momentum" \
-  SOCIAL_MOMENTUM_LIMIT="${SOCIAL_MOMENTUM_LIMIT:-10}" \
-  SOCIAL_MAX_TICKERS="${SOCIAL_MAX_TICKERS:-10}" \
-  SOCIAL_MAX_WORKERS="${SOCIAL_MAX_WORKERS:-8}" \
-  python 1_News/pipeline/fetch_social_to_mongo.py
+  MONGODB_URI="${MONGODB_URI:-mongodb://localhost:27017/feedflash}" \
+  MONGODB_DB="${MONGODB_DB:-feedflash}" \
+  SOCIAL_TOP_GAINERS_LIMIT="${SOCIAL_TOP_GAINERS_LIMIT:-10}" \
+  python3 5_Social/pipeline/run_finviz_top_gainer_socials.py || true
 
-  echo "===== 5m rolling social counts ====="
-  curl -sS "http://localhost:3001/api/social/rolling/stats?window_minutes=5"
-  echo
+  docker compose exec -T mongo mongosh feedflash < scripts/prune_socials_to_finviz_top_gainers.js || true
 
-  sleep 60
+  sleep "${INTERVAL_SECONDS}"
 done

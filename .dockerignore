@@ -5,3 +5,17 @@
 app_broken_vite_backup_*
 *.log
 .DS_Store
+
+*.bak
+*.bak_*
+*.bak-*
+*.DISABLED*
+backend/
+frontend/
+app/dist/
+**/__pycache__
+**/*.pyc
+.env.local
+.env.*.local
+logs/
+tmp/

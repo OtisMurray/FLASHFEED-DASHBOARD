@@ -1,26 +1,37 @@
 import os
 import re
+import sys
 import json
 import time
 import hashlib
 import requests
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urljoin, urlparse
+from zoneinfo import ZoneInfo
 from pymongo import MongoClient, UpdateOne
 from pymongo.errors import BulkWriteError
 
 from sentiment_utils import classify_financial_event, score_financial_sentiment
+from source_status import record_source_status
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 CONFIG_PATH = os.path.join(ROOT, "config", "unstructured_news_sources.json")
-DEFAULT_TICKER_FILE = os.path.join(ROOT, "config", "social_tickers_100.txt")
 
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/feedflash")
 DB_NAME = os.getenv("MONGODB_DB", "feedflash")
-MAX_PER_SOURCE = int(os.getenv("UNSTRUCTURED_MAX_PER_SOURCE", "40"))
+MAX_PER_SOURCE = int(os.getenv("UNSTRUCTURED_MAX_PER_SOURCE", "0"))  # 0 = uncapped
+MAX_WORKERS = max(1, int(os.getenv("UNSTRUCTURED_MAX_WORKERS", "6")))
+SOURCE_FILTER = {
+    item.strip().lower()
+    for item in os.getenv("UNSTRUCTURED_SOURCE_FILTER", "").split(",")
+    if item.strip()
+}
+MARKET_TZ = ZoneInfo(os.getenv("MARKET_WINDOW_TIMEZONE", "America/New_York"))
 
 HEADERS = {
-    "User-Agent": "FeedFlashStockDashboard/0.1 contact: otisemurray@icloud.com",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124 Safari/537.36 FeedFlash/0.1",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
@@ -49,7 +60,7 @@ BAD_TITLE_CONTAINS = [
 
 FINANCE_HINTS = [
     "stock", "stocks", "market", "markets", "shares", "earnings", "revenue",
-    "profit", "guidance", "fed", "rate", "inflation", "oil",
+    "profit", "guidance", "fed", "rate", "inflation",
     "sec", "ipo", "merger", "acquisition", "deal", "dow",
     "nasdaq", "s&p", "bond", "treasury", "futures", "trading", "investors",
     "bank", "banks", "finance", "economy", "economic", "ai", "chip",
@@ -120,26 +131,6 @@ def clean(text):
 
 def stable_id(source, url):
     return hashlib.sha256(f"{source}|{url}".encode("utf-8")).hexdigest()
-
-def load_tracked_tickers():
-    configured = os.getenv("TRACKED_TICKERS") or os.getenv("SOCIAL_TICKERS") or ""
-    raw = configured.split(",") if configured.strip() else []
-    if not raw:
-        try:
-            with open(os.getenv("SOCIAL_TICKER_FILE", DEFAULT_TICKER_FILE), "r") as f:
-                raw = f.read().splitlines()
-        except Exception:
-            raw = []
-
-    tickers = set()
-    for value in raw:
-        ticker = value.strip().upper()
-        if re.fullmatch(r"[A-Z][A-Z0-9.-]{0,5}", ticker) and ticker not in BLOCKED_TICKERS:
-            tickers.add(ticker)
-    tickers.add("SPACEX")
-    return tickers
-
-TRACKED_TICKERS = load_tracked_tickers()
 
 def title_ok(title):
     if not title:
@@ -243,7 +234,94 @@ def extract_candidates(html, page_url, cfg):
 
     rows.sort(key=lambda x: x[0])
 
-    return rows[:MAX_PER_SOURCE]
+    return rows[:MAX_PER_SOURCE] if MAX_PER_SOURCE > 0 else rows
+
+def parse_finviz_timestamp(raw, last_date=None):
+    text = clean(raw)
+    if not text:
+        return None, last_date
+
+    now_et = datetime.now(MARKET_TZ)
+    parsed = None
+    parsed_date = last_date
+
+    for fmt in ("%b-%d-%y %I:%M%p", "%b %d %Y %I:%M%p", "%Y-%m-%d %I:%M%p"):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            parsed_date = parsed.date()
+            break
+        except ValueError:
+            pass
+
+    if parsed is None:
+        parts = text.split()
+        if len(parts) == 2 and parts[0].lower() in {"today", "yesterday"}:
+            base_date = now_et.date() - (timedelta(days=1) if parts[0].lower() == "yesterday" else timedelta(days=0))
+            try:
+                parsed_time = datetime.strptime(parts[1], "%I:%M%p").time()
+                parsed = datetime.combine(base_date, parsed_time)
+                parsed_date = base_date
+            except ValueError:
+                parsed = None
+        else:
+            try:
+                parsed_time = datetime.strptime(text, "%I:%M%p").time()
+                base_date = last_date or now_et.date()
+                parsed = datetime.combine(base_date, parsed_time)
+                parsed_date = base_date
+            except ValueError:
+                parsed = None
+
+    if parsed is None:
+        return None, parsed_date
+    return int(parsed.replace(tzinfo=MARKET_TZ).astimezone(timezone.utc).timestamp()), parsed_date
+
+def extract_finviz_news_candidates(html, page_url, cfg):
+    """Parse Finviz's real public news table instead of generic page links."""
+    soup = BeautifulSoup(html, "html.parser")
+    rows = []
+    seen_urls = set()
+    last_date = None
+
+    selectors = [
+        "table.news_table tr",
+        "table#news-table tr",
+        "tr.cursor-pointer",
+    ]
+    table_rows = []
+    for selector in selectors:
+        table_rows = soup.select(selector)
+        if table_rows:
+            break
+
+    for row in table_rows:
+        link = row.select_one("a.tab-link-news[href], a[href]")
+        if not link:
+            continue
+        title = clean(link.get_text(" ", strip=True))
+        url = urljoin(page_url, link.get("href", "")).split("#")[0]
+        if not title_ok(title) or not url_ok(url, cfg):
+            continue
+
+        cells = row.find_all("td")
+        raw_time = ""
+        if cells:
+            raw_time = cells[0].get_text(" ", strip=True)
+        publish_date, last_date = parse_finviz_timestamp(raw_time, last_date)
+
+        source_node = row.select_one(".news-link-right, span")
+        provider = clean(source_node.get_text(" ", strip=True)) if source_node else ""
+
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        rows.append((title, url, publish_date, provider))
+
+    if not rows:
+        generic = extract_candidates(html, page_url, cfg)
+        return [(title, url, None, "") for title, url in generic]
+
+    return rows[:MAX_PER_SOURCE] if MAX_PER_SOURCE > 0 else rows
 
 def fetch_source(cfg):
     source = cfg["source"]
@@ -259,33 +337,41 @@ def fetch_source(cfg):
         print(f"{source}: SKIP {e}")
         return []
 
-    rows = extract_candidates(resp.text, page_url, cfg)
+    if source.lower() == "finviz news":
+        rows = extract_finviz_news_candidates(resp.text, page_url, cfg)
+    else:
+        rows = [(title, url, None, "") for title, url in extract_candidates(resp.text, page_url, cfg)]
     print(f"{source}: candidates={len(rows)}")
 
-    for title, url in rows[:8]:
+    for title, url, _publish_date, _provider in rows[:8]:
         print(" -", title)
         print("   ", url)
 
     docs = []
-    for title, url in rows:
+    for title, url, publish_date, provider in rows:
         sid = stable_id(source, url)
         tickers = extract_tickers(title)
         sentiment, confidence = score_lightweight_sentiment(title)
-        event_type, event_score, event_reason = classify_financial_event(title, "")
+        event_type, event_score, event_reason = classify_financial_event(title, provider or "")
         docs.append({
             "_id": sid,
             "article_id": sid[:24],
             "source": source,
             "category": "public_market_news" if source in {"Finviz News", "TradingView News"} else "public_news",
+            "article_kind": "unstructured",
+            "source_type": "public_web_title",
             "title": title,
             "url": url,
             "link": url,
             "summary": "",
-            "content": "",
-            "publish_date": now_ts(),
+            "content": provider or "",
+            "provider": provider,
+            "publish_date": publish_date,
+            "publish_time_trusted": publish_date is not None,
             "fetched_date": now_ts(),
             "fetched_at": now_ts(),
-            "collector": "unstructured_news_title_only_v1",
+            "detected_at": now_ts(),
+            "collector": "finviz_public_news_table_v1" if source == "Finviz News" else "unstructured_news_title_only_v1",
             "ticker": ",".join(tickers),
             "tickers_mentioned": tickers,
             "sentiment": sentiment,
@@ -302,6 +388,8 @@ def fetch_source(cfg):
 def main():
     with open(CONFIG_PATH, "r") as f:
         sources = json.load(f)
+    if SOURCE_FILTER:
+        sources = [cfg for cfg in sources if str(cfg.get("source", "")).strip().lower() in SOURCE_FILTER]
 
     client = MongoClient(MONGODB_URI)
     db = client[DB_NAME]
@@ -310,12 +398,32 @@ def main():
     total_found = 0
     article_upserted = 0
     article_modified = 0
+    kafka_publish_docs = []
+
+    source_docs = {}
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, max(1, len(sources)))) as executor:
+        future_to_cfg = {executor.submit(fetch_source, cfg): cfg for cfg in sources}
+        for future in as_completed(future_to_cfg):
+            cfg = future_to_cfg[future]
+            try:
+                source_docs[cfg["source"]] = future.result()
+            except Exception as exc:
+                print(f"{cfg['source']}: SKIP {exc}")
+                source_docs[cfg["source"]] = []
 
     for cfg in sources:
-        docs = fetch_source(cfg)
+        docs = source_docs.get(cfg["source"], [])
         total_found += len(docs)
 
         if not docs:
+            record_source_status(
+                db,
+                cfg["source"],
+                "no_rows",
+                detail="Public source page returned no qualifying stock-news titles",
+                count=0,
+                source_type="public_news",
+            )
             continue
 
         article_ops = []
@@ -324,11 +432,13 @@ def main():
             document_id = article_doc.pop("_id")
             article_id = article_doc.pop("article_id")
             source = article_doc.pop("source")
+            detected_at = article_doc.pop("detected_at", now_ts())
             article_ops.append(UpdateOne(
                 {"url": doc["url"]},
                 {
                     "$set": article_doc,
-                    "$setOnInsert": {"_id": document_id, "article_id": article_id, "source": source},
+                    "$setOnInsert": {"_id": document_id, "article_id": article_id, "source": source, "first_seen_at": now_ts()},
+                    "$min": {"detected_at": detected_at},
                     "$addToSet": {"discovery_sources": source},
                 },
                 upsert=True
@@ -338,9 +448,27 @@ def main():
             article_result = articles_col.bulk_write(article_ops, ordered=False)
             article_upserted += article_result.upserted_count
             article_modified += article_result.modified_count
+            if article_result.upserted_count or article_result.modified_count:
+                kafka_publish_docs.extend(docs)
+            record_source_status(
+                db,
+                cfg["source"],
+                "working",
+                detail=f"{len(docs)} qualifying titles scanned without a local per-source cap",
+                count=len(docs),
+                source_type="public_news",
+            )
         except BulkWriteError as e:
             print("BulkWriteError for", cfg["source"])
             print(e.details)
+            record_source_status(
+                db,
+                cfg["source"],
+                "partial_error",
+                detail=str(e.details)[:500],
+                count=len(docs),
+                source_type="public_news",
+            )
 
     print("\nUnstructured import complete:", {
         "found": total_found,
@@ -348,7 +476,22 @@ def main():
         "modified": article_modified
     })
 
+    if os.getenv("KAFKA_PUBLISH_NEWS", "false").strip().lower() in ("1", "true", "yes"):
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "Infrastructure", "kafka"))
+            from news_publisher import publish_articles
+
+            sent = publish_articles(kafka_publish_docs)
+            print(f"Kafka publish — {sent} public news events sent to topic")
+        except Exception as exc:
+            print(f"Kafka publish skipped (Mongo import unaffected): {exc}")
+
     client.close()
+    return {"found": total_found, "new": article_upserted, "updated": article_modified}
+
+def fetch_unstructured() -> dict:
+    """Compatibility entry point used by the unified collector."""
+    return main()
 
 if __name__ == "__main__":
     main()

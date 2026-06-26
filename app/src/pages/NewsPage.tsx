@@ -19,16 +19,24 @@ export function NewsPage() {
   const limit = 30
 
   const params = new URLSearchParams({ ...filters, limit: String(limit), offset: String(page * limit) })
+
+  // Main News Feed should show today's usable news by default.
+  // SEC filings are still stored, but hidden by the backend unless include_filings=1.
+  if (!params.has('from') && !params.has('to')) {
+    params.delete('recent_days')
+    params.delete('days')
+    params.set('feed', 'today')
+  }
+
   if (keywordsOnly) params.set('keywords_only', '1')
   if (moversOnly) params.set('mover_only', '1')
   const { data, isLoading } = useSWR(`/api/articles?${params}`, fetcher, { refreshInterval: 15_000 })
-  const { data: stats } = useSWR('/api/stats', fetcher, { refreshInterval: 30_000 })
   const { data: kwData } = useSWR('/api/keywords', fetcher)
 
   const articles: Article[] = data?.articles ?? []
   const total: number = data?.total ?? 0
-  const sources: Array<{ source: string; count: number }> = stats?.sources ?? []
-  const categories: Array<{ category: string; count: number }> = stats?.categories ?? []
+  const sources: Array<{ source: string; count: number }> = data?.sources ?? []
+  const categories: Array<{ category: string; count: number }> = data?.categories ?? []
   const keywords: string[] = useMemo(() => (kwData?.keywords ?? []).map((k: any) => k.keyword || k), [kwData])
 
   const setFilter = (key: string, value: string) => {
@@ -54,7 +62,9 @@ export function NewsPage() {
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-3">
             <h1 className="text-white font-semibold text-lg">News Feed</h1>
-            <span className="text-neutral text-sm">{total.toLocaleString()} articles</span>
+            <span className="text-neutral text-sm">
+              {total.toLocaleString()} articles{data?.window_date ? ` · ${data.window_date}` : ' · today'}
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <button

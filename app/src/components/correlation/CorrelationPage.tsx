@@ -31,7 +31,7 @@ export function CorrelationPage() {
             </div>
           )}
           <div className="text-neutral text-xs mt-0.5">
-            Rows are evidence-weighted alignment signals. Pearson r is calculated only across reliable ticker rows, so values near 0 can be a valid weak relationship reading.
+            Rows are evidence-weighted correlation signals across recent ticker news, social activity, and price movement.
           </div>
           {summary?.interpretation && (
             <div className="text-slate-400 text-xs mt-0.5">{summary.interpretation}</div>
@@ -42,10 +42,10 @@ export function CorrelationPage() {
       <div className="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4">
         <Metric label="Signals" value={String(entries.length)} />
         <Metric
-          label="Pearson r"
+          label="Correlation"
           value={pearsonR == null ? '--' : pearsonR.toFixed(3)}
           tone="text-yellow-300"
-          subvalue={summary?.raw_sentiment_pearson == null ? undefined : `raw sent ${summary.raw_sentiment_pearson.toFixed(3)}`}
+          subvalue={summary?.raw_sentiment_pearson == null ? undefined : `raw sentiment ${summary.raw_sentiment_pearson.toFixed(3)}`}
         />
         <Metric label="Dir Align" value={directionalRate == null ? '--' : `${(directionalRate * 100).toFixed(1)}%`} tone="text-emerald-300" />
         <Metric label="Avg |Signal|" value={avgSignal == null ? '--' : avgSignal.toFixed(3)} tone="text-indigo-300" />

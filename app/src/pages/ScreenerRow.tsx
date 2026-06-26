@@ -1,12 +1,19 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { clsx } from 'clsx'
 import type { ScreenerRow as SR } from '@/lib/types'
 import { TickerDetailModal } from '@/components/shared/TickerDetailModal'
+import { CandlestickChart } from './CandlestickChart'
 
 interface Props {
   row: SR
   columns: Array<{ key: string; label: string }>
+}
+
+interface HoverChartData {
+  candles: Array<{ time: string | number; open: number; high: number; low: number; close: number; volume?: number }>
+  social_density?: Array<{ time: string | number; value: number; scaled?: number; count?: number }>
+  sentiment?: Array<{ time: string | number; value: number }>
 }
 
 function fmtCompact(n: number | undefined | null): string {
@@ -49,6 +56,12 @@ function sentBar(bullish: number, bearish: number, neutral: number) {
 
 export function ScreenerRow({ row, columns }: Props) {
   const [showDetail, setShowDetail] = useState(false)
+  const [showHoverChart, setShowHoverChart] = useState(false)
+  const [hoverData, setHoverData] = useState<HoverChartData | null>(null)
+  const [hoverLoading, setHoverLoading] = useState(false)
+  const [showHoverPrediction, setShowHoverPrediction] = useState(true)
+  const hoverTimeoutRef = useRef<number | null>(null)
+  const rowRef = useRef<HTMLTableRowElement>(null)
 
   const renderCell = (key: string) => {
     switch (key) {
@@ -104,14 +117,23 @@ export function ScreenerRow({ row, columns }: Props) {
           </span>
         )
       case 'social_message_sentiment':
-        const stocktwitsSentiment = row.social_message_sentiment ?? 0
+        const allSocialSentiment = row.social_message_sentiment ?? row.social_sentiment ?? 0
+        return (
+          <span className={clsx('font-mono', allSocialSentiment >= 0.2 ? 'text-emerald-400' : allSocialSentiment <= -0.2 ? 'text-red-400' : 'text-neutral')}>
+            {allSocialSentiment.toFixed(2)}
+          </span>
+        )
+      case 'social_message_density':
+        return <span className="font-mono text-neutral">{(row.social_message_density ?? 0).toFixed(3)}/m</span>
+      case 'stocktwits_message_sentiment':
+        const stocktwitsSentiment = row.stocktwits_message_sentiment ?? 0
         return (
           <span className={clsx('font-mono', stocktwitsSentiment >= 0.2 ? 'text-emerald-400' : stocktwitsSentiment <= -0.2 ? 'text-red-400' : 'text-neutral')}>
             {stocktwitsSentiment.toFixed(2)}
           </span>
         )
-      case 'social_message_density':
-        return <span className="font-mono text-neutral">{(row.social_message_density ?? 0).toFixed(3)}/m</span>
+      case 'stocktwits_message_density':
+        return <span className="font-mono text-neutral">{(row.stocktwits_message_density ?? 0).toFixed(3)}/m</span>
       case 'stocktwits_message_count':
         return <span className="font-mono text-neutral">{row.stocktwits_message_count ?? 0}</span>
       case 'structured_sentiment':
@@ -181,13 +203,92 @@ export function ScreenerRow({ row, columns }: Props) {
     }
   }
 
+  const loadHoverChart = async () => {
+    if (hoverData) return // Already loaded
+    setHoverLoading(true)
+    try {
+      const res = await fetch(`/api/charts/${row.ticker}?range=1d&interval=5m&window_minutes=30&bucket_minutes=5`)
+      const json = await res.json()
+      if (json?.candles?.length) {
+        setHoverData({
+          candles: json.candles,
+          social_density: json.social_density || [],
+          sentiment: json.sentiment || [],
+        })
+      }
+    } catch (e) {
+      // Silently fail hover chart
+    } finally {
+      setHoverLoading(false)
+    }
+  }
+
+  const handleMouseEnter = () => {
+    hoverTimeoutRef.current = window.setTimeout(() => {
+      setShowHoverChart(true)
+      loadHoverChart()
+    }, 500) // Show after 500ms hover
+  }
+
+  const handleMouseLeave = () => {
+    if (hoverTimeoutRef.current) {
+      clearTimeout(hoverTimeoutRef.current)
+      hoverTimeoutRef.current = null
+    }
+    setShowHoverChart(false)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current)
+    }
+  }, [])
+
   return (
     <>
-      <tr className="hover:bg-card-hover transition-colors">
+      <tr
+        ref={rowRef}
+        className="hover:bg-card-hover transition-colors relative"
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+      >
         {columns.map(col => (
           <td key={col.key} className="px-2 py-2 whitespace-nowrap">{renderCell(col.key)}</td>
         ))}
       </tr>
+
+      {/* Hover chart preview */}
+      {showHoverChart && rowRef.current && (
+        <div className="fixed z-50 bg-surface border border-border rounded-lg shadow-xl p-3" style={{
+          left: `${rowRef.current.getBoundingClientRect().right + 10}px`,
+          top: `${rowRef.current.getBoundingClientRect().top}px`,
+          width: '400px',
+          maxHeight: '300px',
+        }}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-mono font-bold text-accent">{row.ticker}</span>
+            <span className="text-[10px] text-neutral">1D · 5m</span>
+          </div>
+          {hoverLoading ? (
+            <div className="h-[200px] flex items-center justify-center text-neutral text-xs">Loading...</div>
+          ) : hoverData?.candles?.length ? (
+            <div className="h-[200px]">
+              <CandlestickChart
+                candles={hoverData.candles}
+                density={hoverData.social_density || []}
+                sentiment={hoverData.sentiment || []}
+                showSentiment={true}
+                showDensity={true}
+                showPrediction={showHoverPrediction}
+                chartStyle="candles"
+              />
+            </div>
+          ) : (
+            <div className="h-[200px] flex items-center justify-center text-neutral text-xs">No data</div>
+          )}
+        </div>
+      )}
+
       {showDetail && <TickerDetailModal ticker={row.ticker} onClose={() => setShowDetail(false)} />}
     </>
   )

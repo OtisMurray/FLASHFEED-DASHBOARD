@@ -6,6 +6,19 @@ import type { ViewMode } from './ScreenerPage'
 interface Props { rows: SR[]; isLoading: boolean; viewMode: ViewMode }
 
 const COLUMNS: Record<ViewMode, Array<{ key: string; label: string }>> = {
+  top_movers: [
+    { key: 'ticker', label: 'TICKER' },
+    { key: 'company', label: 'COMPANY' },
+    { key: 'price', label: 'PRICE' },
+    { key: 'change_pct', label: 'CHG%' },
+    { key: 'volume', label: 'VOLUME' },
+    { key: 'rel_volume', label: 'REL VOL' },
+    { key: 'market_cap', label: 'MKT CAP' },
+    { key: 'sector', label: 'SECTOR' },
+    { key: 'social_message_sentiment', label: 'SOC SENT' },
+    { key: 'social_message_density', label: 'SOC DENS' },
+    { key: 'rolling_window_minutes', label: 'WIN' },
+  ],
   overview: [
     { key: 'ticker', label: 'TICKER' },
     { key: 'company', label: 'COMPANY' },
@@ -17,8 +30,9 @@ const COLUMNS: Record<ViewMode, Array<{ key: string; label: string }>> = {
     { key: 'market_cap', label: 'MKT CAP' },
     { key: 'sector', label: 'SECTOR' },
     { key: 'structured_sentiment', label: 'NEWS SENT' },
-    { key: 'social_message_sentiment', label: 'ST SENT' },
-    { key: 'social_message_density', label: 'ST DENS' },
+    { key: 'social_message_sentiment', label: 'SOC SENT' },
+    { key: 'social_message_density', label: 'SOC DENS' },
+    { key: 'stocktwits_message_sentiment', label: 'ST SENT' },
     { key: 'stocktwits_message_count', label: 'ST MSGS' },
     { key: 'rolling_window_minutes', label: 'WIN' },
   ],
@@ -48,8 +62,10 @@ const COLUMNS: Record<ViewMode, Array<{ key: string; label: string }>> = {
   ],
   sentiment: [
     { key: 'ticker', label: 'TICKER' },
-    { key: 'social_message_sentiment', label: 'ST SENT' },
-    { key: 'social_message_density', label: 'ST DENS' },
+    { key: 'social_message_sentiment', label: 'SOC SENT' },
+    { key: 'social_message_density', label: 'SOC DENS' },
+    { key: 'stocktwits_message_sentiment', label: 'ST SENT' },
+    { key: 'stocktwits_message_density', label: 'ST DENS' },
     { key: 'stocktwits_message_count', label: 'ST MSGS' },
     { key: 'social_sentiment', label: 'ALL SOCIAL' },
     { key: 'message_count', label: 'ALL POSTS' },

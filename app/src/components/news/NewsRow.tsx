@@ -22,10 +22,28 @@ function formatTime(ts: number | null): string {
 }
 
 function highlightKeywords(text: string, keywords: string[]): React.ReactNode {
-  if (!keywords.length) return text
-  const pattern = keywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-  const regex = new RegExp(`(${pattern})`, 'gi')
+  const cleaned = keywords
+    .map(k => String(k || '').trim())
+    .filter(k => k.length >= 2)
+
+  if (!cleaned.length) return text
+
+  const escapedPatterns = cleaned.map(k => {
+    const escaped = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+    // Strict matching:
+    // SEC should match "SEC" but not "Security" or "Second".
+    // FDA should match "FDA" but not inside another word.
+    if (/^[A-Za-z0-9]+$/.test(k)) {
+      return `\\b${escaped}\\b`
+    }
+
+    return escaped
+  })
+
+  const regex = new RegExp(`(${escapedPatterns.join('|')})`, 'gi')
   const parts = text.split(regex)
+
   return parts.map((part, i) =>
     regex.test(part)
       ? <mark key={i} className="bg-yellow-500/25 text-yellow-200 px-0.5 rounded">{part}</mark>

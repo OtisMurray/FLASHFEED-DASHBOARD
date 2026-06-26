@@ -1,6 +1,6 @@
-'use client'
+'usa e client'
 import useSWR from 'swr'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { ScreenerTable } from './ScreenerTable'
 import { ScreenerFilterPanel } from './ScreenerFilterPanel'
 import { SignalBar } from './SignalBar'
@@ -9,10 +9,17 @@ import type { Article, ScreenerRow } from '@/lib/types'
 
 const fetcher = (url: string) => fetch(url).then(r => r.json())
 
-export type ViewMode = 'overview' | 'performance' | 'technical' | 'sentiment'
+export type ViewMode = 'overview' | 'performance' | 'technical' | 'sentiment' | 'top_movers'
 type FilterTab = 'descriptive' | 'technical' | 'performance' | 'sentiment' | 'all'
 
-const VIEW_MODES: ViewMode[] = ['overview', 'performance', 'technical', 'sentiment']
+const VIEW_MODES: ViewMode[] = ['overview', 'performance', 'technical', 'sentiment', 'top_movers']
+const VIEW_LABELS: Record<ViewMode, string> = {
+  overview: 'Overview',
+  performance: 'Performance',
+  technical: 'Technical',
+  sentiment: 'Sentiment',
+  top_movers: 'Top Movers',
+}
 const PRESETS = [
   { key: 'top_gainers', label: 'Top Gainers' },
   { key: 'top_losers', label: 'Top Losers' },
@@ -34,15 +41,24 @@ function compact(n: number | null | undefined) {
 
 export function ScreenerPage() {
   const [socialWindow, setSocialWindow] = useState('adaptive')
-  const screenerParams = new URLSearchParams({ limit: '1500' })
+  // Load all tracked tickers (up to 5000, the backend max)
+  const screenerParams = new URLSearchParams({ limit: '5000', days: '3', compact: '1' })
   if (socialWindow !== 'adaptive') screenerParams.set('window_minutes', socialWindow)
   const { data, isLoading, mutate } = useSWR(`/api/screener?${screenerParams.toString()}`, fetcher, { refreshInterval: 30_000 })
-  const { data: newsData } = useSWR('/api/articles?mover_only=1&ticker_only=1&recent_days=2&limit=24', fetcher, { refreshInterval: 30_000 })
+  const { data: newsData } = useSWR('/api/articles?mover_only=1&ticker_only=1&article_kind=structured&recent_days=3&limit=24', fetcher, { refreshInterval: 30_000 })
   const [filters, setFilters] = useState<Record<string, string>>({})
   const [showFilters, setShowFilters] = useState(false)
   const [filterTab, setFilterTab] = useState<FilterTab>('all')
   const [viewMode, setViewMode] = useState<ViewMode>('overview')
   const [signal, setSignal] = useState('')
+  
+  // Auto-switch to top_movers view when top_gainers or top_losers signal is active
+  useEffect(() => {
+    if (signal === 'top_gainers' || signal === 'top_losers') {
+      setViewMode('top_movers')
+    }
+  }, [signal])
+
   const [orderBy, setOrderBy] = useState('ticker')
   const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('asc')
   const [search, setSearch] = useState('')
@@ -142,7 +158,7 @@ export function ScreenerPage() {
     if (filters.stocktwits_sentiment) {
       const ss = filters.stocktwits_sentiment
       rows = rows.filter(t => {
-        const value = t.social_message_sentiment ?? 0
+        const value = t.stocktwits_message_sentiment ?? 0
         if (ss === 'bullish') return value >= 0.2
         if (ss === 'bearish') return value <= -0.2
         if (ss === 'neutral') return value > -0.2 && value < 0.2
@@ -151,7 +167,7 @@ export function ScreenerPage() {
     }
     if (filters.stocktwits_density) {
       rows = rows.filter(t => {
-        const value = t.social_message_density ?? 0
+        const value = t.stocktwits_message_density ?? 0
         if (filters.stocktwits_density === 'over0_05') return value >= 0.05
         if (filters.stocktwits_density === 'over0_1') return value >= 0.1
         if (filters.stocktwits_density === 'over0_5') return value >= 0.5
@@ -310,7 +326,7 @@ export function ScreenerPage() {
       current.totalMsgs += totalMessages
       current.stocktwitsMsgs += stocktwitsMessages
       current.totalDensity += totalDensity
-      current.stocktwitsDensity += Number(row.social_message_density ?? 0)
+      current.stocktwitsDensity += Number(row.stocktwits_message_density ?? 0)
       if (totalMessages > 0) current.activeSocial += 1
       groups.set(sector, current)
     }
@@ -502,7 +518,7 @@ export function ScreenerPage() {
                 : 'text-neutral border-transparent hover:text-white'
             }`}
           >
-            {mode}
+            {VIEW_LABELS[mode]}
           </button>
         ))}
       </div>

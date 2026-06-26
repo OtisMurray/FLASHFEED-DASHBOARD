@@ -1,8 +1,8 @@
 import useSWR from 'swr'
-import { useMemo } from 'react'
 import { clsx } from 'clsx'
 import type { Article, CorrelationEntry } from '@/lib/types'
 import { getLanguageLabel, useTargetLanguage, useTranslatedText } from '@/lib/translation'
+import { buildTrendingPhrases } from '../lib/trendingPhrases'
 
 type SocialPreview = {
   platform?: string
@@ -83,10 +83,10 @@ function socialText(post: SocialPreview) {
 
 export function OverviewPage() {
   const targetLanguage = useTargetLanguage()
-  const { data: stats } = useSWR('/api/stats?days=2', fetcher, { refreshInterval: 30_000 })
+  const { data: stats } = useSWR('/api/stats?days=3', fetcher, { refreshInterval: 30_000 })
   const { data: status } = useSWR('/api/status', fetcher, { refreshInterval: 30_000 })
-  const { data: articlesData } = useSWR('/api/articles?limit=30&ticker_only=1&mover_only=1&recent_days=2', fetcher, { refreshInterval: 15_000 })
-  const { data: socialData } = useSWR('/api/social/rolling?window_minutes=1440&limit=30&ranked=1', fetcher, { refreshInterval: 30_000 })
+  const { data: articlesData } = useSWR('/api/articles?limit=30&ticker_only=1&recent_days=3', fetcher, { refreshInterval: 15_000 })
+  const { data: socialData } = useSWR('/api/social/rolling?window_minutes=1440&limit=80&ranked=1', fetcher, { refreshInterval: 30_000 })
   const { data: socialStats } = useSWR('/api/social/rolling/stats?window_minutes=1440', fetcher, { refreshInterval: 30_000 })
   const { data: correlationData } = useSWR('/api/correlation', fetcher, { refreshInterval: 60_000 })
   const { data: auditData } = useSWR('/api/sentiment/audit?limit=8&days=3', fetcher, { refreshInterval: 60_000 })
@@ -101,18 +101,15 @@ export function OverviewPage() {
   const auditRows = asArray<SentimentAuditRow>(auditData, ['rows']).slice(0, 6)
   const auditSummary = auditData?.summary
 
-  const phrases = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const post of socialPosts) {
-      const words = [...(post.finance_keywords || []), ...(post.gossip_keywords || []), ...(post.keywords || [])]
-      for (const raw of words) {
-        const key = String(raw || '').trim()
-        if (key.length < 2) continue
-        counts.set(key, (counts.get(key) || 0) + 1)
-      }
-    }
-    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10)
-  }, [socialPosts])
+  const rawPhrases = Array.isArray((socialData as any)?.phrases) && (socialData as any).phrases.length
+    ? (socialData as any).phrases
+    : buildTrendingPhrases(socialPosts, 12)
+  const phrases: Array<[string, number]> = rawPhrases
+    .map((row: any) => Array.isArray(row)
+      ? [String(row[0] || ''), Number(row[1] || 0)] as [string, number]
+      : [String(row?.phrase || ''), Number(row?.count || 0)] as [string, number])
+    .filter(([phrase]) => Boolean(phrase))
+
 
   const bullishArticles = stats?.sentiment?.bullish ?? 0
   const bearishArticles = stats?.sentiment?.bearish ?? 0
@@ -122,11 +119,11 @@ export function OverviewPage() {
   const pearsonR = correlationData?.summary?.pearson_correlation ?? null
 
   return (
-    <div className="space-y-4">
+    <div className="overview-page space-y-4">
       <div>
         <div>
           <h1 className="text-white font-semibold text-2xl">Overview</h1>
-          <p className="text-sm text-neutral mt-1">Last two days of ticker-matched news, social, and correlation signals in one workspace.</p>
+          <p className="text-sm text-neutral mt-1">Last three days of ticker-matched news, social, and correlation signals in one workspace.</p>
         </div>
       </div>
 
@@ -136,12 +133,12 @@ export function OverviewPage() {
         <Metric label="Bullish News" value={compact(bullishArticles)} tone="text-emerald-400" />
         <Metric label="Bearish News" value={compact(bearishArticles)} tone="text-red-400" />
         <Metric label="Social Signals" value={compact(socialTotal)} tone="text-indigo-300" />
-        <Metric label="Pearson r" value={pearsonR == null ? '--' : pearsonR.toFixed(2)} tone="text-yellow-300" />
+        <Metric label="Correlation" value={pearsonR == null ? '--' : pearsonR.toFixed(2)} tone="text-yellow-300" />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.9fr)_minmax(300px,0.8fr)] gap-4">
         <section className="min-w-0 bg-surface border border-border rounded-lg overflow-hidden">
-          <SectionTitle title="Ticker-Matched News" meta={`${articles.length} latest · 2d`} />
+          <SectionTitle title="Ticker-Matched News" meta={`${articles.length} latest 30 · 3d`} />
           <div className="divide-y divide-slate-700/30 max-h-[640px] overflow-y-auto">
             {articles.length ? articles.map(article => (
               <OverviewArticleRow key={article.id || article.article_id || article.url || article.title} article={article} targetLanguage={targetLanguage} />
@@ -186,24 +183,24 @@ export function OverviewPage() {
           </div>
         </section>
 
-        <section className="min-w-0 bg-surface border border-border rounded-lg overflow-hidden">
+        <section className="min-w-0 bg-surface border border-border rounded-lg overflow-y-auto">
           <SectionTitle title="Ticker Tracker" meta={tickerMentions.length ? 'top 5 by mentions' : 'waiting'} />
-          <div className="p-3 space-y-2 max-h-[640px] overflow-y-auto">
+          <div className="p-4 space-y-3 flex-none">
             {tickerMentions.length ? tickerMentions.map(row => {
               const bullish = row.bullish ?? 0
               const bearish = row.bearish ?? 0
               const total = Math.max(1, row.count || 0)
               return (
-                <div key={row.ticker} className="bg-bg/60 border border-border rounded p-2">
+                <div key={row.ticker} className="bg-bg/60 border border-border rounded-lg p-3">
                   <div className="flex items-center justify-between gap-2 mb-1">
-                    <TickerChip ticker={row.ticker} compact />
-                    <span className="text-[11px] text-neutral">{compact(row.count)} mentions</span>
+                    <TickerChip ticker={row.ticker} />
+                    <span className="text-xs text-neutral">{compact(row.count)} mentions</span>
                   </div>
-                  <div className="flex h-1.5 rounded-full overflow-hidden bg-slate-700">
+                  <div className="flex h-2 rounded-full overflow-hidden bg-slate-700">
                     <div className="bg-emerald-500" style={{ width: `${(bullish / total) * 100}%` }} />
                     <div className="bg-red-500" style={{ width: `${(bearish / total) * 100}%` }} />
                   </div>
-                  <div className="flex justify-between text-[10px] text-neutral mt-1">
+                  <div className="flex justify-between text-xs text-neutral mt-2">
                     <span className="text-emerald-400">{bullish} bullish</span>
                     <span className="text-red-400">{bearish} bearish</span>
                   </div>
@@ -214,14 +211,8 @@ export function OverviewPage() {
             )}
           </div>
 
-          <SectionTitle title="Broker Signals" meta="planned feeds" />
-          <div className="p-3 space-y-2">
-            <BrokerSignal source="IBKR" title="Scanner feed ready to wire" detail="Reserved for broker scanner events and watchlist candidates." />
-            <BrokerSignal source="Schwab" title="Integration pending" detail="Keep visible so the dashboard has a completed landing-zone." />
-          </div>
-
           <SectionTitle title="Correlation Signals" meta={`${correlations.length} rows`} />
-          <div className="p-3 space-y-2">
+          <div className="p-3 space-y-2 flex-none">
             {correlations.length ? correlations.map(entry => (
               <div key={entry.ticker} className="bg-bg/60 border border-border rounded p-2">
                 <div className="flex items-center justify-between gap-2 mb-1">
@@ -249,7 +240,7 @@ export function OverviewPage() {
               ? `${compact(auditSummary.actionable)} actionable · ${compact(auditSummary.ticker_matched)}/${compact(auditSummary.total)} tickered`
               : `${auditRows.length} sample rows`}
           />
-          <div className="p-3 space-y-2">
+          <div className="p-3 space-y-2 flex-none">
             {auditRows.length ? auditRows.map(row => (
               <div key={row.id || `${row.ticker}-${row.title}`} className="bg-bg/60 border border-border rounded p-2">
                 <div className="flex items-center gap-2 mb-1">
@@ -269,7 +260,7 @@ export function OverviewPage() {
           </div>
 
           <SectionTitle title="Data Health" meta="live" />
-          <div className="p-3 grid grid-cols-2 gap-2 text-xs">
+          <div className="p-3 grid grid-cols-2 gap-2 text-xs flex-none">
             <Health label="Sources" value={compact(stats?.sources?.length ?? 0)} />
             <Health label="Categories" value={compact(stats?.categories?.length ?? 0)} />
             <Health label="Database" value={status?.database?.connected === false ? 'Offline' : 'Online'} />
@@ -327,18 +318,6 @@ function SectionTitle({ title, meta }: { title: string; meta?: string }) {
     <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-border bg-bg/30">
       <h2 className="text-sm font-semibold text-white">{title}</h2>
       {meta && <span className="text-[11px] text-neutral">{meta}</span>}
-    </div>
-  )
-}
-
-function BrokerSignal({ source, title, detail }: { source: string; title: string; detail: string }) {
-  return (
-    <div className="bg-bg/60 border border-border rounded p-3">
-      <div className="flex items-center gap-2 mb-1">
-        <span className="text-[10px] font-bold uppercase tracking-wide border border-accent/40 text-accent rounded px-1.5 py-0.5">{source}</span>
-        <span className="text-sm text-white font-medium">{title}</span>
-      </div>
-      <p className="text-xs text-neutral leading-relaxed">{detail}</p>
     </div>
   )
 }

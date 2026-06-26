@@ -51,17 +51,5 @@
             "/news/articles/",
             "/news/"
         ]
-    },
-    {
-        "source": "OilPrice News",
-        "url": "https://oilprice.com/Latest-Energy-News/World-News/",
-        "allowed_domains": [
-            "oilprice.com",
-            "www.oilprice.com"
-        ],
-        "required_path_contains": [
-            "/Latest-Energy-News/",
-            "/Energy/"
-        ]
     }
 ]
