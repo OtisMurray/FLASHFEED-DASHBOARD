@@ -1,23 +1,29 @@
 // Client-side chart aggregation shared by the Charts views.
+//
 // The backend serves ONE resolution: 1-minute extended-hours intraday OHLC
 // (/api/charts) and per-minute social density + 5-min sliding sentiment
 // (/api/chart/social). These helpers re-bucket and overlay that fine data in the
 // browser so the price-chart timeframe selector and density/sentiment overlays
-// recompute instantly with no extra server calls.
+// recompute instantly with no extra server calls. There is no daily/weekly data,
+// so timeframes are intraday only.
 
-export interface Candle { time: string | number; open: number; high: number; low: number; close: number; volume?: number }
+export interface Candle { time: number; open: number; high: number; low: number; close: number; volume?: number }
 export interface LinePoint { time: number; value: number }
 export interface BollingerBands { upper: LinePoint[]; lower: LinePoint[] }
 
-// Social payload subset we read (from /api/chart/social).
+// Social payload subset we read (from /api/chart/social — see ResearchChart).
 export interface SocialSeries {
   labels: string[]; density: number[]
   sent_labels: string[]; scores_smooth: number[]
+  // New backend payload includes real unix seconds.  Older payloads only had
+  // HH:MM labels, so these stay optional for backward compatibility.
+  times?: number[]
+  sent_times?: number[]
 }
 
 // TS port of the backend's _smooth_same(values, k): centered k-wide mean with
 // zero padding at the edges (np.convolve mode='same'), skipping smoothing when
-// len < k.
+// len < k. Kept byte-faithful so k=15 reproduces the server's *_smooth series.
 export function smoothSame(values: number[], k: number): number[] {
   const n = values.length
   if (k <= 1 || n < k) return values.slice()
@@ -40,27 +46,29 @@ export const bucketStart = (timeSec: number, tfMin: number): number => {
 }
 
 // Resample 1-minute candles into `tfMin`-minute buckets: open=first, high=max,
-// low=min, close=last, volume=sum. Clock-aligned, newest order preserved.
+// low=min, close=last, volume=sum. Clock-aligned, newest order preserved. tfMin=1
+// returns the input unchanged (deduped by bucket) so the default is a no-op.
 export function resampleCandles(candles: Candle[], tfMin: number): Candle[] {
   if (tfMin <= 1 || candles.length === 0) return candles
   const buckets = new Map<number, Candle>()
   for (const c of candles) {
-    const timeNum: number = typeof c.time === 'string' ? new Date(c.time).getTime() / 1000 : (c.time as number)
-    const t = bucketStart(timeNum, tfMin)
+    const t = bucketStart(c.time, tfMin)
     const b = buckets.get(t)
     if (!b) {
       buckets.set(t, { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume ?? 0 })
     } else {
       b.high = Math.max(b.high, c.high)
       b.low = Math.min(b.low, c.low)
-      b.close = c.close
+      b.close = c.close                      // candles are in ascending time order
       b.volume = (b.volume ?? 0) + (c.volume ?? 0)
     }
   }
-  return Array.from(buckets.values()).sort((a: any, b: any) => a.time - b.time) as any
+  return Array.from(buckets.values()).sort((a, b) => a.time - b.time)
 }
 
-// Bollinger(period, mult) from a candle series' closes.
+// Bollinger(period, mult) from a candle series' closes — same convention as the
+// server's _bollinger_series (SMA basis, ±mult·population stddev, first point at
+// index period-1). Used to keep the band aligned when the timeframe is resampled.
 export function bollingerFromCandles(candles: Candle[], period = 20, mult = 2): BollingerBands {
   const upper: LinePoint[] = [], lower: LinePoint[] = []
   if (candles.length < period) return { upper, lower }
@@ -71,14 +79,13 @@ export function bollingerFromCandles(candles: Candle[], period = 20, mult = 2): 
     let sq = 0
     for (let j = i - period + 1; j <= i; j++) sq += (candles[j].close - m) ** 2
     const sd = Math.sqrt(sq / period)
-    const ti = typeof candles[i].time === 'string' ? new Date(candles[i].time as string).getTime() / 1000 : candles[i].time as number
-    upper.push({ time: ti, value: +(m + mult * sd).toFixed(4) })
-    lower.push({ time: ti, value: +(m - mult * sd).toFixed(4) })
+    upper.push({ time: candles[i].time, value: +(m + mult * sd).toFixed(4) })
+    lower.push({ time: candles[i].time, value: +(m - mult * sd).toFixed(4) })
   }
   return { upper, lower }
 }
 
-// EMA over a series, seeded with values[0].
+// EMA over a series, seeded with values[0] — matches the server's _ema_list.
 export function emaList(values: number[], period: number): number[] {
   if (!values.length) return []
   const k = 2 / (period + 1)
@@ -88,10 +95,11 @@ export function emaList(values: number[], period: number): number[] {
   return out
 }
 
-// Wilder's RSI(period) on a candle series.
+// Wilder's RSI(period) on a candle series — same convention as the server's
+// _rsi_series (first value at close index `period`, 2dp). Recomputed on the
+// resampled closes so RSI sits on the same time buckets as the candles.
 export function rsiFromCandles(candles: Candle[], period = 14): LinePoint[] {
-  const times = candles.map(c => typeof c.time === 'string' ? new Date(c.time).getTime() / 1000 : c.time)
-  const closes = candles.map(c => c.close)
+  const closes = candles.map(c => c.close), times = candles.map(c => c.time)
   const n = closes.length
   if (n < period + 1) return []
   const ch: number[] = []
@@ -112,10 +120,10 @@ export function rsiFromCandles(candles: Candle[], period = 14): LinePoint[] {
 
 export interface MacdSeries { macd: LinePoint[]; signal: LinePoint[]; histogram: LinePoint[] }
 
-// MACD(fast,slow,signal) on a candle series.
+// MACD(fast,slow,signal) on a candle series — same convention as the server's
+// _macd_series (emit from index slow-1, 4dp). Recomputed on the resampled closes.
 export function macdFromCandles(candles: Candle[], fast = 12, slow = 26, signal = 9): MacdSeries {
-  const times = candles.map(c => typeof c.time === 'string' ? new Date(c.time).getTime() / 1000 : c.time)
-  const closes = candles.map(c => c.close)
+  const closes = candles.map(c => c.close), times = candles.map(c => c.time)
   const n = closes.length
   if (n < slow) return { macd: [], signal: [], histogram: [] }
   const ef = emaList(closes, fast), es = emaList(closes, slow)
@@ -130,7 +138,9 @@ export function macdFromCandles(candles: Candle[], fast = 12, slow = 26, signal 
   return { macd, signal: signalOut, histogram }
 }
 
-// "HH:MM" ET wall-clock label for a candle's unix time.
+// "HH:MM" ET wall-clock label for a candle's unix time. The backend encodes the
+// naive ET minute as UTC, so reading the time in UTC yields the ET label that
+// keys the social series.
 function etLabel(timeSec: number): string {
   const d = new Date(timeSec * 1000)
   const hh = String(d.getUTCHours()).padStart(2, '0')
@@ -138,7 +148,12 @@ function etLabel(timeSec: number): string {
   return `${hh}:${mm}`
 }
 
-// Build density / sentiment overlay lines aligned to the SAME timeframe buckets.
+// Build density / sentiment overlay lines aligned to the SAME timeframe buckets
+// as resampleCandles(rawCandles, tfMin). Density is the per-minute message rate
+// smoothed with smoothSame(windowMin) (mirrors the research view's orange line);
+// sentiment is the server's 15-min-smoothed score. Each bucket value is the mean
+// of the per-minute smoothed values over the minutes it spans, so the overlays
+// stay registered to the candle x-axis at any timeframe.
 export function overlaySeries(
   rawCandles: Candle[],
   social: SocialSeries | null,
@@ -147,25 +162,47 @@ export function overlaySeries(
 ): { density: LinePoint[]; sentiment: LinePoint[] } {
   if (!social || !rawCandles.length) return { density: [], sentiment: [] }
 
-  const densSmooth = smoothSame(social.density || [], windowMin)
-  const densByLabel = new Map<string, number>()
-  ;(social.labels || []).forEach((l, i) => densByLabel.set(l, densSmooth[i]))
-  const sentByLabel = new Map<string, number>()
-  ;(social.sent_labels || []).forEach((l, i) => sentByLabel.set(l, (social.scores_smooth || [])[i]))
+  const minTime = Number(rawCandles[0]?.time ?? 0) - tfMin * 60
+  const maxTime = Number(rawCandles[rawCandles.length - 1]?.time ?? 0) + tfMin * 60
+  const inVisibleRange = (t: number) => Number.isFinite(t) && t >= minTime && t <= maxTime
+  const add = (acc: Map<number, { sum: number; n: number }>, time: number, value: number | undefined) => {
+    if (!Number.isFinite(time) || !Number.isFinite(value as number) || !inVisibleRange(time)) return
+    const bucket = bucketStart(time, tfMin)
+    const a = acc.get(bucket) || { sum: 0, n: 0 }
+    a.sum += value as number
+    a.n += 1
+    acc.set(bucket, a)
+  }
 
+  const densSmooth = smoothSame(social.density || [], windowMin)
   const dAcc = new Map<number, { sum: number; n: number }>()
   const sAcc = new Map<number, { sum: number; n: number }>()
-  for (const c of rawCandles) {
-    const timeNum: number = typeof c.time === 'string' ? new Date(c.time).getTime() / 1000 : (c.time as number)
-    const t = bucketStart(timeNum, tfMin)
-    const label = etLabel(timeNum)
-    if (densByLabel.has(label)) {
-      const a = dAcc.get(t) || { sum: 0, n: 0 }; a.sum += densByLabel.get(label)!; a.n++; dAcc.set(t, a)
-    }
-    if (sentByLabel.has(label)) {
-      const a = sAcc.get(t) || { sum: 0, n: 0 }; a.sum += sentByLabel.get(label)!; a.n++; sAcc.set(t, a)
+
+  // Preferred path: use real unix timestamps from the backend. This keeps overlays
+  // aligned on 5m/10m/15m/30m/1h charts instead of reusing the same HH:MM label
+  // across every day in a multi-day chart.
+  if (Array.isArray(social.times) && social.times.length) {
+    social.times.forEach((t, i) => add(dAcc, Number(t), densSmooth[i]))
+  } else {
+    const densByLabel = new Map<string, number>()
+    ;(social.labels || []).forEach((l, i) => densByLabel.set(l, densSmooth[i]))
+    for (const c of rawCandles) {
+      const label = etLabel(c.time)
+      if (densByLabel.has(label)) add(dAcc, c.time, densByLabel.get(label))
     }
   }
+
+  if (Array.isArray(social.sent_times) && social.sent_times.length) {
+    social.sent_times.forEach((t, i) => add(sAcc, Number(t), (social.scores_smooth || [])[i]))
+  } else {
+    const sentByLabel = new Map<string, number>()
+    ;(social.sent_labels || []).forEach((l, i) => sentByLabel.set(l, (social.scores_smooth || [])[i]))
+    for (const c of rawCandles) {
+      const label = etLabel(c.time)
+      if (sentByLabel.has(label)) add(sAcc, c.time, sentByLabel.get(label))
+    }
+  }
+
   const toLine = (acc: Map<number, { sum: number; n: number }>): LinePoint[] =>
     Array.from(acc.entries()).filter(([, v]) => v.n > 0)
       .map(([time, v]) => ({ time, value: +(v.sum / v.n).toFixed(4) }))

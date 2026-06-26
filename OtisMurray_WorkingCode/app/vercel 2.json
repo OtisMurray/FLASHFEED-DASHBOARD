@@ -1,0 +1,18 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "vite build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "comment": "Proxy all API calls to the backend. Replace the host below with your deployed backend URL (Railway gives you one automatically; on a VPS use your https domain). Because every frontend fetch uses a relative /api path, this single line wires the whole app with NO code changes.",
+      "source": "/api/:path*",
+      "destination": "https://REPLACE-WITH-YOUR-BACKEND-URL/api/:path*"
+    },
+    {
+      "comment": "SPA fallback: send client-side routes to index.html. Static assets under /assets are served from the filesystem before this rule applies.",
+      "source": "/:path*",
+      "destination": "/index.html"
+    }
+  ]
+}

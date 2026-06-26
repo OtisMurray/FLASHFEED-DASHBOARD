@@ -1,0 +1,53 @@
+# Sentiment Scout — Python dependencies (pinned to a known-good working env).
+# Covers the Flask backend + all root modules, plus the two vendored teammate
+# components the app runs: external/feedflash (FinBERT/VADER scorer) and
+# external/yosef (Stocktwits scraper). One shared venv.
+#
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements.txt
+#
+# Note: torch + transformers are large (multi-GB) — they power the FinBERT
+# (ProsusAI/finbert) sentiment scoring; the model itself downloads on first run.
+
+# ── Web backend ──────────────────────────────────────────────────────────────
+Flask==3.1.3
+Flask-Cors==6.0.0           # allow the deployed frontend's origin (FRONTEND_ORIGIN)
+APScheduler==3.11.2
+
+# ── Data fetching / scraping (Finviz, RSS, Stocktwits, article text) ─────────
+curl_cffi==0.15.0
+requests==2.32.3
+urllib3==1.26.20
+feedparser==6.0.12
+beautifulsoup4==4.12.3
+lxml==5.3.0
+newspaper3k==0.2.8   # optional article-text extraction fallback (article_processor)
+
+# ── Stores ───────────────────────────────────────────────────────────────────
+pymongo==4.17.0
+SQLAlchemy==2.0.36
+
+# ── Social sources (Bluesky=atproto, Reddit=praw; post sentiment reuses the
+#    nltk VADER dependency listed below) ──────────────────────────────────────
+atproto==0.0.68
+praw==7.8.1
+
+# ── FinBERT/VADER sentiment scoring (external/feedflash/sentiment_analyzer) ───
+torch==2.12.0
+transformers==5.11.0
+nltk==3.9.4
+joblib==1.4.2
+
+# ── Numerics / config ────────────────────────────────────────────────────────
+numpy==2.2.6
+pandas==2.3.3
+pytz==2025.1
+tqdm==4.67.3
+python-dotenv==1.0.1
+
+# ── Optional: the bundled standalone teammate tools (NOT needed to run Sentiment
+# Scout) have extra deps — e.g. external/feedflash phase4/5 dashboards and the
+# social_pipeline (streamlit, plotly, lightgbm, optuna, matplotlib, yfinance,
+# pandas_ta, newspaper3k, scikit-learn, vaderSentiment, atproto, ntscraper,
+# ib_insync, psycopg2-binary, redis). Install those only if you run those
+# scripts directly; the integrated app does not import them.

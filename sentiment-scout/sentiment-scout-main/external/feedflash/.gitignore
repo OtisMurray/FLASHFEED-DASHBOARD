@@ -1,0 +1,28 @@
+# Build artifacts
+build/
+
+# Runtime data
+feedflash.db
+feedflash.log
+
+# Web server
+flashfeed-web/node_modules/
+flashfeed-web/bun.lockb
+flashfeed-web/server.log
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.egg-info/
+
+# Node / Next.js
+node_modules/
+.next/
+*.lock

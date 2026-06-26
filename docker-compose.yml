@@ -73,7 +73,8 @@ services:
       MONGODB_URI: mongodb://mongo:27017/feedflash
       MONGO_SERVER_SELECTION_TIMEOUT_MS: ${MONGO_SERVER_SELECTION_TIMEOUT_MS:-3000}
       REDIS_URL: redis://redis:6379/0
-      FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-}
+      FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-${FINVIZ_TOKEN:-}}
+      FINVIZ_TOKEN: ${FINVIZ_TOKEN:-${FINVIZ_AUTH_TOKEN:-}}
       TRADINGVIEW_SCREENER_LIMIT: ${TRADINGVIEW_SCREENER_LIMIT:-3000}
       BENZINGA_API_KEY: ${BENZINGA_API_KEY:-}
       DOW_JONES_API_KEY: ${DOW_JONES_API_KEY:-}
@@ -152,7 +153,8 @@ services:
       MONGO_DB: feedflash
       MONGO_SERVER_SELECTION_TIMEOUT_MS: ${MONGO_SERVER_SELECTION_TIMEOUT_MS:-3000}
       REDIS_URL: redis://redis:6379/0
-      FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-}
+      FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-${FINVIZ_TOKEN:-}}
+      FINVIZ_TOKEN: ${FINVIZ_TOKEN:-${FINVIZ_AUTH_TOKEN:-}}
       TRADINGVIEW_SCREENER_LIMIT: ${TRADINGVIEW_SCREENER_LIMIT:-3000}
       BENZINGA_API_KEY: ${BENZINGA_API_KEY:-}
       DOW_JONES_API_KEY: ${DOW_JONES_API_KEY:-}
@@ -196,7 +198,8 @@ services:
       MONGO_DB: feedflash
       MONGO_SERVER_SELECTION_TIMEOUT_MS: ${MONGO_SERVER_SELECTION_TIMEOUT_MS:-3000}
       REDIS_URL: redis://redis:6379/0
-      FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-}
+      FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-${FINVIZ_TOKEN:-}}
+      FINVIZ_TOKEN: ${FINVIZ_TOKEN:-${FINVIZ_AUTH_TOKEN:-}}
       TRADINGVIEW_SCREENER_LIMIT: ${TRADINGVIEW_SCREENER_LIMIT:-3000}
       BENZINGA_API_KEY: ${BENZINGA_API_KEY:-}
       DOW_JONES_API_KEY: ${DOW_JONES_API_KEY:-}
@@ -243,6 +246,22 @@ services:
     depends_on:
       backend:
         condition: service_started
+
+
+  news-source-guard:
+    image: mongo:7
+    container_name: feedflash-news-source-guard
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_started
+    environment:
+      NEWS_SOURCE_GUARD_INTERVAL_SEC: ${NEWS_SOURCE_GUARD_INTERVAL_SEC:-120}
+    volumes:
+      - ./scripts/news_source_guard.js:/scripts/news_source_guard_runtime.js:ro
+      - ./scripts/news_source_guard_loop.sh:/scripts/news_source_guard_loop.sh:ro
+    command: ["sh", "/scripts/news_source_guard_loop.sh"]
+
 
 volumes:
   hf_sentiment_cache:

@@ -1,0 +1,13 @@
+# ── Anthropic API (for Claude sentiment analysis) ────────────────────────
+# Get your key at: https://console.anthropic.com/
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+
+# ── MongoDB Connection ────────────────────────────────────────────────────
+# Local MongoDB (default — no password needed for local dev)
+MONGODB_URI=mongodb://localhost:27017/feedflash
+
+# OR MongoDB Atlas free cluster (cloud):
+# MONGODB_URI=mongodb+srv://<user>:<password>@cluster0.xxxxx.mongodb.net/feedflash
+
+# ── Server port ───────────────────────────────────────────────────────────
+PORT=3001

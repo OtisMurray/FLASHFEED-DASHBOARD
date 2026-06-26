@@ -1,0 +1,11 @@
+curl_cffi>=0.7,<1.0
+pymongo>=4.6,<5.0
+python-dotenv>=1.0,<2.0
+atproto>=0.0.50
+redis>=5.0,<6.0
+psycopg[binary]>=3.1,<4.0
+vaderSentiment>=3.3,<4.0
+yfinance>=0.2,<1.0
+feedparser>=6.0,<7.0
+requests>=2.31,<3.0
+ib_insync>=0.9.86,<1.0

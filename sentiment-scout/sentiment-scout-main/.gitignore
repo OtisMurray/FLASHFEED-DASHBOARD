@@ -1,0 +1,39 @@
+__pycache__/
+*.pyc
+.DS_Store
+# Runtime state — databases & live-mutating artifacts (never track; the running
+# Flask server writes these continuously, which stalls git's index refresh)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+ruvector.db
+sentiment_screener.db
+insights_output.json
+.env
+user_keywords.txt
+
+# Machine-specific Claude instructions (per-developer; never commit)
+CLAUDE.local.md
+
+# React frontend (Vite) — never commit installed deps, build output, or env
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+ui_settings.json
+
+# Defensive: temp clone of the upstream FlashFeed repo (normally kept in /tmp)
+flashfeed-otis/
+
+# Vendored external codebases (external/feedflash, external/yosef): the CODE is
+# tracked; their runtime artifacts are ignored. DBs/__pycache__/*.pyc/.env are
+# already covered above; add logs and the large regenerated screener snapshot
+# (sentiment_keywords.csv stays tracked — it's code data, not runtime).
+*.log
+external/**/finviz.csv
+
+# Gitignored runtime dir for the vendored components' writable data
+# (feedflash.db, the Yosef ticker CSV, …) — empty on a fresh clone, populates on
+# first run. Writable defaults point here, never into the tracked external/ tree.
+var/

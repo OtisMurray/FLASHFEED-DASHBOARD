@@ -1,0 +1,33 @@
+# Build artifacts
+build/
+**/node_modules/
+flashfeed-web/dashboard/.next/
+flashfeed-web/dashboard/out/
+
+# Runtime data (mounted via volume)
+feedflash.db
+feedflash.db-shm
+feedflash.db-wal
+feedflash.log
+flashfeed-web/server.log
+
+# Python caches
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Git
+.git/
+.gitmodules
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Large data dirs not needed at runtime
+ds440-rohan-integration/data/
+ds440-rohan-integration/tests/

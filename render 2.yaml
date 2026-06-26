@@ -1,0 +1,44 @@
+# Render Blueprint — deploys the FlashFeed backend (Express API + Python news fetchers)
+# from Infrastructure/server/Dockerfile. The frontend goes on Vercel/Netlify (see DEPLOY-FREE.md).
+#
+# How to use: push this repo to GitHub, then on Render: New + > Blueprint > pick this repo.
+# Render reads this file, builds the Docker image, and prompts you for the two secret values
+# (MONGODB_URI, FINVIZ_AUTH_TOKEN). Everything else is preset below.
+
+services:
+  - type: web
+    name: flashfeed-api
+    runtime: docker
+    dockerfilePath: ./Infrastructure/server/Dockerfile
+    dockerContext: .                 # build context = repo root (the image COPYs 1_News, config, etc.)
+    dockerCommand: npm start         # production start (node index.js) — overrides the image's nodemon dev CMD
+    plan: free                       # free instance (sleeps after ~15 min idle; keep-warm step in DEPLOY-FREE.md)
+    healthCheckPath: /api/health     # Render pings this to know the service is up
+    autoDeploy: true                 # redeploy on git push
+    envVars:
+      # ---- secrets: leave blank here, Render will prompt you in the dashboard ----
+      - key: MONGODB_URI             # your MongoDB Atlas connection string (mongodb+srv://...)
+        sync: false
+      - key: FINVIZ_AUTH_TOKEN       # your Finviz Elite token (paid sub — keep private)
+        sync: false
+
+      # ---- preset, non-secret ----
+      - key: MONGO_DB
+        value: flashfeed
+      - key: MONGO_SERVER_SELECTION_TIMEOUT_MS
+        value: "8000"
+      - key: KAFKA_PUBLISH_NEWS      # false on the free deploy: no Kafka/Redis here, app reads straight from Mongo
+        value: "false"
+      - key: DEFAULT_FETCH_MODE
+        value: fast
+      - key: SOCIAL_MOMENTUM_LIMIT
+        value: "10"
+      - key: SEC_USER_AGENT          # SEC requires a contact UA; change the email to yours
+        value: "FlashFeed/1.0 (contact: you@example.com)"
+      - key: NODE_VERSION
+        value: "20"
+
+      # ---- OPTIONAL paid-source keys: only add in the dashboard if you actually have them.
+      #      News still works without these (RSS/Finviz cover the core feed):
+      #      BENZINGA_API_KEY, X_BEARER_TOKEN, REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET,
+      #      DOW_JONES_API_KEY, SCHWAB_ACCESS_TOKEN, OPTIONS_API_KEY, FUTURES_API_KEY

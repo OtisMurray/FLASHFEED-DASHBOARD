@@ -1,0 +1,22 @@
+# Data
+*.db
+*.xlsx
+*.csv
+*.json
+
+# Outputs
+plots/
+reports/
+daily_reports/
+
+# Python
+__pycache__/
+*.pyc
+
+# Node / frontend
+node_modules/
+.next/
+
+# OS
+.DS_Store
+Thumbs.db

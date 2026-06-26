@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-u",
+        "dashboard.py"
+      ],
+      "port": 5050,
+      "autoPort": false
+    }
+  ]
+}

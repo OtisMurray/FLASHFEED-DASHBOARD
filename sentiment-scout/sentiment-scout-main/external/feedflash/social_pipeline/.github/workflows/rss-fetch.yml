@@ -1,0 +1,41 @@
+name: RSS Feed Fetch
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # every 15 minutes (same cadence as social pipeline)
+  workflow_dispatch:
+
+jobs:
+  rss-fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install \
+            feedparser>=6.0 \
+            requests>=2.31 \
+            "psycopg[binary]>=3.1,<4.0" \
+            "vaderSentiment>=3.3,<4.0" \
+            "python-dotenv>=1.0,<2.0"
+
+      - name: Migrate DB schema (idempotent)
+        env:
+          POSTGRES_DSN: ${{ secrets.POSTGRES_DSN }}
+        run: python scripts/db_migrate.py
+
+      - name: Fetch RSS feeds + score sentiment
+        timeout-minutes: 8
+        env:
+          POSTGRES_DSN:          ${{ secrets.POSTGRES_DSN }}
+          SENTIMENT_SERVICE_URL: ${{ secrets.SENTIMENT_SERVICE_URL }}
+        run: python scripts/fetch_rss.py

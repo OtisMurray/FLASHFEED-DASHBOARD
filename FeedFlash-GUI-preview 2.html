@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>FeedFlash — GUI preview</title>
+<style>
+  :root{
+    --bg:#0a0e14; --surface:#121922; --surface2:#0f151d; --border:#1f2a37;
+    --accent:#38bdf8; --accent-dim:rgba(56,189,248,.14);
+    --neutral:#8b9bb0; --muted:#5a6b80; --text:#e6edf3;
+    --up:#34d399; --down:#f87171; --amber:#fbbf24; --indigo:#818cf8; --violet:#a78bfa;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px}
+  .mono{font-family:var(--mono)}
+  .up{color:var(--up)} .down{color:var(--down)} .neu{color:var(--neutral)}
+  /* top bar */
+  .topbar{display:flex;align-items:center;gap:16px;height:52px;padding:0 16px;background:var(--surface2);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:20}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700;letter-spacing:.2px}
+  .brand .dot{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#38bdf8,#6366f1);display:grid;place-items:center;font-size:13px;color:#04121f;font-weight:800}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-size:11px;border:1px solid var(--border);color:var(--neutral)}
+  .pill .live{width:7px;height:7px;border-radius:50%;background:var(--up);box-shadow:0 0 0 3px rgba(52,211,153,.18)}
+  .stat{font-size:11px;color:var(--neutral)} .stat b{color:var(--text);font-family:var(--mono)}
+  .spacer{flex:1}
+  .seg{display:flex;border:1px solid var(--border);border-radius:7px;overflow:hidden}
+  .seg button{background:transparent;color:var(--neutral);border:0;padding:5px 10px;font-size:11px;cursor:pointer}
+  .seg button.on{background:var(--accent-dim);color:var(--accent)}
+  .btn{background:var(--accent);color:#04121f;border:0;border-radius:7px;padding:6px 12px;font-weight:600;font-size:12px;cursor:pointer}
+  /* tab nav */
+  .nav{display:flex;gap:2px;padding:0 12px;background:var(--surface2);border-bottom:1px solid var(--border);overflow-x:auto}
+  .nav button{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--neutral);padding:10px 14px;font-size:13px;cursor:pointer;white-space:nowrap}
+  .nav button:hover{color:var(--text)}
+  .nav button.on{color:#fff;border-bottom-color:var(--accent)}
+  main{padding:16px;max-width:1600px;margin:0 auto}
+  h1.page{font-size:17px;font-weight:600;margin:0 0 12px}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+  .sel{background:var(--bg);border:1px solid var(--border);color:var(--neutral);border-radius:6px;padding:5px 8px;font-size:12px}
+  /* cards / grid */
+  .metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px}
+  .metric{background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:9px 12px}
+  .metric .v{font-family:var(--mono);font-size:18px;font-weight:600}
+  .metric .l{font-size:10px;text-transform:uppercase;color:var(--neutral);margin-top:2px;letter-spacing:.4px}
+  .metric .s{font-size:10px;color:var(--muted);margin-top:2px}
+  .grid2{display:grid;grid-template-columns:1.25fr .9fr;gap:12px;margin-bottom:12px}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  .panel .head{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;border-bottom:1px solid var(--border)}
+  .panel .head .t{font-size:11px;text-transform:uppercase;color:var(--neutral);font-weight:600;letter-spacing:.4px}
+  .panel .head .x{font-size:10px;color:var(--muted)}
+  .heat{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:10px}
+  .tile{border-radius:7px;padding:9px;min-height:74px;border:1px solid}
+  .tile.u{background:rgba(52,211,153,.08);border-color:rgba(52,211,153,.22)}
+  .tile.d{background:rgba(248,113,113,.08);border-color:rgba(248,113,113,.22)}
+  .tile .s{font-size:12px;color:#fff} .tile .p{font-family:var(--mono);font-size:18px;margin-top:2px}
+  .tile .m{font-size:10px;color:var(--neutral);margin-top:3px}
+  .news-list{max-height:240px;overflow:auto}
+  .news-item{display:block;padding:8px 12px;border-bottom:1px solid rgba(31,42,55,.6);text-decoration:none;color:inherit}
+  .news-item:hover{background:rgba(56,189,248,.05)}
+  .news-meta{display:flex;gap:8px;align-items:center;font-size:10px;margin-bottom:3px}
+  .chip{font-family:var(--mono);color:var(--accent)}
+  .news-title{font-size:12px;color:#dbe4ee;line-height:1.35}
+  .sent{font-size:10px;padding:1px 6px;border-radius:4px;font-weight:600}
+  .sent.b{background:rgba(52,211,153,.14);color:var(--up)} .sent.r{background:rgba(248,113,113,.14);color:var(--down)} .sent.n{background:rgba(139,155,176,.14);color:var(--neutral)}
+  .movers{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:12px}
+  .mover .head{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:1px solid var(--border)}
+  .mover .tk{font-family:var(--mono);color:var(--accent);font-weight:700}
+  .mover .co{font-size:10px;color:var(--neutral);max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .presets{display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:6px}
+  .preset{padding:4px 10px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--neutral);font-size:12px;white-space:nowrap;cursor:pointer}
+  .preset.on{background:var(--accent-dim);border-color:rgba(56,189,248,.5);color:var(--accent)}
+  .vmodes{display:flex;gap:2px;border-bottom:1px solid var(--border);margin:6px 0 12px}
+  .vmodes button{background:transparent;border:0;border-bottom:2px solid transparent;color:var(--neutral);padding:7px 12px;font-size:12px;text-transform:capitalize;cursor:pointer}
+  .vmodes button.on{color:#fff;border-bottom-color:var(--accent)}
+  /* table */
+  .tbl-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:auto}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  thead th{position:sticky;top:0;background:#0e151e;color:var(--neutral);text-align:right;font-weight:600;font-size:10px;letter-spacing:.4px;padding:8px 10px;border-bottom:1px solid var(--border);white-space:nowrap}
+  thead th:first-child,thead th:nth-child(2),thead th:nth-child(3),thead th:nth-child(9){text-align:left}
+  tbody td{padding:7px 10px;border-bottom:1px solid rgba(31,42,55,.5);text-align:right;font-family:var(--mono);white-space:nowrap}
+  tbody td.l{text-align:left;font-family:var(--sans)}
+  tbody tr:hover{background:rgba(56,189,248,.04)}
+  .tk2{font-family:var(--mono);color:var(--accent);font-weight:700}
+  .dens-bar{display:inline-block;height:6px;border-radius:3px;background:var(--indigo);vertical-align:middle;margin-left:6px;opacity:.8}
+  .win{font-size:10px;color:var(--neutral);background:rgba(139,155,176,.1);padding:1px 6px;border-radius:4px}
+  /* charts */
+  .chart-card{margin-bottom:12px}
+  .status-row{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-bottom:12px}
+  .status{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 10px}
+  .status .l{font-size:10px;text-transform:uppercase;color:var(--neutral)} .status .v{font-family:var(--mono);font-size:13px;margin-top:2px}
+  svg{display:block;width:100%}
+  .toolbar{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+  .tinput{width:140px;background:var(--bg);border:1px solid var(--border);color:#fff;border-radius:6px;padding:7px 10px;font-family:var(--mono)}
+  .tk-big{font-family:var(--mono);color:var(--accent);font-weight:800;font-size:18px;margin-left:6px}
+  .legend{display:flex;gap:14px;font-size:11px;color:var(--neutral);padding:8px 12px}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:middle}
+  .hidden{display:none}
+  .placeholder{padding:60px;text-align:center;color:var(--muted)}
+  .social-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .scard{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px}
+  .scard .pf{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+  .bar{height:8px;border-radius:4px;background:rgba(139,155,176,.15);overflow:hidden;margin:6px 0}
+  .bar > span{display:block;height:100%}
+  .note{font-size:11px;color:var(--muted);margin-top:14px;padding:10px 12px;border:1px dashed var(--border);border-radius:8px;background:rgba(56,189,248,.03)}
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand"><span class="dot">F</span> FeedFlash</div>
+    <span class="pill"><span class="live"></span> Market Open · Regular</span>
+    <span class="stat">Articles <b>1,284</b></span>
+    <span class="stat">Social <b>8.2k</b></span>
+    <span class="stat">Sources <b>11</b></span>
+    <span class="stat">DB <b style="color:var(--up)">connected</b></span>
+    <div class="spacer"></div>
+    <div class="seg"><button class="on">Fast</button><button>Full</button></div>
+    <button class="btn">↻ Fetch</button>
+  </div>
+
+  <div class="nav" id="nav">
+    <button data-tab="overview">Overview</button>
+    <button data-tab="news">News</button>
+    <button data-tab="screener" class="on">Screener</button>
+    <button data-tab="social">Social</button>
+    <button data-tab="charts">Charts</button>
+    <button data-tab="momentum">Momentum</button>
+    <button data-tab="correlation">Correlation</button>
+    <button data-tab="settings">Settings</button>
+  </div>
+
+  <main>
+    <!-- ============ SCREENER ============ -->
+    <section id="tab-screener">
+      <div class="row">
+        <h1 class="page">Market Screener</h1>
+        <div style="display:flex;gap:10px;align-items:center">
+          <span class="stat" style="text-transform:uppercase;font-size:10px">Social Window</span>
+          <select class="sel"><option>Adaptive</option><option>5m</option><option>15m</option><option>30m</option><option>1h</option><option>24h</option></select>
+          <span class="neu" id="universe-count">512 NASDAQ/NYSE/AMEX tickers</span>
+        </div>
+      </div>
+
+      <div class="metrics">
+        <div class="metric"><div class="v">512</div><div class="l">Universe</div></div>
+        <div class="metric"><div class="v" style="color:#7dd3fc">498</div><div class="l">Priced</div></div>
+        <div class="metric"><div class="v up">281/214/3</div><div class="l">Breadth G/L/F</div></div>
+        <div class="metric"><div class="v" style="color:var(--indigo)">347/512</div><div class="l">Active Social</div></div>
+        <div class="metric"><div class="v" style="color:var(--violet)">93 active</div><div class="l">Avg Posts</div><div class="s">0.84/m avg density</div></div>
+      </div>
+
+      <div class="grid2">
+        <div class="panel">
+          <div class="head"><span class="t">Sector Heatmap</span><span class="x">filtered universe</span></div>
+          <div class="heat" id="heat"></div>
+        </div>
+        <div class="panel">
+          <div class="head"><span class="t">Mover News</span><span class="x" id="mn-count">8 latest</span></div>
+          <div class="news-list" id="mover-news"></div>
+        </div>
+      </div>
+
+      <div class="movers" id="movers"></div>
+
+      <div class="presets" id="presets"></div>
+
+      <div class="vmodes" id="vmodes">
+        <button class="on">overview</button><button>performance</button><button>technical</button><button>sentiment</button>
+      </div>
+
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th>TICKER</th><th>COMPANY</th><th>EXCH</th><th>PRICE</th><th>CHG%</th><th>VOLUME</th><th>REL VOL</th><th>MKT CAP</th><th>SECTOR</th>
+            <th>NEWS SENT</th><th>ST SENT</th><th>ST DENS</th><th>ST MSGS</th><th>WIN</th>
+          </tr></thead>
+          <tbody id="screener-body"></tbody>
+        </table>
+      </div>
+      <div class="note">This is a faithful visual reproduction of the live UI (same dark theme, layout, and the three sentiment columns — <b>NEWS SENT</b>, <b>ST SENT</b>, <b>ST DENS</b> — plus ST MSGS/WIN). The running app renders the same views from your Express API + Mongo/Redis. Data shown here is representative sample data.</div>
+    </section>
+
+    <!-- ============ CHARTS ============ -->
+    <section id="tab-charts" class="hidden">
+      <div class="toolbar">
+        <input class="tinput" value="AAPL"/>
+        <select class="sel"><option>1 Day</option><option>5 Days</option><option>1 Month</option></select>
+        <select class="sel"><option>1 Minute</option><option>5 Minute</option><option>15 Minute</option></select>
+        <button class="btn">Load Chart</button>
+        <span class="tk-big">AAPL</span>
+      </div>
+      <div class="status-row">
+        <div class="status"><div class="l">Price</div><div class="v up">live</div></div>
+        <div class="status"><div class="l">Source</div><div class="v">Yahoo</div></div>
+        <div class="status"><div class="l">Social</div><div class="v up">live</div></div>
+        <div class="status"><div class="l">News Markers</div><div class="v">4</div></div>
+        <div class="status"><div class="l">Predictions</div><div class="v">1</div></div>
+        <div class="status"><div class="l">Bars</div><div class="v">110</div></div>
+      </div>
+      <div class="panel chart-card">
+        <div class="head"><span class="t">1 Minute Price + Bollinger Bands</span></div>
+        <div class="legend"><span><i style="background:var(--up)"></i>up candle</span><span><i style="background:var(--down)"></i>down candle</span><span><i style="background:#3b82f6"></i>bollinger</span><span><i style="background:var(--up)"></i>▲ bullish news</span><span><i style="background:var(--down)"></i>▼ bearish news</span></div>
+        <div id="candles"></div>
+      </div>
+      <div class="panel chart-card">
+        <div class="head"><span class="t">Rolling Message Density</span></div>
+        <div id="density"></div>
+      </div>
+      <div class="panel chart-card">
+        <div class="head"><span class="t">Rolling Message Sentiment</span></div>
+        <div id="sentiment"></div>
+      </div>
+    </section>
+
+    <!-- ============ NEWS ============ -->
+    <section id="tab-news" class="hidden">
+      <h1 class="page">News Feed</h1>
+      <div class="tbl-wrap"><div id="news-feed"></div></div>
+    </section>
+
+    <!-- ============ SOCIAL ============ -->
+    <section id="tab-social" class="hidden">
+      <h1 class="page">Social Sentiment</h1>
+      <div class="social-grid" id="social-grid"></div>
+    </section>
+
+    <!-- simple placeholders -->
+    <section id="tab-overview" class="hidden"><div class="placeholder">Overview — aggregated stats, top movers, latest mover-news & social preview.<br>(Reproduction focuses on Screener, Charts, News and Social.)</div></section>
+    <section id="tab-momentum" class="hidden"><div class="placeholder">Momentum — ranked momentum cards with intraday sparklines.</div></section>
+    <section id="tab-correlation" class="hidden"><div class="placeholder">Correlation — sentiment-vs-price correlation table.</div></section>
+    <section id="tab-settings" class="hidden"><div class="placeholder">Settings — data source connections (Finviz Elite, TradingView, TD, IB): URL + token / login.</div></section>
+  </main>
+
+<script>
+const SECTORS=['Technology','Healthcare','Financial','Energy','Consumer','Industrials','Communication','Materials'];
+const ROWS=[
+ ['NVDA','NVIDIA Corp','NASDAQ',128.42,7.8,'92.4M',2.9,'3.1T','Technology',0.74,0.66,1.92,612,5],
+ ['TSLA','Tesla Inc','NASDAQ',244.10,5.2,'88.1M',2.3,'778B','Consumer',0.31,0.58,2.10,540,5],
+ ['AAPL','Apple Inc','NASDAQ',229.87,1.4,'54.0M',1.2,'3.5T','Technology',0.22,0.18,0.74,288,15],
+ ['SMCI','Super Micro','NASDAQ',48.90,12.6,'41.2M',4.1,'28B','Technology',0.58,0.71,2.34,820,5],
+ ['PLTR','Palantir Tech','NYSE',41.20,4.3,'36.7M',1.8,'94B','Technology',0.49,0.52,1.41,470,15],
+ ['AMD','Adv Micro Devices','NASDAQ',162.55,3.1,'48.9M',1.6,'262B','Technology',0.36,0.30,1.18,392,15],
+ ['COIN','Coinbase Global','NASDAQ',201.33,-3.4,'12.1M',1.9,'49B','Financial',-0.41,-0.22,1.05,355,15],
+ ['MRNA','Moderna Inc','NASDAQ',74.18,-5.5,'9.8M',2.2,'28B','Healthcare',-0.68,-0.44,0.92,300,30],
+ ['SOFI','SoFi Technologies','NASDAQ',8.94,6.1,'63.2M',2.7,'9.5B','Financial',0.44,0.49,1.62,610,5],
+ ['HOOD','Robinhood Mkts','NASDAQ',24.71,4.8,'29.4M',1.7,'21B','Financial',0.38,0.41,1.33,420,15],
+ ['XOM','Exxon Mobil','NYSE',118.20,-1.2,'14.6M',0.9,'470B','Energy',-0.12,-0.05,0.41,150,30],
+ ['SNOW','Snowflake Inc','NYSE',172.40,-2.1,'6.3M',1.1,'57B','Technology',-0.22,-0.18,0.63,210,30],
+ ['UBER','Uber Technologies','NYSE',71.90,2.2,'18.4M',1.0,'150B','Technology',0.28,0.22,0.71,260,15],
+ ['DKNG','DraftKings Inc','NASDAQ',39.55,3.7,'11.2M',1.3,'19B','Consumer',0.33,0.36,0.98,300,15],
+ ['RIOT','Riot Platforms','NASDAQ',9.12,9.4,'33.5M',3.2,'3.0B','Financial',0.51,0.63,2.21,700,5],
+ ['F','Ford Motor Co','NYSE',11.03,-0.8,'42.1M',0.8,'44B','Consumer',-0.08,0.02,0.52,180,30],
+ ['ARM','Arm Holdings','NASDAQ',138.66,5.9,'10.9M',2.0,'145B','Technology',0.55,0.48,1.55,410,5],
+ ['CRWD','CrowdStrike','NASDAQ',342.10,2.7,'4.1M',1.2,'83B','Technology',0.41,0.33,0.88,240,15],
+];
+const fmtSent=v=>{const c=v>0.15?'up':v<-0.15?'down':'neu';const s=v>0?'+'+v.toFixed(2):v.toFixed(2);return `<span class="${c}">${s}</span>`};
+const chg=v=>`<span class="${v>=0?'up':'down'}">${v>=0?'+':''}${v.toFixed(1)}%</span>`;
+
+// screener table
+document.getElementById('screener-body').innerHTML = ROWS.map(r=>{
+  const densW=Math.min(60,r[11]*22);
+  return `<tr>
+    <td class="l"><span class="tk2">${r[0]}</span></td>
+    <td class="l" style="color:#cdd8e4">${r[1]}</td>
+    <td class="l neu">${r[2]}</td>
+    <td>${r[3].toFixed(2)}</td>
+    <td>${chg(r[4])}</td>
+    <td class="neu">${r[5]}</td>
+    <td>${r[6].toFixed(1)}</td>
+    <td class="neu">${r[7]}</td>
+    <td class="l neu">${r[8]}</td>
+    <td>${fmtSent(r[9])}</td>
+    <td>${fmtSent(r[10])}</td>
+    <td>${r[11].toFixed(2)}<span class="dens-bar" style="width:${densW}px"></span></td>
+    <td class="neu">${r[12]}</td>
+    <td><span class="win">${r[13]}m</span></td>
+  </tr>`;
+}).join('');
+
+// heatmap
+const heat=[['Technology',2.9,42,28],['Financial',1.8,31,19],['Consumer',1.2,26,14],['Healthcare',-1.4,18,9],['Energy',-0.6,12,5],['Communication',0.8,15,7],['Industrials',0.4,20,8],['Materials',-0.9,9,3]];
+document.getElementById('heat').innerHTML=heat.map(h=>`<div class="tile ${h[1]>=0?'u':'d'}">
+  <div class="s">${h[0]}</div>
+  <div class="p ${h[1]>=0?'up':'down'}">${h[1]>=0?'+':''}${h[1].toFixed(1)}%</div>
+  <div class="m">${h[3]}/${h[2]} active social</div>
+  <div class="m">${(40+h[2]).toLocaleString()} avg posts · ${(0.4+h[2]/50).toFixed(2)}/m</div>
+</div>`).join('');
+
+// mover news
+const NEWS=[
+ ['NVDA','Business Wire','NVIDIA tops Q2 estimates, raises full-year guidance','b'],
+ ['SMCI','PR Newswire','Super Micro announces $2B buyback and dividend increase','b'],
+ ['MRNA','Dow Jones','Moderna downgraded to Hold at major bank on valuation','r'],
+ ['TSLA','Benzinga','Tesla lands multi-year cloud partnership for fleet AI','b'],
+ ['COIN','SEC','Coinbase under SEC inquiry over accounting practices','r'],
+ ['ARM','Business Wire','Arm unveils next-gen AI accelerator IP','b'],
+ ['SOFI','GlobeNewswire','SoFi receives expanded banking charter approval','b'],
+ ['XOM','Reuters','Exxon misses revenue, trims outlook amid soft demand','r'],
+];
+const newsHTML=NEWS.map((n,i)=>`<a class="news-item">
+  <div class="news-meta"><span class="chip">${n[0]}</span><span class="neu">${n[1]}</span><span style="margin-left:auto" class="sent ${n[3]==='b'?'b':'r'}">${n[3]==='b'?'bullish':'bearish'}</span></div>
+  <div class="news-title">${n[2]}</div></a>`).join('');
+document.getElementById('mover-news').innerHTML=newsHTML;
+
+// top mover cards w/ sparkline
+function spark(up){
+  let p=20,pts=[];for(let i=0;i<28;i++){p+=(Math.random()-0.42)*3*(up?1:-1);pts.push(p)}
+  const min=Math.min(...pts),max=Math.max(...pts),W=180,H=110;
+  const d=pts.map((v,i)=>`${i?'L':'M'}${(i/(pts.length-1)*W).toFixed(1)},${(H-8-((v-min)/(max-min||1))*(H-20)).toFixed(1)}`).join(' ');
+  const col=up?'#34d399':'#f87171';
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:110px"><path d="${d}" fill="none" stroke="${col}" stroke-width="1.6"/><path d="${d} L${W},${H} L0,${H} Z" fill="${col}" opacity="0.08"/></svg>`;
+}
+const TOP=[['NVDA','NVIDIA Corp',7.8,5],['SMCI','Super Micro',12.6,5],['RIOT','Riot Platforms',9.4,5],['ARM','Arm Holdings',5.9,5]];
+document.getElementById('movers').innerHTML=TOP.map(t=>`<div class="panel mover">
+  <div class="head"><div><div class="tk">${t[0]}</div><div class="co">${t[1]}</div></div>
+  <div style="text-align:right"><div class="up mono">+${t[2].toFixed(1)}%</div><div class="co">${t[3]}m window</div></div></div>
+  <div>${spark(true)}</div></div>`).join('');
+
+// presets
+const PRESETS=['Top Gainers','Top Losers','Unusual Volume','Bullish News','Bearish News','Oversold','Overbought'];
+document.getElementById('presets').innerHTML=PRESETS.map((p,i)=>`<button class="preset ${i===0?'on':''}">${p}</button>`).join('');
+
+// ---------- charts ----------
+function genCandles(n){let p=210,out=[];for(let i=0;i<n;i++){const o=p,c=o*(1+(Math.random()-0.48)*0.012);const h=Math.max(o,c)*(1+Math.random()*0.005);const l=Math.min(o,c)*(1-Math.random()*0.005);out.push({o,h,l,c});p=c;}return out;}
+function candleSVG(){
+  const data=genCandles(80),W=1000,H=300,pad=8;
+  const all=data.flatMap(d=>[d.h,d.l]);const min=Math.min(...all),max=Math.max(...all);
+  const x=i=>pad+i*((W-2*pad)/data.length);const y=v=>H-pad-((v-min)/(max-min))*(H-2*pad);
+  const cw=(W-2*pad)/data.length*0.62;
+  // bollinger
+  const ma=data.map((_,i)=>{const s=data.slice(Math.max(0,i-10),i+1);return s.reduce((a,d)=>a+d.c,0)/s.length;});
+  const up=ma.map(m=>m*1.012),lo=ma.map(m=>m*0.988);
+  const path=arr=>arr.map((v,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ');
+  let body='';
+  data.forEach((d,i)=>{const col=d.c>=d.o?'#34d399':'#f87171';
+    body+=`<line x1="${x(i).toFixed(1)}" y1="${y(d.h).toFixed(1)}" x2="${x(i).toFixed(1)}" y2="${y(d.l).toFixed(1)}" stroke="${col}" stroke-width="1"/>`;
+    const yo=y(d.o),yc=y(d.c);body+=`<rect x="${(x(i)-cw/2).toFixed(1)}" y="${Math.min(yo,yc).toFixed(1)}" width="${cw.toFixed(1)}" height="${(Math.abs(yc-yo)||1).toFixed(1)}" fill="${col}"/>`;
+  });
+  // grid
+  let grid='';for(let g=0;g<=4;g++){const gy=pad+g*(H-2*pad)/4;grid+=`<line x1="0" y1="${gy}" x2="${W}" y2="${gy}" stroke="#1f2a37" stroke-width="0.5"/>`;}
+  // news markers
+  const marks=[[14,true],[33,false],[52,true],[70,false]];
+  let mk='';marks.forEach(([i,b])=>{const px=x(i),py=b?y(data[i].l)+14:y(data[i].h)-14;const col=b?'#34d399':'#f87171';
+    mk+=`<polygon points="${px},${b?py-9:py+9} ${px-6},${b?py:py} ${px+6},${b?py:py}" fill="${col}"/>`;});
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:300px">
+    ${grid}
+    <path d="${path(up)}" fill="none" stroke="#3b82f6" stroke-width="1" opacity="0.55"/>
+    <path d="${path(lo)}" fill="none" stroke="#3b82f6" stroke-width="1" opacity="0.55"/>
+    <path d="${path(up)} L${path(lo).slice(1).split(' ').reverse().join(' ')}" fill="#3b82f6" opacity="0.05"/>
+    ${body}${mk}
+  </svg>`;
+}
+function lineSVG(color,bipolar){
+  const W=1000,H=120,pad=6,n=80;let v=bipolar?0:0.4,pts=[];
+  for(let i=0;i<n;i++){v=Math.max(bipolar?-1:0,Math.min(bipolar?1:1,v+(Math.random()-0.5)*0.22));pts.push(v);}
+  const min=bipolar?-1:0,max=1;const x=i=>pad+i*((W-2*pad)/n);const y=t=>H-pad-((t-min)/(max-min))*(H-2*pad);
+  const d=pts.map((t,i)=>`${i?'L':'M'}${x(i).toFixed(1)},${y(t).toFixed(1)}`).join(' ');
+  const zero=bipolar?`<line x1="0" y1="${y(0).toFixed(1)}" x2="${W}" y2="${y(0).toFixed(1)}" stroke="#334155" stroke-width="0.7" stroke-dasharray="3 3"/>`:'';
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="height:120px">${zero}
+    <path d="${d} L${W},${H} L0,${H} Z" fill="${color}" opacity="0.10"/>
+    <path d="${d}" fill="none" stroke="${color}" stroke-width="1.6"/></svg>`;
+}
+document.getElementById('candles').innerHTML=candleSVG();
+document.getElementById('density').innerHTML=lineSVG('#818cf8',false);
+document.getElementById('sentiment').innerHTML=lineSVG('#38bdf8',true);
+
+// news feed
+const FEED=NEWS.concat(NEWS).map((n,i)=>n);
+document.getElementById('news-feed').innerHTML=FEED.map((n,i)=>`<a class="news-item" style="display:flex;gap:14px;align-items:center;padding:11px 14px">
+  <span class="chip" style="width:54px">${n[0]}</span>
+  <span style="flex:1"><div class="news-title">${n[2]}</div><div class="news-meta" style="margin-top:3px"><span class="neu">${n[1]}</span><span class="neu">· ${(i+1)*7}m ago</span></div></span>
+  <span class="sent ${n[3]==='b'?'b':'r'}">${n[3]==='b'?'bullish':'bearish'}</span>
+</a>`).join('');
+
+// social
+const PLAT=[['StockTwits',0.42,1.8,3200],['Reddit',0.18,1.2,2600],['Bluesky',0.31,0.6,1400],['X / Twitter',-0.12,1.5,900],['Discord',0.22,0.4,100],['News wires',0.36,0.9,'—']];
+document.getElementById('social-grid').innerHTML=PLAT.map(p=>{
+  const pos=Math.round(((p[1]+1)/2)*100);
+  return `<div class="scard"><div class="pf"><b>${p[0]}</b><span class="mono ${p[1]>=0?'up':'down'}">${p[1]>=0?'+':''}${p[1].toFixed(2)}</span></div>
+  <div class="bar"><span style="width:${pos}%;background:${p[1]>=0?'var(--up)':'var(--down)'}"></span></div>
+  <div class="neu" style="font-size:11px">density ${p[2].toFixed(1)}/m · ${typeof p[3]==='number'?p[3].toLocaleString():p[3]} msgs</div></div>`;
+}).join('');
+
+// tabs
+const nav=document.getElementById('nav');
+nav.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+  [...nav.children].forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  document.querySelectorAll('main > section').forEach(s=>s.classList.add('hidden'));
+  document.getElementById('tab-'+b.dataset.tab).classList.remove('hidden');
+});
+</script>
+</body>
+</html>

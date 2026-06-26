@@ -1,0 +1,272 @@
+{
+  "database": {
+    "path": "./feedflash.db"
+  },
+  "sources": {
+    "rss_feeds": [
+      {
+        "name": "CNBC Markets",
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",
+        "category": "markets"
+      },
+      {
+        "name": "CNBC Finance",
+        "url": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664",
+        "category": "markets"
+      },
+      {
+        "name": "MarketWatch Top Stories",
+        "url": "https://feeds.marketwatch.com/marketwatch/topstories/",
+        "category": "markets"
+      },
+      {
+        "name": "MarketWatch Breaking",
+        "url": "https://feeds.marketwatch.com/marketwatch/bulletins/",
+        "category": "markets"
+      },
+      {
+        "name": "Yahoo Finance",
+        "url": "https://finance.yahoo.com/news/rssindex",
+        "category": "markets"
+      },
+      {
+        "name": "Benzinga",
+        "url": "https://www.benzinga.com/feed/",
+        "category": "markets"
+      },
+      {
+        "name": "Seeking Alpha",
+        "url": "https://seekingalpha.com/market_currents.xml",
+        "category": "markets"
+      },
+      {
+        "name": "The Motley Fool",
+        "url": "https://www.fool.com/feeds/index.aspx?id=fool-headlines",
+        "category": "equities"
+      },
+      {
+        "name": "Investopedia",
+        "url": "https://www.investopedia.com/feedbuilder/feed/getNewsFeed",
+        "category": "markets"
+      },
+      {
+        "name": "Reuters Business",
+        "url": "https://feeds.reuters.com/reuters/businessNews",
+        "category": "economy"
+      },
+      {
+        "name": "Reuters Finance",
+        "url": "https://feeds.reuters.com/reuters/financialsNews",
+        "category": "economy"
+      },
+      {
+        "name": "BBC Business",
+        "url": "https://feeds.bbci.co.uk/news/business/rss.xml",
+        "category": "economy"
+      },
+      {
+        "name": "Federal Reserve",
+        "url": "https://www.federalreserve.gov/feeds/press_all.xml",
+        "category": "economy"
+      },
+      {
+        "name": "Forbes Business",
+        "url": "https://www.forbes.com/business/feed/",
+        "category": "economy"
+      },
+      {
+        "name": "ZeroHedge",
+        "url": "https://cms.zerohedge.com/fullrss2.xml",
+        "category": "equities"
+      },
+      {
+        "name": "Business Insider Finance",
+        "url": "https://feeds2.feedburner.com/businessinsider",
+        "category": "equities"
+      },
+      {
+        "name": "SEC EDGAR 8-K",
+        "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&dateb=&owner=include&count=40&search_text=&output=atom",
+        "category": "filings"
+      },
+      {
+        "name": "SEC EDGAR 10-Q",
+        "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-Q&dateb=&owner=include&count=40&search_text=&output=atom",
+        "category": "filings"
+      },
+      {
+        "name": "SEC EDGAR 10-K",
+        "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-K&dateb=&owner=include&count=40&search_text=&output=atom",
+        "category": "filings"
+      },
+      {
+        "name": "PR Newswire",
+        "url": "https://www.prnewswire.com/rss/news-releases-list.rss",
+        "category": "press_releases"
+      },
+      {
+        "name": "BusinessWire",
+        "url": "https://feed.businesswire.com/rss/home/?rss=G1",
+        "category": "press_releases"
+      },
+      {
+        "name": "GlobeNewswire Earnings",
+        "url": "https://www.globenewswire.com/RssFeed/subjectcode/23-Earnings",
+        "category": "press_releases"
+      },
+      {
+        "name": "GlobeNewswire M&A",
+        "url": "https://www.globenewswire.com/RssFeed/subjectcode/14-Mergers%20and%20Acquisitions",
+        "category": "press_releases"
+      },
+      {
+        "name": "FDA Drug Approvals",
+        "url": "https://www.fda.gov/drugs/resources-information-approved-drugs/rss",
+        "category": "fda"
+      },
+      {
+        "name": "FDA Medical Devices",
+        "url": "https://www.fda.gov/medical-devices/medical-device-safety/medical-device-recalls",
+        "category": "fda"
+      },
+      {
+        "name": "CoinDesk",
+        "url": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+        "category": "crypto"
+      },
+      {
+        "name": "CoinTelegraph",
+        "url": "https://cointelegraph.com/rss",
+        "category": "crypto"
+      },
+      {
+        "name": "OilPrice",
+        "url": "https://oilprice.com/rss/main",
+        "category": "commodities"
+      }
+    ]
+  },
+  "ibkr": {
+    "enabled": false,
+    "gateway_url": "https://localhost:5000",
+    "news_filters": "BZ,DJ,BRFUPDN",
+    "fetch_limit": 50,
+    "fetch_body": false,
+    "category": "markets"
+  },
+  "schwab": {
+    "enabled": false,
+    "client_id": "",
+    "client_secret": "",
+    "refresh_token": "",
+    "news_endpoint": "",
+    "fetch_limit": 50,
+    "category": "markets"
+  },
+  "finviz": {
+    "enabled": false,
+    "elite": false,
+    "email": "",
+    "password": "",
+    "watch_interval_sec": 10,
+    "category": "markets"
+  },
+  "tradingview": {
+    "enabled": true,
+    "symbol": "",
+    "fetch_limit": 50,
+    "category": "markets"
+  },
+  "impersonation": {
+    "enabled": true,
+    "preferred_browser": "chrome",
+    "max_retries": 3,
+    "backoff_base_ms": 500,
+    "backoff_max_ms": 30000,
+    "timeout_seconds": 30,
+    "connect_timeout_seconds": 10,
+    "follow_redirects": true,
+    "max_redirects": 5,
+    "verbose": false,
+    "cookie_jar": "",
+    "curl_impersonate_path": ""
+  },
+  "logging": {
+    "level": "info",
+    "file": "./feedflash.log"
+  },
+  "keyword_filter": {
+    "enabled": true,
+    "mode": "headline",
+    "keywords": [
+      "earnings",
+      "revenue",
+      "profit",
+      "loss",
+      "guidance",
+      "beat",
+      "miss",
+      "dividend",
+      "merger",
+      "acquisition",
+      "buyout",
+      "ipo",
+      "fda",
+      "recall",
+      "downgrade",
+      "upgrade",
+      "bankruptcy",
+      "layoffs",
+      "ceo",
+      "cfo",
+      "rate cut",
+      "rate hike",
+      "inflation",
+      "tariff",
+      "lawsuit",
+      "settlement",
+      "investigation",
+      "restatement",
+      "buyback",
+      "halt",
+      "deal",
+      "surge",
+      "plunge",
+      "raises",
+      "cuts",
+      "outlook",
+      "forecast",
+      "results",
+      "quarterly",
+      "shares",
+      "stock",
+      "market",
+      "fed",
+      "interest rate",
+      "jobs",
+      "gdp",
+      "cpi",
+      "short",
+      "squeeze",
+      "sec",
+      "fine",
+      "fraud",
+      "trade",
+      "supply chain",
+      "contract",
+      "partnership",
+      "approval",
+      "clinical",
+      "trial",
+      "data",
+      "eps",
+      "q1", "q2", "q3", "q4"
+    ]
+  },
+  "sentiment": {
+    "enabled": true,
+    "service_port": 5001,
+    "auto_analyze": true,
+    "auto_analyze_tickers": []
+  }
+}

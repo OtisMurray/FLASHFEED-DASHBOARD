@@ -1,0 +1,18 @@
+{
+  "name": "flashfeed-web",
+  "version": "1.0.0",
+  "description": "FlashFeed Web Dashboard — Bun + Hono",
+  "scripts": {
+    "dev:api": "bun run --watch index.ts",
+    "dev:workers": "bun run workers/sentiment-worker.ts & bun run workers/correlation-worker.ts",
+    "dev": "concurrently \"bun run dev:api\" \"bun run dev:frontend\"",
+    "dev:frontend": "cd dashboard && npx next dev --port 3001",
+    "build": "cd dashboard && npx next build",
+    "start": "bun run index.ts",
+    "start:legacy": "bun run server.ts"
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "concurrently": "^8.2.0"
+  }
+}

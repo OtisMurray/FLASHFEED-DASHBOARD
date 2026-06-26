@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ds440-sentiment-pipeline"
+version = "0.1.0"
+description = "Unstructured News Social Sentiment Pipeline & Dashboard"
+requires-python = ">=3.9"
+dependencies = [
+    "curl_cffi>=0.7,<1.0",
+    "pymongo>=4.6,<5.0",
+    "python-dotenv>=1.0,<2.0",
+    "atproto>=0.0.50",
+    "redis>=5.0,<6.0",
+    "psycopg[binary]>=3.1,<4.0",
+    "vaderSentiment>=3.3,<4.0",
+    "yfinance>=0.2,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "mongomock>=4.1",
+    "fakeredis>=2.21",
+]
+
+[project.scripts]
+reddit-scraper = "scrapers.reddit:main"
+bluesky-scraper = "scrapers.bluesky:main"
+ticker-extractor = "processing.ticker_extraction:main"
+dedup-filter = "processing.dedup_filter:main"
+sentiment-scorer = "processing.sentiment_engine:main"
+rolling-windows = "processing.rolling_windows:main"
+finviz-ingest = "processing.finviz_ingest:main"
+yfinance-enricher = "processing.yfinance_enricher:main"
+
+[tool.setuptools.packages.find]
+include = ["scrapers*", "processing*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

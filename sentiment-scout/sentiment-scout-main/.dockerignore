@@ -1,0 +1,36 @@
+# Keep the image to source only — runtime data, deps, secrets, and caches are
+# rebuilt/mounted at run time, never baked in.
+
+# Runtime/writable data (mounted as a volume at /app/var instead)
+var/
+
+# Secrets — never copy .env into the image (pass env vars at run time)
+.env
+.env.*
+!.env.example
+
+# Python caches / virtualenvs
+**/__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Local SQLite databases (runtime data, recreated/mounted)
+*.db
+
+# Frontend build + deps (the frontend deploys separately to Vercel)
+frontend/node_modules/
+frontend/dist/
+node_modules/
+
+# Screenshots, logs, and misc local artifacts
+var/screenshots/
+*.log
+.DS_Store
+
+# Git + bulky local-only material not needed to run the app
+.git/
+.gitignore
+Other Codebases/
+*.zip

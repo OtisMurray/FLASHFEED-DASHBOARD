@@ -1,0 +1,26 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+      - "${SENTIMENT_PORT:-5001}:5001"
+    volumes:
+      - flashfeed-data:/data
+    environment:
+      PORT: 3000
+      FLASHFEED_ROOT: /app
+      FLASHFEED_DATA: /data
+      SENTIMENT_PORT: 5001
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  flashfeed-data:
+    driver: local

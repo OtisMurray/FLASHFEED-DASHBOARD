@@ -1,0 +1,290 @@
+keyword,sentiment,strength
+acquisition,positive,1.6
+adoption,positive,1.6
+advises,positive,1.2
+allocation,positive,1.3
+all time high,positive,1.6
+approval,positive,1.5
+avoid,negative,1.5
+bankruptcy,negative,1.8
+bankruptcy fears,negative,1.8
+bearish,negative,1.3
+beat,positive,1.4
+beat expectations,positive,1.5
+best,positive,1.3
+best buy,positive,1.5
+best stock,positive,1.5
+bets on,positive,1.4
+breakthrough,positive,1.5
+breakthrough drug,positive,1.7
+bubble,negative,1.6
+bull case,positive,1.4
+bullish,positive,1.4
+buy,positive,1.2
+buying,positive,1.2
+buying opportunity,positive,1.6
+buyout,positive,1.7
+cash burn,negative,1.4
+cash flow,positive,1.3
+cash generation,positive,1.4
+competitive advantage,positive,1.4
+competitive moat,positive,1.5
+consumer confidence,positive,1.3
+contract,positive,1.5
+contract win,positive,1.6
+crash,negative,1.7
+deal,positive,1.4
+deal secured,positive,1.5
+debt,negative,1.2
+debt free,positive,1.5
+debt reduction,positive,1.3
+decline,negative,1.3
+default,negative,1.7
+delay,negative,1.2
+digital transformation,positive,1.4
+dilution,negative,1.3
+disruption,negative,1.2
+dividend cut,negative,1.4
+dividend increase,positive,1.4
+downgrade,negative,1.5
+drop,negative,1.3
+earnings beat,positive,1.6
+earnings growth,positive,1.5
+earnings miss,negative,1.7
+endorsement,positive,1.5
+executive departure,negative,1.4
+expansion,positive,1.4
+FDA approval,positive,2.0
+fear,negative,1.3
+forecast raised,positive,1.5
+fraud,negative,1.8
+free cash flow,positive,1.4
+gains,positive,1.3
+growth,positive,1.4
+guidance beat,positive,1.5
+guidance cut,negative,1.6
+guidance lowered,negative,1.5
+guidance raise,positive,1.6
+hemorrhaging,negative,1.9
+hidden gem,positive,1.5
+high growth,positive,1.5
+innovation,positive,1.4
+institutional,positive,1.6
+into million,positive,1.7
+investigation,negative,1.4
+investor optimism,positive,1.4
+joint venture,positive,1.4
+keep running,positive,1.4
+keeps running,positive,1.4
+lawsuit,negative,1.4
+layoff,negative,1.5
+leading,positive,1.3
+loss,negative,1.3
+losing,negative,1.3
+made millionaires,positive,1.8
+margin expansion,positive,1.4
+margin improvement,positive,1.4
+market leader,positive,1.5
+market opportunity,positive,1.4
+market share,positive,1.3
+merger,positive,1.6
+milestone,positive,1.5
+millionaire,positive,1.6
+miss,negative,1.3
+miss expectations,negative,1.5
+moat,positive,1.4
+momentum,positive,1.3
+new product,positive,1.4
+once in a decade,positive,1.8
+opportunity,positive,1.3
+outperform,positive,1.5
+outlook raised,positive,1.5
+overlooked,positive,1.3
+panic,negative,1.4
+partnership,positive,1.4
+partnership deal,positive,1.6
+plunge,negative,1.5
+price target,positive,1.4
+pricing power,positive,1.4
+product launch,positive,1.5
+profit,positive,1.4
+profit growth,positive,1.5
+profit warning,negative,1.7
+profitable,positive,1.4
+rally,positive,1.4
+rate cuts,positive,1.3
+reach,positive,1.2
+rebound,positive,1.3
+recall,negative,1.4
+recession,negative,1.5
+recommend,positive,1.4
+record,positive,1.5
+record breaking,positive,1.7
+record revenue,positive,1.7
+recovery,positive,1.4
+regulatory approval,positive,1.5
+regulatory setback,negative,1.4
+restructuring,negative,1.3
+revenue beat,positive,1.5
+revenue decline,negative,1.4
+revenue growth,positive,1.4
+rise,positive,1.3
+robust,positive,1.3
+sales growth,positive,1.4
+scandal,negative,1.7
+secured,positive,1.4
+sell rating,negative,1.4
+selloff,negative,1.5
+share buyback,positive,1.5
+shortage,negative,1.3
+slowdown,negative,1.3
+slump,negative,1.4
+soar,positive,1.5
+speculative,negative,1.5
+stimulus,positive,1.3
+stock split,positive,1.3
+strong,positive,1.3
+strong buy,positive,1.5
+strong earnings,positive,1.6
+strong forecast,positive,1.6
+success,positive,1.4
+success story,positive,1.6
+supply chain,negative,1.2
+surge,positive,1.5
+tailwind,positive,1.4
+takeover,positive,1.7
+target,positive,1.3
+top,positive,1.3
+top stock,positive,1.5
+turnaround,positive,1.4
+turned into,positive,1.6
+uncertainty,negative,1.3
+underperform,negative,1.4
+undervalued,positive,1.5
+upgrade,positive,1.4
+validates,positive,1.4
+volatility,negative,1.2
+vulnerable,negative,1.3
+weak,negative,1.3
+weak earnings,negative,1.5
+win,positive,1.3
+winner,positive,1.4
+worst,negative,1.4
+accelerating,positive,1.4
+backlog,positive,1.3
+bottoming,positive,1.3
+cash position,positive,1.3
+catalyst,positive,1.4
+demand,positive,1.2
+diversified,positive,1.3
+efficiency,positive,1.3
+improving,positive,1.3
+inflection point,positive,1.5
+momentum shift,positive,1.4
+operating leverage,positive,1.4
+positioned,positive,1.2
+recovering,positive,1.3
+resilient,positive,1.3
+scale,positive,1.2
+stable,positive,1.2
+beat expectations,positive,1.5
+buying,positive,1.2
+keep running,positive,1.4
+keeps running,positive,1.4
+losing,negative,1.3
+miss expectations,negative,1.5
+all-time high,positive,1.6
+AI breakthrough,positive,1.7
+bankruptcy fears,negative,1.8
+best stock,positive,1.5
+breakthrough drug,positive,1.7
+bull case,positive,1.4
+cash generation,positive,1.4
+competitive advantage,positive,1.4
+consumer confidence,positive,1.3
+contract win,positive,1.6
+debt reduction,positive,1.3
+digital transformation,positive,1.4
+earnings growth,positive,1.5
+executive departure,negative,1.4
+free cash flow,positive,1.4
+guidance lowered,negative,1.5
+high growth,positive,1.5
+investor optimism,positive,1.4
+joint venture,positive,1.4
+market share,positive,1.3
+new product,positive,1.4
+product launch,positive,1.5
+profit growth,positive,1.5
+rate cuts,positive,1.3
+regulatory setback,negative,1.4
+share buyback,positive,1.5
+strong forecast,positive,1.6
+supply chain,negative,1.2
+revenue beat,positive,1.5
+guidance beat,positive,1.5
+sales growth,positive,1.4
+margin improvement,positive,1.4
+cash position,positive,1.3
+debt free,positive,1.5
+market opportunity,positive,1.4
+competitive moat,positive,1.5
+pricing power,positive,1.4
+operating leverage,positive,1.4
+backlog,positive,1.3
+win,positive,1.3
+demand,positive,1.2
+scale,positive,1.2
+efficiency,positive,1.3
+profitable,positive,1.4
+resilient,positive,1.3
+stable,positive,1.2
+diversified,positive,1.3
+positioned,positive,1.2
+momentum shift,positive,1.4
+catalyst,positive,1.4
+inflection point,positive,1.5
+bottoming,positive,1.3
+recovering,positive,1.3
+accelerating,positive,1.4
+improving,positive,1.3
+breakthrough therapy,positive,1.8
+fast track,positive,1.5
+positive trial,positive,1.6
+met primary endpoint,positive,1.8
+beat estimates,positive,1.5
+raised guidance,positive,1.6
+definitive agreement,positive,1.5
+collaboration,positive,1.4
+price target raised,positive,1.5
+index inclusion,positive,1.5
+Nasdaq-100 inclusion,positive,1.6
+S&P 500 inclusion,positive,1.7
+uplisting,positive,1.5
+buyback,positive,1.4
+short squeeze,positive,1.6
+missed estimates,negative,1.5
+lowered guidance,negative,1.5
+cut guidance,negative,1.6
+guidance withdrawn,negative,1.7
+offering,negative,1.3
+secondary offering,negative,1.4
+shelf registration,negative,1.3
+price target cut,negative,1.5
+SEC investigation,negative,1.7
+subpoena,negative,1.6
+class action,negative,1.5
+restatement,negative,1.6
+material weakness,negative,1.5
+FDA rejection,negative,1.9
+complete response letter,negative,1.8
+clinical hold,negative,1.7
+trial failure,negative,1.8
+Chapter 11,negative,1.8
+going concern,negative,1.6
+delisting,negative,1.7
+reverse split,negative,1.4
+layoffs,negative,1.5
+CEO resignation,negative,1.5
+CFO resignation,negative,1.5
+insider selling,negative,1.4

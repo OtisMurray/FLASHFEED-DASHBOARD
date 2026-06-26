@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feedflash-backend"
+version = "0.1.0"
+description = "FeedFlash integrated backend services"
+authors = [
+    {name = "FeedFlash Team"}
+]
+dependencies = [
+    "Flask==3.0.3",
+    "pandas>=2.0.0",
+    "SQLAlchemy>=2.0.0",
+    "python-dotenv",
+    "requests",
+    "beautifulsoup4",
+    "vaderSentiment",
+    "pymongo",
+    "ib_insync"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["social_pipeline*", "sentiment_service*", "sentiment_analyzer*"]
