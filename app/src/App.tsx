@@ -8,6 +8,7 @@ import { ScreenerPage }    from './pages/ScreenerPage'
 import { DecisionMapPanel } from './pages/DecisionMapPanel'
 import SocialPage from './pages/SocialPage'
 import { ChartsPage }      from './pages/ChartsPage'
+import { ChartsPage as SentChartsPage } from './pages/sentchart/ChartsPage'
 import { ChartsGridPage }  from './pages/ChartsGridPage'
 import { MomentumPage }    from './pages/MomentumPage'
 import { CorrelationPage } from './pages/CorrelationPage'
@@ -29,6 +30,7 @@ export default function App() {
           <Route path="/social"      element={<SocialPage />} />
           <Route path="/mirror"      element={<ChartsGridPage />} />
           <Route path="/charts"      element={<ChartsPage />} />
+          <Route path="/sentcharts"  element={<SentChartsPage />} />
           <Route path="/charts-grid" element={<Navigate to="/charts?chartTab=grid" replace />} />
           <Route path="/momentum"    element={<MomentumPage />} />
           <Route path="/correlation" element={<CorrelationPage />} />

@@ -19,14 +19,15 @@ const NAV = [
   { href: '/decision-map', label: 'Decision Map' },
   { href: '/social', label: 'Social' },
   { href: '/charts', label: 'Charts' },
+  { href: '/sentcharts', label: 'SentCharts' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
   { href: '/prediction-audit', label: 'Prediction Audit' },
   { href: '/system-health', label: 'System Health' },
   { href: '/settings', label: 'Settings' },
 ]
-const PRIMARY_NAV = NAV.slice(0, 9)
-const MORE_NAV = NAV.slice(9)
+const PRIMARY_NAV = NAV.slice(0, 10)
+const MORE_NAV = NAV.slice(10)
 
 function compactCount(value: unknown): string {
   const n = Number(value || 0)

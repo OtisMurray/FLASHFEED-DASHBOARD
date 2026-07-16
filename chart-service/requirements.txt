@@ -1,0 +1,12 @@
+# chart-service (phase 1: candles). Pinned to match sentiment-scout/requirements.txt.
+# numpy/pandas are intentionally NOT here — the indicator math is pure python.
+Flask==3.1.3
+Flask-Cors==6.0.0
+curl_cffi==0.15.0
+pymongo==4.17.0   # phase-2b: social_store resting store (in-memory fallback if Mongo is down)
+# Overnight (20:00-04:00 ET) prices via TradingView / Blue Ocean (tv_overnight.py).
+# Unofficial websocket datafeed — OPTIONAL: the service runs without it and the
+# chart falls back to a dashed prior-close carry overnight. Needs TV_USERNAME /
+# TV_PASSWORD env vars (owner's paid TradingView account) on the deploy host.
+tvDatafeed @ git+https://github.com/rongardF/tvdatafeed.git
+websocket-client==1.8.0
