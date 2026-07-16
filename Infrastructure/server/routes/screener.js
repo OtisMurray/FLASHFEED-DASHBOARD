@@ -5922,4 +5922,9 @@ router.post('/upsert', async (req, res) => {
   }
 })
 
+// Shared with routes/entryScreener.js and routes/exitScreener.js so the entry/
+// exit screeners screen the exact same clean listed-US universe and social-
+// activity stats as /api/screener.
+export { normalizeScreenerRow, isCleanListedUsRow, loadAdaptiveSocialStatsForRows }
+
 export default router

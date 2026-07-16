@@ -470,3 +470,43 @@ export interface CorrelationEntry {
   avg_abs_correlation?: number | null
   pearson_correlation?: number | null
 }
+
+// Exit Screener — one row per simulated position derived live by the
+// chart-service strategy sim (/api/exit-screener).
+export interface ExitScreenerRow {
+  ticker:               string
+  company?:             string
+  date?:                string | null
+  entry_price?:         number | null
+  entry_time?:          string | null
+  entry_epoch?:         number | null
+  entry_corr?:          number | null
+  current_price?:       number | null
+  pnl_pct?:             number | null
+  trailing_stop_pct?:   number
+  peak_price?:          number | null
+  stop_price?:          number | null
+  distance_to_stop_pct?: number | null
+  status?:              'Holding' | 'Stopped Out' | string
+  exit_price?:          number | null
+  exit_time?:           string | null
+  corr_status?:         string
+}
+
+// Entry Screener — ranked rows from /api/entry-screener (rolling price×density
+// correlation joined with Mongo quote rows).
+export interface EntryScreenerRow {
+  ticker:                  string
+  company?:                string
+  market_cap?:             number | null
+  price?:                  number | null
+  change_pct?:             number | null
+  msg_density_rolling?:    number | null
+  session_messages?:       number
+  stocktwits_count_window?: number
+  price_density_corr?:     number | null
+  entry_score?:            number | null
+  passes_threshold?:       boolean
+  corr_status?:            string
+  corr_date?:              string | null
+}
