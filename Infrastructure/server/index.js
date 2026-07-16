@@ -11,6 +11,8 @@ import * as diskdb from './diskdb.js'   // hard-disk (on-disk SQLite) news store
 
 import articlesRouter    from './routes/articles.js'
 import screenerRouter    from './routes/screener.js'
+import entryScreenerRouter from './routes/entryScreener.js'
+import exitScreenerRouter from './routes/exitScreener.js'
 import socialRouter      from './routes/social.js'
 import correlationRouter from './routes/correlation.js'
 import settingsRouter    from './routes/settings.js'
@@ -3203,6 +3205,8 @@ app.post("/api/translate", async (req, res) => {
 
 app.use('/api/articles',    articlesRouter)
 app.use('/api/screener',    screenerRouter)
+app.use('/api/entry-screener', entryScreenerRouter)
+app.use('/api/exit-screener', exitScreenerRouter)
 
 app.get("/api/momentum/trending", async (req, res) => {
   try {

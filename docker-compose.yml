@@ -100,6 +100,9 @@ services:
       MONGODB_DB: ${MONGODB_DB:-feedflash}
       MONGO_SERVER_SELECTION_TIMEOUT_MS: ${MONGO_SERVER_SELECTION_TIMEOUT_MS:-3000}
       REDIS_URL: redis://redis:6379/0
+      # Entry/exit screeners join Mongo quote rows with the chart-service's
+      # batch endpoints (/api/sentchart/corr/batch, /api/sentchart/positions/batch).
+      CHART_SERVICE_URL: http://chart-service:5050
       FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-${FINVIZ_TOKEN:-}}
       FINVIZ_TOKEN: ${FINVIZ_TOKEN:-${FINVIZ_AUTH_TOKEN:-}}
       FINVIZ_COOKIE: ${FINVIZ_COOKIE:-}

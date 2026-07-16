@@ -20,14 +20,19 @@ const NAV = [
   { href: '/social', label: 'Social' },
   { href: '/charts', label: 'Charts' },
   { href: '/sentcharts', label: 'SentCharts' },
+  { href: '/entry-screener', label: 'Entry Screener' },
+  { href: '/exit-screener', label: 'Exit Screener' },
+  { href: '/window-mirror', label: 'Window Mirror' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
   { href: '/prediction-audit', label: 'Prediction Audit' },
   { href: '/system-health', label: 'System Health' },
   { href: '/settings', label: 'Settings' },
 ]
-const PRIMARY_NAV = NAV.slice(0, 10)
-const MORE_NAV = NAV.slice(10)
+// Split widened 10 → 13 for the three screener links so nothing already in the
+// primary row gets demoted into "More".
+const PRIMARY_NAV = NAV.slice(0, 13)
+const MORE_NAV = NAV.slice(13)
 
 function compactCount(value: unknown): string {
   const n = Number(value || 0)
