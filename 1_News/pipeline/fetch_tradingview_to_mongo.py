@@ -176,7 +176,10 @@ def main() -> dict:
                 continue
             ops = []
             for doc in docs:
-                key = {"url": doc["url"]} if doc.get("url") else {"article_id": doc["article_id"]}
+                key_parts = [{"article_id": doc["article_id"]}]
+                if doc.get("url"):
+                    key_parts.insert(0, {"url": doc["url"]})
+                key = {"$or": key_parts} if len(key_parts) > 1 else key_parts[0]
                 set_doc = dict(doc)
                 article_id = set_doc.pop("article_id")
                 ops.append(UpdateOne(

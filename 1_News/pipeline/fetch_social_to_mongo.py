@@ -299,7 +299,15 @@ def _post_id(ticker: str, msg_id) -> str:
 
 
 def _load_tickers() -> list[str]:
-    if os.getenv("SOCIAL_STRICT_FINVIZ_TOP_MOVERS", "true").lower() in ("1", "true", "yes"):
+    configured = os.getenv("SOCIAL_TICKERS", "")
+    if configured.strip():
+        tickers = [t.strip().upper() for t in configured.split(",") if t.strip()]
+    else:
+        tickers = []
+
+    # Explicit server-provided ticker universes come from prediction/high-conviction
+    # interest and must not be replaced by the strict FinViz mover fallback.
+    if not tickers and os.getenv("SOCIAL_STRICT_FINVIZ_TOP_MOVERS", "true").lower() in ("1", "true", "yes"):
         tickers = _load_momentum_tickers()
         if not tickers:
             print("Social ticker source: strict Finviz top movers only — none found; skipping social collectors")
@@ -307,12 +315,6 @@ def _load_tickers() -> list[str]:
         tickers = tickers[:MAX_TICKERS]
         print(f"Social ticker source: strict Finviz top movers only — {','.join(tickers)}")
         return tickers
-
-    configured = os.getenv("SOCIAL_TICKERS", "")
-    if configured.strip():
-        tickers = [t.strip().upper() for t in configured.split(",") if t.strip()]
-    else:
-        tickers = []
 
     source = os.getenv("SOCIAL_TICKER_SOURCE", "momentum").strip().lower()
     if not tickers and source in {"momentum", "movers", "top_momentum", "finviz"}:

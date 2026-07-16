@@ -2,10 +2,9 @@
 """
 Fetch Finviz Elite screener CSV rows into MongoDB's screeners collection.
 
-Uses FINVIZ_AUTH_TOKEN / FINVIZ_TOKEN from the environment. The token is not
-stored in source code and is never printed. This collector is meant to drive
-the dashboard's positive-momentum universe from Finviz movers instead of a
-static watchlist.
+Uses FINVIZ_AUTH_TOKEN / FINVIZ_TOKEN from the environment when available.
+If Finviz only exposes a browser-session export, FINVIZ_COOKIE can be supplied
+locally as a fallback. Secrets are never printed.
 """
 
 from __future__ import annotations
@@ -43,11 +42,13 @@ MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/feedflash")
 DB_NAME = os.getenv("MONGODB_DB", os.getenv("MONGO_DB", "feedflash"))
 MONGO_TIMEOUT_MS = int(os.getenv("MONGO_SERVER_SELECTION_TIMEOUT_MS", "3000"))
 AUTH_TOKEN = os.getenv("FINVIZ_AUTH_TOKEN") or os.getenv("FINVIZ_TOKEN") or ""
+FINVIZ_COOKIE = os.getenv("FINVIZ_COOKIE") or os.getenv("FINVIZ_ELITE_COOKIE") or ""
 MAX_WORKERS = int(os.getenv("FINVIZ_MAX_WORKERS", "3"))
 TIMEOUT = int(os.getenv("FINVIZ_REQUEST_TIMEOUT", "25"))
 MAX_RETRIES = int(os.getenv("FINVIZ_MAX_RETRIES", "3"))
 
-BASE_URL = "https://elite.finviz.com/export"
+TOKEN_EXPORT_URL = "https://elite.finviz.com/export"
+COOKIE_EXPORT_URL = "https://elite.finviz.com/export/screener"
 COLUMNS = "0,1,2,3,4,5,6,59,63,64,65,66,67"
 TIER_FILTERS = {
     "mega": "cap_mega,sh_curvol_o5000,sh_relvol_o1.5,ta_change_u",
@@ -66,6 +67,13 @@ HEADERS = {
     "Accept": "text/csv,text/plain,*/*",
     "Referer": "https://elite.finviz.com/",
 }
+
+
+def _request_headers() -> dict[str, str]:
+    headers = dict(HEADERS)
+    if FINVIZ_COOKIE:
+        headers["Cookie"] = FINVIZ_COOKIE
+    return headers
 
 
 def _num(value):
@@ -107,38 +115,57 @@ def _fetch_tier(tier: str, filter_text: str) -> tuple[str, list[dict], str | Non
         "f": filter_text,
         "o": "-change",
         "c": COLUMNS,
-        "auth": AUTH_TOKEN,
     }
-    url = f"{BASE_URL}?{urlencode(params)}"
-    resp = None
-    for attempt in range(MAX_RETRIES):
-        try:
+    _signal = os.getenv("FINVIZ_SIGNAL", "").strip()
+    if _signal:
+        params["s"] = _signal
+    candidates: list[tuple[str, str]] = []
+    if AUTH_TOKEN:
+        token_params = {**params, "auth": AUTH_TOKEN}
+        candidates.append(("token", f"{TOKEN_EXPORT_URL}?{urlencode(token_params)}"))
+    if FINVIZ_COOKIE:
+        candidates.append(("cookie", f"{COOKIE_EXPORT_URL}?{urlencode(params)}"))
+    if not candidates:
+        return tier, [], "FINVIZ_AUTH_TOKEN or FINVIZ_COOKIE not set"
+
+    headers = _request_headers()
+    last_error = ""
+    for auth_mode, url in candidates:
+        resp = None
+        for attempt in range(MAX_RETRIES):
             try:
-                resp = http_requests.get(url, headers=HEADERS, impersonate="chrome124", timeout=TIMEOUT)
-            except TypeError:
-                resp = http_requests.get(url, headers=HEADERS, timeout=TIMEOUT)
-        except Exception as exc:
-            if attempt >= MAX_RETRIES - 1:
-                return tier, [], f"request failed: {exc}"
-            time.sleep(1.5 * (attempt + 1))
+                try:
+                    resp = http_requests.get(url, headers=headers, impersonate="chrome124", timeout=TIMEOUT)
+                except TypeError:
+                    resp = http_requests.get(url, headers=headers, timeout=TIMEOUT)
+            except Exception as exc:
+                if attempt >= MAX_RETRIES - 1:
+                    last_error = f"{auth_mode} request failed: {exc}"
+                    break
+                time.sleep(1.5 * (attempt + 1))
+                continue
+
+            if resp.status_code != 429:
+                break
+            if attempt < MAX_RETRIES - 1:
+                time.sleep(3 * (attempt + 1))
+
+        if resp is None or resp.status_code != 200:
+            status = getattr(resp, "status_code", "no response")
+            last_error = f"{auth_mode} http 429 after retries" if status == 429 else f"{auth_mode} http {status}"
             continue
 
-        if resp.status_code != 429:
-            break
-        if attempt < MAX_RETRIES - 1:
-            time.sleep(3 * (attempt + 1))
-
-    if resp is None or resp.status_code != 200:
-        status = getattr(resp, "status_code", "no response")
-        if status == 429:
-            return tier, [], "http 429 after retries"
-        return tier, [], f"http {status}"
-
-    text = (resp.text or "").strip()
-    if not text:
-        return tier, [], "empty response"
-    if "<html" in text[:80].lower() or "invalid" in text[:160].lower():
-        return tier, [], "invalid token or html response"
+        text = (resp.text or "").strip()
+        if not text:
+            last_error = f"{auth_mode} empty response"
+            continue
+        lower_start = text[:240].lower()
+        if "<html" in lower_start or "invalid" in lower_start or "login" in lower_start:
+            last_error = f"invalid {auth_mode} auth or html response"
+            continue
+        break
+    else:
+        return tier, [], last_error or "Finviz auth failed"
 
     reader = csv.DictReader(io.StringIO(text))
     if not reader.fieldnames or not any(h.strip().lower() == "ticker" for h in reader.fieldnames):
@@ -184,9 +211,9 @@ def main() -> None:
     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=MONGO_TIMEOUT_MS)
     db = client[DB_NAME]
 
-    if not AUTH_TOKEN:
-        print("Finviz Elite import skipped — FINVIZ_AUTH_TOKEN not set")
-        record_source_status(db, "Finviz Elite Screener", "api_key_required", detail="FINVIZ_AUTH_TOKEN not set", source_type="numeric_screener")
+    if not AUTH_TOKEN and not FINVIZ_COOKIE:
+        print("Finviz Elite import skipped — FINVIZ_AUTH_TOKEN/FINVIZ_COOKIE not set")
+        record_source_status(db, "Finviz Elite Screener", "api_key_required", detail="FINVIZ_AUTH_TOKEN or FINVIZ_COOKIE not set", source_type="numeric_screener")
         print("Finviz Elite import complete — 0 rows, 0 updated, 0 dropped")
         client.close()
         return

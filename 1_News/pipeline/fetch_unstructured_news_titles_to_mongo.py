@@ -13,6 +13,11 @@ from zoneinfo import ZoneInfo
 from pymongo import MongoClient, UpdateOne
 from pymongo.errors import BulkWriteError
 
+try:
+    from curl_cffi import requests as curl_requests
+except Exception:
+    curl_requests = None
+
 from sentiment_utils import classify_financial_event, score_financial_sentiment
 from source_status import record_source_status
 
@@ -34,6 +39,9 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124 Safari/537.36 FeedFlash/0.1",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
+
+FINVIZ_SOURCE_NAMES = {"finviz news", "finviz news flow"}
+PUBLIC_MARKET_NEWS_SOURCES = {"Finviz News", "Finviz News Flow", "TradingView News"}
 
 BAD_TITLE_EXACT = {
     "home", "login", "log in", "sign in", "subscribe", "about", "about us",
@@ -284,6 +292,7 @@ def extract_finviz_news_candidates(html, page_url, cfg):
     last_date = None
 
     selectors = [
+        "tr.news_table-row",
         "table.news_table tr",
         "table#news-table tr",
         "tr.cursor-pointer",
@@ -295,7 +304,7 @@ def extract_finviz_news_candidates(html, page_url, cfg):
             break
 
     for row in table_rows:
-        link = row.select_one("a.tab-link-news[href], a[href]")
+        link = row.select_one("td.news_link-cell a[href], a.nn-tab-link[href], a.tab-link-news[href], a[href]")
         if not link:
             continue
         title = clean(link.get_text(" ", strip=True))
@@ -305,12 +314,17 @@ def extract_finviz_news_candidates(html, page_url, cfg):
 
         cells = row.find_all("td")
         raw_time = ""
-        if cells:
+        date_cell = row.select_one("td.news_date-cell")
+        if date_cell:
+            raw_time = date_cell.get_text(" ", strip=True)
+        elif cells:
             raw_time = cells[0].get_text(" ", strip=True)
         publish_date, last_date = parse_finviz_timestamp(raw_time, last_date)
 
         source_node = row.select_one(".news-link-right, span")
         provider = clean(source_node.get_text(" ", strip=True)) if source_node else ""
+        if not provider:
+            provider = urlparse(url).netloc.lower().removeprefix("www.")
 
         if url in seen_urls:
             continue
@@ -330,14 +344,22 @@ def fetch_source(cfg):
     print(f"\nFetching {source}: {page_url}")
 
     try:
-        resp = requests.get(page_url, headers=HEADERS, timeout=25)
+        headers = dict(HEADERS)
+        if source.lower() in FINVIZ_SOURCE_NAMES:
+            finviz_cookie = os.getenv("FINVIZ_COOKIE", "").strip().strip("'\"")
+            if finviz_cookie:
+                headers["Cookie"] = finviz_cookie
+        if curl_requests is not None and source.lower() in FINVIZ_SOURCE_NAMES:
+            resp = curl_requests.get(page_url, headers=headers, timeout=25, impersonate="chrome124")
+        else:
+            resp = requests.get(page_url, headers=headers, timeout=25)
         print("status:", resp.status_code, "len:", len(resp.text))
         resp.raise_for_status()
     except Exception as e:
         print(f"{source}: SKIP {e}")
         return []
 
-    if source.lower() == "finviz news":
+    if source.lower() in FINVIZ_SOURCE_NAMES:
         rows = extract_finviz_news_candidates(resp.text, page_url, cfg)
     else:
         rows = [(title, url, None, "") for title, url in extract_candidates(resp.text, page_url, cfg)]
@@ -357,7 +379,7 @@ def fetch_source(cfg):
             "_id": sid,
             "article_id": sid[:24],
             "source": source,
-            "category": "public_market_news" if source in {"Finviz News", "TradingView News"} else "public_news",
+            "category": "public_market_news" if source in PUBLIC_MARKET_NEWS_SOURCES else "public_news",
             "article_kind": "unstructured",
             "source_type": "public_web_title",
             "title": title,
@@ -371,7 +393,7 @@ def fetch_source(cfg):
             "fetched_date": now_ts(),
             "fetched_at": now_ts(),
             "detected_at": now_ts(),
-            "collector": "finviz_public_news_table_v1" if source == "Finviz News" else "unstructured_news_title_only_v1",
+            "collector": "finviz_public_news_table_v1" if source.lower() in FINVIZ_SOURCE_NAMES else "unstructured_news_title_only_v1",
             "ticker": ",".join(tickers),
             "tickers_mentioned": tickers,
             "sentiment": sentiment,

@@ -55,7 +55,13 @@ export function applyScreenerView(tickers: ScreenerRow[], v: ScreenerViewState):
 
   if (search) {
     const q = search.toLowerCase()
-    rows = rows.filter(t => t.ticker.toLowerCase().includes(q) || (t.company ?? '').toLowerCase().includes(q))
+    // Exact ticker match first: if the query looks like a valid ticker (1-8 uppercase chars),
+    // only match the exact ticker, not partial company/title matches
+    const exactTicker = /^[a-z][a-z0-9.-]{0,7}$/i.test(q) ? q.toUpperCase() : ''
+    rows = rows.filter(t => {
+      if (exactTicker) return t.ticker.toUpperCase() === exactTicker
+      return t.ticker.toLowerCase().includes(q) || (t.company ?? '').toLowerCase().includes(q)
+    })
   }
 
   if (filters.sector) rows = rows.filter(t => t.sector === filters.sector)

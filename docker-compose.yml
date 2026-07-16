@@ -7,6 +7,12 @@ services:
       - "127.0.0.1:27017:27017"
     volumes:
       - feedflash_mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
 
   redis:
     image: redis:7.2-alpine
@@ -17,6 +23,12 @@ services:
     command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru --save "" --appendonly no
     volumes:
       - feedflash_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
@@ -25,13 +37,20 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   kafka:
     image: confluentinc/cp-kafka:7.6.0
     container_name: feedflash-kafka
     restart: unless-stopped
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "127.0.0.1:9092:9092"
     environment:
@@ -48,13 +67,19 @@ services:
       # every ~5 minutes (or 1B messages), instead of fsync-ing constantly.
       KAFKA_LOG_FLUSH_INTERVAL_MS: 300000
       KAFKA_LOG_FLUSH_INTERVAL_MESSAGES: 1000000000
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list > /dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 45s
 
   kafka-init:
     image: confluentinc/cp-kafka:7.6.0
     container_name: feedflash-kafka-init
     depends_on:
       kafka:
-        condition: service_started
+        condition: service_healthy
     command: >
       bash -c "cub kafka-ready -b kafka:29092 1 60 &&
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists
@@ -70,12 +95,15 @@ services:
       - "3001:3001"
     environment:
       PORT: 3001
-      MONGODB_URI: mongodb://mongo:27017/feedflash
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/feedflash}
+      MONGO_DB: ${MONGO_DB:-feedflash}
+      MONGODB_DB: ${MONGODB_DB:-feedflash}
       MONGO_SERVER_SELECTION_TIMEOUT_MS: ${MONGO_SERVER_SELECTION_TIMEOUT_MS:-3000}
       REDIS_URL: redis://redis:6379/0
       FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-${FINVIZ_TOKEN:-}}
       FINVIZ_TOKEN: ${FINVIZ_TOKEN:-${FINVIZ_AUTH_TOKEN:-}}
-      TRADINGVIEW_SCREENER_LIMIT: ${TRADINGVIEW_SCREENER_LIMIT:-3000}
+      FINVIZ_COOKIE: ${FINVIZ_COOKIE:-}
+      TRADINGVIEW_SCREENER_LIMIT: ${TRADINGVIEW_SCREENER_LIMIT:-10000}
       BENZINGA_API_KEY: ${BENZINGA_API_KEY:-}
       DOW_JONES_API_KEY: ${DOW_JONES_API_KEY:-}
       X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
@@ -97,9 +125,17 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       KAFKA_TOPIC: flashfeed-events
       KAFKA_PUBLISH_NEWS: ${KAFKA_PUBLISH_NEWS:-true}
+      DECISION_MAP_DB_NAME: ${DECISION_MAP_DB_NAME:-feedflash_decision_map}
+      DECISION_MAP_KAFKA_PUBLISH: ${DECISION_MAP_KAFKA_PUBLISH:-true}
+      DECISION_MAP_REDIS_TTL: ${DECISION_MAP_REDIS_TTL:-300}
+      DECISION_MAP_PATH_TTL: ${DECISION_MAP_PATH_TTL:-21600}
+      DECISION_MAP_PATH_MAX: ${DECISION_MAP_PATH_MAX:-180}
+      DECISION_MAP_POINT_INTERVAL_SECONDS: ${DECISION_MAP_POINT_INTERVAL_SECONDS:-60}
       KAFKA_NEWS_MAX_TICKERS: ${KAFKA_NEWS_MAX_TICKERS:-500}
       RSS_FEED_ENTRY_LIMIT: ${RSS_FEED_ENTRY_LIMIT:-0}
       ACCESS_NEWSWIRE_PAGE_SIZE: ${ACCESS_NEWSWIRE_PAGE_SIZE:-500}
+      UNSTRUCTURED_MAX_PER_SOURCE: ${UNSTRUCTURED_MAX_PER_SOURCE:-0}
+      FAST_UNSTRUCTURED_SOURCE_FILTER: ${FAST_UNSTRUCTURED_SOURCE_FILTER:-Finviz News Flow,TradingView News}
       DEFAULT_FETCH_MODE: ${DEFAULT_FETCH_MODE:-fast}
       ENABLE_QUOTE_FETCH: ${ENABLE_QUOTE_FETCH:-0}
       QUOTE_MAX_TICKERS: ${QUOTE_MAX_TICKERS:-100}
@@ -111,11 +147,17 @@ services:
       NODE_ENV: development
     depends_on:
       mongo:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   kafka-consumer:
     build:
@@ -131,14 +173,17 @@ services:
       REDIS_PORT: 6379
       REDIS_TTL: 3600
       REDIS_FEED_MAX: 100
-      MONGODB_URI: mongodb://mongo:27017
-      MONGODB_DB: feedflash
+      DECISION_MAP_DB_NAME: ${DECISION_MAP_DB_NAME:-feedflash_decision_map}
+      DECISION_MAP_PATH_TTL: ${DECISION_MAP_PATH_TTL:-21600}
+      DECISION_MAP_PATH_MAX: ${DECISION_MAP_PATH_MAX:-180}
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/feedflash}
+      MONGODB_DB: ${MONGODB_DB:-feedflash}
       MONGODB_COLLECTION: events
     depends_on:
       mongo:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
 
@@ -149,13 +194,15 @@ services:
     container_name: feedflash-rss-worker
     restart: unless-stopped
     environment:
-      MONGODB_URI: mongodb://mongo:27017/feedflash
-      MONGO_DB: feedflash
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/feedflash}
+      MONGO_DB: ${MONGO_DB:-feedflash}
+      MONGODB_DB: ${MONGODB_DB:-feedflash}
       MONGO_SERVER_SELECTION_TIMEOUT_MS: ${MONGO_SERVER_SELECTION_TIMEOUT_MS:-3000}
       REDIS_URL: redis://redis:6379/0
       FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-${FINVIZ_TOKEN:-}}
       FINVIZ_TOKEN: ${FINVIZ_TOKEN:-${FINVIZ_AUTH_TOKEN:-}}
-      TRADINGVIEW_SCREENER_LIMIT: ${TRADINGVIEW_SCREENER_LIMIT:-3000}
+      FINVIZ_COOKIE: ${FINVIZ_COOKIE:-}
+      TRADINGVIEW_SCREENER_LIMIT: ${TRADINGVIEW_SCREENER_LIMIT:-10000}
       BENZINGA_API_KEY: ${BENZINGA_API_KEY:-}
       DOW_JONES_API_KEY: ${DOW_JONES_API_KEY:-}
       X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
@@ -176,12 +223,16 @@ services:
       SEC_USER_AGENT: ${SEC_USER_AGENT:-FeedFlash/1.0 otisemurray@icloud.com}
       KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       RSS_FEED_ENTRY_LIMIT: ${RSS_FEED_ENTRY_LIMIT:-0}
+      RSS_WORKER_INTERVAL_SECONDS: ${RSS_WORKER_INTERVAL_SECONDS:-60}
+      UNSTRUCTURED_MAX_PER_SOURCE: ${UNSTRUCTURED_MAX_PER_SOURCE:-0}
+      FAST_UNSTRUCTURED_SOURCE_FILTER: ${FAST_UNSTRUCTURED_SOURCE_FILTER:-Finviz News Flow,TradingView News}
       ACCESS_NEWSWIRE_PAGE_SIZE: ${ACCESS_NEWSWIRE_PAGE_SIZE:-500}
+    command: ["sh", "-c", "while true; do python 1_News/pipeline/fetch_rss_to_mongo.py; sleep ${RSS_WORKER_INTERVAL_SECONDS:-60}; done"]
     depends_on:
       mongo:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
     profiles:
@@ -194,13 +245,15 @@ services:
     container_name: feedflash-sentiment-worker
     restart: unless-stopped
     environment:
-      MONGODB_URI: mongodb://mongo:27017/feedflash
-      MONGO_DB: feedflash
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/feedflash}
+      MONGO_DB: ${MONGO_DB:-feedflash}
+      MONGODB_DB: ${MONGODB_DB:-feedflash}
       MONGO_SERVER_SELECTION_TIMEOUT_MS: ${MONGO_SERVER_SELECTION_TIMEOUT_MS:-3000}
       REDIS_URL: redis://redis:6379/0
       FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-${FINVIZ_TOKEN:-}}
       FINVIZ_TOKEN: ${FINVIZ_TOKEN:-${FINVIZ_AUTH_TOKEN:-}}
-      TRADINGVIEW_SCREENER_LIMIT: ${TRADINGVIEW_SCREENER_LIMIT:-3000}
+      FINVIZ_COOKIE: ${FINVIZ_COOKIE:-}
+      TRADINGVIEW_SCREENER_LIMIT: ${TRADINGVIEW_SCREENER_LIMIT:-10000}
       BENZINGA_API_KEY: ${BENZINGA_API_KEY:-}
       DOW_JONES_API_KEY: ${DOW_JONES_API_KEY:-}
       X_BEARER_TOKEN: ${X_BEARER_TOKEN:-}
@@ -220,9 +273,9 @@ services:
       - hf_sentiment_cache:/tmp/hf_cache
     depends_on:
       mongo:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
     profiles:
@@ -245,22 +298,20 @@ services:
       API_TOKEN: ${API_TOKEN:-}
     depends_on:
       backend:
-        condition: service_started
+        condition: service_healthy
 
 
   news-source-guard:
-    image: mongo:7
+    build:
+      context: .
+      dockerfile: Dockerfile.news-source-guard
     container_name: feedflash-news-source-guard
     restart: unless-stopped
     depends_on:
       mongo:
-        condition: service_started
+        condition: service_healthy
     environment:
       NEWS_SOURCE_GUARD_INTERVAL_SEC: ${NEWS_SOURCE_GUARD_INTERVAL_SEC:-120}
-    volumes:
-      - ./scripts/news_source_guard.js:/scripts/news_source_guard_runtime.js:ro
-      - ./scripts/news_source_guard_loop.sh:/scripts/news_source_guard_loop.sh:ro
-    command: ["sh", "/scripts/news_source_guard_loop.sh"]
 
 
 volumes:

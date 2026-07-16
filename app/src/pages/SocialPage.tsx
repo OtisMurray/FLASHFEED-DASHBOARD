@@ -7,6 +7,8 @@ type SocialPost = {
   collector?: string
   ticker?: string
   symbol?: string
+  ticker_candidates?: string[]
+  tickers?: string[]
   title?: string
   text?: string
   content?: string
@@ -62,6 +64,10 @@ function sourceLabel(post: SocialPost) {
   return post.platform || post.source || 'Social'
 }
 
+function primaryTicker(post: SocialPost) {
+  return post.ticker || post.symbol || post.ticker_candidates?.[0] || post.tickers?.[0] || ''
+}
+
 const TRENDING_STOP_WORDS = new Set([
   'about', 'after', 'again', 'all', 'also', 'and', 'any', 'are', 'because', 'been',
   'before', 'being', 'but', 'can', 'could', 'day', 'did', 'does', 'doing', 'down',
@@ -90,7 +96,7 @@ function trendingPhrases(posts: SocialPost[]) {
     const text = displayText(post)
     const cashtags = (text.match(/\$[a-z][a-z0-9.-]{0,9}/gi) || []).map(tag => tag.toLowerCase())
     const symbols = new Set([
-      String(post.ticker || post.symbol || '').toLowerCase(),
+      String(primaryTicker(post)).toLowerCase(),
       ...cashtags.map(tag => tag.slice(1)),
       ...(text.match(/\b[A-Z]{2,5}\b/g) || []).map(tag => tag.toLowerCase()),
     ])
@@ -228,6 +234,8 @@ export default function SocialPage() {
       displayText(post),
       post.ticker,
       post.symbol,
+      ...(post.ticker_candidates || []),
+      ...(post.tickers || []),
       ...(post.finance_keywords || []),
       ...(post.gossip_keywords || []),
       ...(post.keywords || []),
@@ -387,7 +395,7 @@ export default function SocialPage() {
         <div className="space-y-3">
           {visiblePosts.map((post, idx) => {
             const text = displayText(post)
-            const ticker = post.ticker || post.symbol
+            const ticker = primaryTicker(post)
             return (
               <a
                 key={`${post.platform}-${post.url}-${idx}`}

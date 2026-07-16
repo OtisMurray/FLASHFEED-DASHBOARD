@@ -1,5 +1,0 @@
-FROM curlimages/curl:8.11.1
-
-COPY scripts/auto_refresh_loop.sh /scripts/auto_refresh_loop.sh
-
-CMD ["/bin/sh", "/scripts/auto_refresh_loop.sh"]

@@ -9,6 +9,7 @@ ever silently dropped on a crash or restart.
 """
 import json
 import logging
+import os
 from datetime import datetime, timezone
 
 import redis as redis_lib
@@ -23,6 +24,13 @@ from config import (
 from models import FeedEvent
 
 logger = logging.getLogger(__name__)
+DECISION_MAP_PATH_MAX = max(12, int(os.getenv("DECISION_MAP_PATH_MAX", str(REDIS_FEED_MAX))))
+DECISION_MAP_MIN_PATH_TTL = 3 * 24 * 60 * 60
+DECISION_MAP_DEFAULT_PATH_TTL = 4 * 24 * 60 * 60
+DECISION_MAP_PATH_TTL = max(
+    DECISION_MAP_MIN_PATH_TTL,
+    int(os.getenv("DECISION_MAP_PATH_TTL", str(DECISION_MAP_DEFAULT_PATH_TTL))),
+)
 
 
 class FlashFeedConsumer:
@@ -104,6 +112,27 @@ class FlashFeedConsumer:
             # 3. Trim to the most recent REDIS_FEED_MAX events per user.
             #    ZREMRANGEBYRANK removes the oldest entries (rank 0 … N-MAX-1).
             pipe.zremrangebyrank(f"feed:{e.user_id}", 0, -(REDIS_FEED_MAX + 1))
+
+            if e.event_type == "decision_map_point":
+                payload = dict(e.payload or {})
+                ticker = str(payload.get("ticker") or e.user_id or "").upper().strip()
+                if ticker:
+                    try:
+                        score = float(payload.get("snapshot_sec") or payload.get("snapshotSec") or score)
+                    except (TypeError, ValueError):
+                        pass
+                    payload["ticker"] = ticker
+                    payload["snapshot_sec"] = score
+                    payload["timestamp"] = score
+                    payload.setdefault("source", "kafka_consumer")
+                    point_key = f"decision_map:point:{ticker}:{int(score)}"
+                    pipe.set(point_key, json.dumps(payload), ex=DECISION_MAP_PATH_TTL)
+                    pipe.zadd(f"decision_map:path:{ticker}", {point_key: score})
+                    pipe.zadd("decision_map:active", {ticker: score})
+                    pipe.set(f"decision_map:ticker:{ticker}:latest", json.dumps(payload), ex=DECISION_MAP_PATH_TTL)
+                    pipe.expire(f"decision_map:path:{ticker}", DECISION_MAP_PATH_TTL)
+                    pipe.expire("decision_map:active", DECISION_MAP_PATH_TTL)
+                    pipe.zremrangebyrank(f"decision_map:path:{ticker}", 0, -(DECISION_MAP_PATH_MAX + 1))
 
         pipe.execute()
         logger.info("Redis: wrote %d events.", len(events))

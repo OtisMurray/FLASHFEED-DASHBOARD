@@ -69,53 +69,34 @@ log = logging.getLogger(__name__)
 
 HEADERS = {"User-Agent": "Mozilla/5.0 FeedFetch/2.0 (FlashFeed)"}
 
-# ── RSS feed list (mirrors config.json in the C++ repo — fallback if DB unavailable)
+# ── RSS feed list (PROFESSOR-APPROVED SOURCES ONLY — fallback if DB unavailable)
 RSS_FEEDS: list[tuple[str, str, str]] = [
-    ("CNBC Markets",          "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",  "markets"),
-    ("CNBC Finance",          "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664",  "markets"),
-    ("MarketWatch Top",       "https://feeds.marketwatch.com/marketwatch/topstories/",                                "markets"),
-    ("MarketWatch Breaking",  "https://feeds.marketwatch.com/marketwatch/bulletins/",                                 "markets"),
-    ("Yahoo Finance",         "https://finance.yahoo.com/news/rssindex",                                              "markets"),
-    # DISABLED until verified public feed/API: ("Benzinga",              "https://www.benzinga.com/feed/",                                                       "markets"),
-    ("Seeking Alpha",         "https://seekingalpha.com/market_currents.xml",                                         "markets"),
-    ("The Motley Fool",       "https://www.fool.com/feeds/index.aspx?id=fool-headlines",                              "equities"),
-    # DISABLED broken 404 feed: ("Investopedia",          "https://www.investopedia.com/feedbuilder/feed/getNewsFeed",                            "markets"),
-    # DISABLED requires licensed/official access: ("Reuters Business",      "https://feeds.reuters.com/reuters/businessNews",                                       "economy"),
-    # DISABLED requires licensed/official access: ("Reuters Finance",       "https://feeds.reuters.com/reuters/financialsNews",                                     "economy"),
-    ("BBC Business",          "https://feeds.bbci.co.uk/news/business/rss.xml",                                      "economy"),
-    ("Federal Reserve",       "https://www.federalreserve.gov/feeds/press_all.xml",                                   "economy"),
-    ("Forbes Business",       "https://www.forbes.com/business/feed/",                                               "economy"),
-    ("ZeroHedge",             "https://cms.zerohedge.com/fullrss2.xml",                                              "equities"),
-    ("Business Insider",      "https://feeds2.feedburner.com/businessinsider",                                        "equities"),
-    ("SEC EDGAR 8-K",         "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&dateb=&owner=include&count=40&search_text=&output=atom", "filings"),
-    ("SEC EDGAR 10-Q",        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-Q&dateb=&owner=include&count=40&search_text=&output=atom", "filings"),
-    ("SEC EDGAR 10-K",        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-K&dateb=&owner=include&count=40&search_text=&output=atom", "filings"),
     ("PR Newswire",           "https://www.prnewswire.com/rss/news-releases-list.rss",                               "press_releases"),
-    # DISABLED: current RSS URL returns invalid channel ID; needs valid BusinessWire RSS/media feed: ("BusinessWire",          "https://feed.businesswire.com/rss/home/?rss=G1",                                      "press_releases"),
-    ("GlobeNewswire Earnings","https://www.globenewswire.com/RssFeed/subjectcode/23-Earnings",                        "press_releases"),
-    ("GlobeNewswire M&A",     "https://www.globenewswire.com/RssFeed/subjectcode/14-Mergers%20and%20Acquisitions",   "press_releases"),
-    # DISABLED broken 404 feed; replace with official FDA endpoint later: ("FDA Drug Approvals",    "https://www.fda.gov/drugs/resources-information-approved-drugs/rss",                   "fda"),
-    # DISABLED: returned HTML, use official Benzinga API/key: ("Benzinga", "https://www.benzinga.com/latest?feed=rss&page=1", "markets"),
-    ("FDA Press Releases", "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml", "fda"),
-    ("FDA Recalls", "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/recalls/rss.xml", "fda"),
-    ("FDA What's New Drugs", "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/drugs/rss.xml", "fda"),
+    ("PR Newswire Financial", "https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss", "press_releases"),
+    ("BusinessWire",          "https://feed.businesswire.com/rss/home/?rss=G1",                                      "press_releases"),
+    ("GlobeNewswire Public Companies", "https://www.globenewswire.com/RssFeed/orgclass/1",                            "press_releases"),
+    ("GlobeNewswire Earnings", "https://www.globenewswire.com/RssFeed/orgclass/2",                                  "press_releases"),
+    ("GlobeNewswire M&A",      "https://www.globenewswire.com/RssFeed/orgclass/3",                                   "press_releases"),
+    ("ACCESS Newswire",       "https://www.accesswire.com/rss/default.aspx",                                         "press_releases"),
+    ("Benzinga",              "https://www.benzinga.com/latest?feed=rss&page=1",                                     "markets"),
+    ("FDA Press Releases",    "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml", "fda"),
+    ("FDA Recalls",           "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/recalls/rss.xml", "fda"),
     ("FDA MedWatch Safety Alerts", "https://www.fda.gov/AboutFDA/ContactFDA/StayInformed/RSSFeeds/MedWatch/rss.xml", "fda"),
-    ("CoinDesk",              "https://www.coindesk.com/arc/outboundfeeds/rss/",                                     "crypto"),
-    ("CoinTelegraph",         "https://cointelegraph.com/rss",                                                        "crypto"),
-    ("OilPrice",              "https://oilprice.com/rss/main",                                                        "commodities"),
-    # DISABLED: current RSS URL redirects to invalid HTML page; needs verified ACCESS/Newswire feed: ("AccessWire",            "https://www.accesswire.com/rss/default.aspx",                                         "press_releases"),
+    ("TradingView News",      "https://www.tradingview.com/news/",                                                   "markets"),
 ]
 
 
 def _load_feeds_from_db(dsn: str) -> list[tuple[str, str, str]]:
     """Load enabled RSS sources from the rss_sources PostgreSQL table."""
+    approved_names = {name.lower() for name, _url, _category in RSS_FEEDS}
     try:
         with psycopg.connect(dsn) as conn:
             rows = conn.execute(
                 "SELECT name, url, category FROM rss_sources WHERE enabled = TRUE ORDER BY name"
             ).fetchall()
+        rows = [r for r in rows if str(r[0]).strip().lower() in approved_names]
         if rows:
-            log.info("Loaded %d RSS sources from database", len(rows))
+            log.info("Loaded %d professor-approved RSS sources from database", len(rows))
             return [(r[0], r[1], r[2]) for r in rows]
     except Exception as exc:
         log.debug("Could not load feeds from DB (%s); using hardcoded list", exc)

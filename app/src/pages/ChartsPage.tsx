@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { clsx } from 'clsx'
-import { CandlestickChart } from './CandlestickChart'
+import { CandlestickChart, type StrategyMarker } from './CandlestickChart'
 import { RSIChart } from './RSIChart'
 import { MACDChart } from './MACDChart'
 import { ResearchChart, type ResearchMode } from './ResearchChart'
@@ -33,6 +33,12 @@ const TIMEFRAMES: Array<{ key: string; label: string; min: number }> = [
 // make sense on the single-day intraday timeframes.
 const OVERLAY_TFS = new Set(TIMEFRAMES.filter(t => t.min <= 60).map(t => t.key))
 const tfMinutes = (k: string) => TIMEFRAMES.find(t => t.key === k)?.min ?? 5
+const eventWindowMinutesForTf = (k: string) => {
+  const min = tfMinutes(k)
+  if (min <= 1) return 1440
+  if (min <= 5) return 5 * 1440
+  return 10080
+}
 
 interface ChartData {
   date?: string
@@ -43,6 +49,34 @@ interface ChartData {
   bollinger?: { upper: Array<{ time: number; value: number }>; lower: Array<{ time: number; value: number }> }
   rsi?: Array<{ time: number; value: number }>
   macd?: { macd: Array<{ time: number; value: number }>; signal: Array<{ time: number; value: number }>; histogram: Array<{ time: number; value: number }> }
+  predicted?: Array<{ time: number; value: number }>
+  news_events?: Array<{ time: number; position?: string; color?: string; shape?: string; text?: string; title?: string; source?: string; event_type?: string }>
+  structured_news_events?: Array<{ time: number; title?: string; source?: string; text?: string }>
+  prediction_events?: Array<{ time: number; title?: string; text?: string; entry_price?: number; label_5m?: { return_pct?: number; direction_correct?: boolean } | null }>
+  strategy_markers?: StrategyMarker[]
+  strategy_signal_stats?: { trades?: number; setups?: number; corr_defined?: number; messages?: number; threshold?: number; stop_pct?: number; proxy_based?: boolean; note?: string } | null
+  watcher_series?: WatcherSeries | null
+  source_status?: {
+    price?: string
+    price_source?: string
+    price_detail?: string
+    social?: string
+    news?: string
+    predictions?: string
+    watchers?: string
+    markers?: string
+    quote_disagrees_with_candles?: boolean
+  }
+}
+
+interface WatcherSeries {
+  status?: string
+  source?: string
+  current_count?: number | null
+  snapshot_count?: number
+  times?: number[]
+  watchers?: number[]
+  note?: string
 }
 
 // Candlestick + indicators (multi-timeframe) OR the research views (intraday).
@@ -78,9 +112,14 @@ export function ChartsPage() {
 
   const [showDensity, setShowDensity] = useState(false)
   const [showSentiment, setShowSentiment] = useState(false)
+  const [showWatchers, setShowWatchers] = useState(false)
+  const [showStrategy, setShowStrategy] = useState(true)
   const [social, setSocial] = useState<SocialSeries | null>(null)
   const [socialMsg, setSocialMsg] = useState('')
+  const [watchers, setWatchers] = useState<WatcherSeries | null>(null)
+  const [watcherMsg, setWatcherMsg] = useState('')
   const socialCache = useRef<Record<string, SocialSeries>>({})
+  const watcherCache = useRef<Record<string, WatcherSeries>>({})
   const overlayOk = OVERLAY_TFS.has(tf)
 
   const setChartTab = useCallback((next: 'single' | 'grid') => {
@@ -124,7 +163,7 @@ export function ChartsPage() {
     if (!ticker || chartTab !== 'single' || view !== 'candles') return
     let cancelled = false
     setLoading(true); setError(null)
-    fetch(`/api/charts/${ticker}?tf=${tf}`)
+    fetch(`/api/charts/${ticker}?tf=${tf}&events=1&window_minutes=${eventWindowMinutesForTf(tf)}&bucket_minutes=1`)
       .then(r => r.json())
       .then((json: ChartData) => {
         if (cancelled) return
@@ -138,7 +177,10 @@ export function ChartsPage() {
 
   // Social overlay (density/sentiment) — only on single-day intraday timeframes.
   const wantOverlay = view === 'candles' && overlayOk && (showDensity || showSentiment)
+  const wantWatcherOverlay = view === 'candles' && overlayOk && showWatchers
   const chartDate = data?.date
+  const candleStart = Number(data?.candles?.[0]?.time || 0)
+  const candleEnd = Number(data?.candles?.[data?.candles?.length ? data.candles.length - 1 : 0]?.time || 0)
   const overlayWindowMinutes = useMemo(() => {
     const candles = data?.candles || []
     if (candles.length < 2) return 1440
@@ -149,7 +191,7 @@ export function ChartsPage() {
   }, [data])
   useEffect(() => {
     if (!wantOverlay || !ticker || !chartDate) { return }
-    const key = `${ticker}|${chartDate}|${overlayWindowMinutes}`
+    const key = `${ticker}|${chartDate}|${candleStart}|${candleEnd}|${overlayWindowMinutes}`
     if (socialCache.current[key]) { setSocial(socialCache.current[key]); setSocialMsg(''); return }
     let cancelled = false
     let timer: number | null = null
@@ -162,11 +204,28 @@ export function ChartsPage() {
           window_minutes: String(overlayWindowMinutes),
           bucket_minutes: '1',
         })
+        if (candleStart && candleEnd) {
+          qs.set('start_sec', String(candleStart))
+          qs.set('end_sec', String(candleEnd))
+        }
         const s = await fetch(`/api/chart/social?${qs}`).then(r => r.json())
         if (cancelled) return
         if (s.error) { setSocialMsg('Social: ' + s.error); return }
         if (s.status === 'walking') { setSocialMsg(`Loading social history, ${s.count || 0} messages…`); timer = window.setTimeout(poll, 1500); return }
-        if (!s.messages) { setSocialMsg('No social data for this chart window.'); return }
+        if (!s.messages) {
+          const emptySeries: SocialSeries = {
+            labels: [],
+            density: [],
+            times: [],
+            sent_labels: [],
+            scores_smooth: [],
+            sent_times: [],
+          }
+          socialCache.current[key] = emptySeries
+          setSocial(emptySeries)
+          setSocialMsg('No social data for this chart window.')
+          return
+        }
         const series: SocialSeries = {
           labels: s.labels || [],
           density: s.density || [],
@@ -176,19 +235,60 @@ export function ChartsPage() {
           sent_times: s.sent_times || s.times || [],
         }
         socialCache.current[key] = series
-        setSocial(series); setSocialMsg(`Social: ${s.source} · ${s.messages} msgs`)
+        const socialCount = Number(s.social_messages || 0)
+        const articleCount = Number(s.article_messages || 0)
+        setSocial(series); setSocialMsg(`Evidence: ${s.source} · ${s.messages} rows (${articleCount} news, ${socialCount} social)`)
       } catch { if (!cancelled) setSocialMsg('Social data: error') }
     }
     poll()
     return () => { cancelled = true; if (timer) clearTimeout(timer) }
-  }, [wantOverlay, ticker, chartDate, overlayWindowMinutes])
+  }, [wantOverlay, ticker, chartDate, candleStart, candleEnd, overlayWindowMinutes])
+
+  useEffect(() => {
+    if (!wantWatcherOverlay || !ticker || !chartDate) { return }
+    const key = `${ticker}|watchers|${chartDate}|${candleStart}|${candleEnd}|${overlayWindowMinutes}`
+    if (watcherCache.current[key]) { setWatchers(watcherCache.current[key]); setWatcherMsg(''); return }
+    let cancelled = false
+    setWatchers(null); setWatcherMsg('Loading watcher history...')
+    const qs = new URLSearchParams({
+      ticker,
+      window_minutes: String(overlayWindowMinutes),
+    })
+    if (candleStart && candleEnd) {
+      qs.set('start_sec', String(candleStart))
+      qs.set('end_sec', String(candleEnd))
+    }
+    fetch(`/api/chart/watchers?${qs}`)
+      .then(r => r.json())
+      .then((json: WatcherSeries & { error?: string }) => {
+        if (cancelled) return
+        if (json.error) { setWatcherMsg('Watchers: ' + json.error); return }
+        watcherCache.current[key] = json
+        setWatchers(json)
+        const count = Number(json.current_count)
+        const current = Number.isFinite(count) ? `${count.toLocaleString()} watchers` : 'watcher count unavailable'
+        const snapshots = Number(json.snapshot_count || 0)
+        setWatcherMsg(snapshots > 1 ? `Watchers: ${current} · ${snapshots} snapshots` : `Watchers: ${current} · collecting real history`)
+      })
+      .catch(() => { if (!cancelled) setWatcherMsg('Watchers: error') })
+    return () => { cancelled = true }
+  }, [wantWatcherOverlay, ticker, chartDate, candleStart, candleEnd, overlayWindowMinutes])
 
   // Build optional overlays from the fetched candles + social (single-day tfs only).
   const overlays = useMemo(() => {
-    if (!overlayOk || !data?.candles?.length) return { density: undefined, sentiment: undefined }
+    if (!overlayOk || !data?.candles?.length) return { density: undefined, sentiment: undefined, watchers: undefined }
     const ov = overlaySeries(data.candles as any, social, tfMinutes(tf), 15)
-    return { density: showDensity ? ov.density : undefined, sentiment: showSentiment ? ov.sentiment : undefined }
-  }, [data, social, showDensity, showSentiment, tf, overlayOk])
+    const watcherSource = watchers || data?.watcher_series
+    const watcherOverlay = (watcherSource?.times || []).map((time, i) => ({
+      time,
+      value: Number((watcherSource?.watchers || [])[i]),
+    })).filter(point => Number.isFinite(point.time) && Number.isFinite(point.value))
+    return {
+      density: showDensity ? ov.density : undefined,
+      sentiment: showSentiment ? ov.sentiment : undefined,
+      watchers: showWatchers ? watcherOverlay : undefined,
+    }
+  }, [data, social, watchers, showDensity, showSentiment, showWatchers, tf, overlayOk])
 
   const candleCount = data?.candles?.length ?? 0
 
@@ -291,9 +391,18 @@ export function ChartsPage() {
                         <input type="checkbox" checked={showSentiment} onChange={e => setShowSentiment(e.target.checked)} className="accent-green-500 cursor-pointer" />
                         <span style={{ color: '#4CAF50' }}>Sentiment</span>
                       </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                        <input type="checkbox" checked={showWatchers} onChange={e => setShowWatchers(e.target.checked)} className="accent-blue-400 cursor-pointer" />
+                        <span className="text-blue-300">Watchers</span>
+                      </label>
                       {(showDensity || showSentiment) && socialMsg && <span className="text-neutral">{socialMsg}</span>}
+                      {showWatchers && watcherMsg && <span className="text-neutral">{watcherMsg}</span>}
                     </>
                   )}
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                    <input type="checkbox" checked={showStrategy} onChange={e => setShowStrategy(e.target.checked)} className="accent-sky-500 cursor-pointer" />
+                    <span className="text-accent">Entry setups ▲▼</span>
+                  </label>
                   <span className="ml-auto text-[10px] text-neutral">
                     {overlayOk ? 'density + sentiment overlays available for intraday timeframes up to 1h' : 'overlays are disabled for 2h / daily / weekly views'}
                   </span>
@@ -303,12 +412,20 @@ export function ChartsPage() {
                   <div className="text-neutral text-sm animate-pulse p-4">Loading chart…</div>
                 ) : (
                   <>
+                    <ChartDiagnostics data={data} />
                     <ChartCard title={`Candlestick + Bollinger Bands (20,2) · ${tf}`} height={320}>
                       {candleCount
                         ? <CandlestickChart candles={data!.candles as any} bollinger={data!.bollinger as any}
-                            densityOverlay={overlays.density} sentimentOverlay={overlays.sentiment} />
+                            predicted={data!.predicted as any}
+                            newsEvents={data!.news_events as any}
+                            strategyMarkers={showStrategy ? data!.strategy_markers as any : []}
+                            densityOverlay={overlays.density} sentimentOverlay={overlays.sentiment}
+                            watcherOverlay={overlays.watchers}
+                            showWatchers={showWatchers}
+                            showPrediction showMarkers chartStyle="candles" />
                         : <div className="h-full flex items-center justify-center text-xs text-neutral">No price bars for this timeframe.</div>}
                     </ChartCard>
+                    <PredictionEvents events={data?.prediction_events ?? []} />
                     <ChartCard title={`RSI (14) · ${tf}`} height={130}>
                       <RSIChart data={(data?.rsi ?? []) as any} />
                     </ChartCard>
@@ -370,6 +487,84 @@ function emptyEnrich(ticker: string, note = 'No FeedFlash news loaded for this t
       future_sources: ['X'],
     },
   }
+}
+
+function eventTime(value: string | number) {
+  const sec = typeof value === 'number' ? value : Math.floor(Date.parse(value) / 1000)
+  if (!Number.isFinite(sec) || sec <= 0) return '--'
+  return new Date(sec * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+}
+
+function ChartDiagnostics({ data }: { data: ChartData | null }) {
+  if (!data) return null
+  const status = data.source_status || {}
+  const warn = Boolean(status.quote_disagrees_with_candles || status.price_detail)
+  const newsValue = status.news === 'no_matched_news' ? '0 news' : (status.news || `${data.structured_news_events?.length ?? 0} news`)
+  const setupCount = data.strategy_signal_stats?.setups ?? data.strategy_signal_stats?.trades ?? 0
+  const watcherValue = status.watchers || (data.watcher_series?.current_count != null ? `${Number(data.watcher_series.current_count).toLocaleString()} watchers` : 'not captured')
+  return (
+    <div className="space-y-2">
+      <div className="grid grid-cols-2 md:grid-cols-7 gap-2">
+        <Status label="Price" value={status.price || 'ok'} />
+        <Status label="Source" value={status.price_source || data.tf || 'market'} />
+        <Status label="Social" value={status.social === 'no_social_posts' ? '0 posts' : (status.social || 'pending')} />
+        <Status label="News" value={newsValue} />
+        <Status label="Signals" value={status.predictions === 'no_prediction_signals' ? '0 signals' : (status.predictions || String(data.prediction_events?.length ?? 0))} />
+        <Status label="Entry Setups" value={`${setupCount} setups`} />
+        <Status label="Watchers" value={watcherValue} />
+      </div>
+      {data.strategy_signal_stats?.note && (
+        <div className="rounded border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-[11px] text-sky-100">
+          Strategy markers are entry-ready model/threshold setups, not executed trades. {data.strategy_signal_stats.note}
+        </div>
+      )}
+      {data.watcher_series?.note && (
+        <div className="rounded border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-[11px] text-blue-100">
+          Watchers: {data.watcher_series.note}
+        </div>
+      )}
+      {warn && (
+        <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
+          {status.price_detail || 'Chart candles and screener quote disagree; use the screener quote for current-session change.'}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function PredictionEvents({ events }: { events: NonNullable<ChartData['prediction_events']> }) {
+  if (!events.length) return null
+  return (
+    <div className="bg-surface border border-border rounded-lg overflow-hidden">
+      <div className="px-3 py-2 border-b border-border">
+        <span className="text-xs text-neutral font-medium uppercase">Recent Prediction Signals</span>
+      </div>
+      <div className="divide-y divide-border/60">
+        {events.slice(-5).map((event, index) => {
+          const actual = event.label_5m?.return_pct
+          const correct = event.label_5m?.direction_correct
+          return (
+            <div key={`${event.time}-${index}`} className="grid grid-cols-[82px_1fr_92px] gap-2 px-3 py-2 text-xs items-center">
+              <span className="font-mono text-neutral">{eventTime(event.time)}</span>
+              <span className="text-slate-200 truncate">{event.title || event.text || 'Prediction signal'}</span>
+              <span className={correct === true ? 'text-emerald-400 font-mono text-right' : correct === false ? 'text-orange-400 font-mono text-right' : 'text-neutral font-mono text-right'}>
+                {actual == null ? 'pending' : `${actual > 0 ? '+' : ''}${Number(actual).toFixed(2)}%`}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function Status({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="bg-surface border border-border rounded-lg px-3 py-2 min-w-0">
+      <div className="font-mono text-sm text-white truncate">{value}</div>
+      <div className="text-[10px] uppercase text-neutral mt-0.5">{label}</div>
+    </div>
+  )
 }
 
 function ChartCard({ title, height, children }: { title: string; height: number; children: React.ReactNode }) {

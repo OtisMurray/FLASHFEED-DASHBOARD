@@ -7,6 +7,7 @@ import { getLanguageLabel, useTargetLanguage, useTranslatedText } from '@/lib/tr
 interface Props {
   article: Article
   keywords: string[]
+  targetLanguage?: string
 }
 
 // Price cache (shared across all rows)
@@ -63,9 +64,10 @@ function highlightKeywords(text: string, keywords: string[]): React.ReactNode {
   )
 }
 
-export function NewsRow({ article: a, keywords }: Props) {
+export function NewsRow({ article: a, keywords, targetLanguage: selectedLanguage }: Props) {
   const [price, setPrice] = useState<{ price: number; change: number } | null>(null)
-  const targetLanguage = useTargetLanguage()
+  const fallbackLanguage = useTargetLanguage()
+  const targetLanguage = selectedLanguage || fallbackLanguage
   const { translated, source } = useTranslatedText(a.title, targetLanguage)
 
   useEffect(() => {
@@ -123,7 +125,7 @@ export function NewsRow({ article: a, keywords }: Props) {
         {translated && translated !== a.title && (
           <span className="block truncate text-[11px] text-sky-300 mt-0.5">
             {getLanguageLabel(targetLanguage)}: {translated}
-            {source === 'glossary' && <span className="text-neutral"> · glossary</span>}
+            {source && <span className="text-neutral"> · {source}</span>}
           </span>
         )}
       </span>

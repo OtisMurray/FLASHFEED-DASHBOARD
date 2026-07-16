@@ -31,7 +31,7 @@ load_dotenv()
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/feedflash")
 DB_NAME = os.getenv("MONGODB_DB", os.getenv("MONGO_DB", "feedflash"))
 MONGO_TIMEOUT_MS = int(os.getenv("MONGO_SERVER_SELECTION_TIMEOUT_MS", "3000"))
-LIMIT = int(os.getenv("TRADINGVIEW_SCREENER_LIMIT", "3000"))
+LIMIT = int(os.getenv("TRADINGVIEW_SCREENER_LIMIT", "10000"))
 TIMEOUT = int(os.getenv("TRADINGVIEW_SCREENER_TIMEOUT", "20"))
 
 URL = "https://scanner.tradingview.com/america/scan"

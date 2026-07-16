@@ -5,7 +5,7 @@ WORKDIR /app
 COPY 1_News ./1_News
 COPY Infrastructure/kafka ./Infrastructure/kafka
 
-RUN pip install --no-cache-dir pymongo feedparser requests curl_cffi python-dotenv "psycopg[binary]" confluent-kafka redis
+RUN pip install --no-cache-dir pymongo feedparser requests curl_cffi python-dotenv "psycopg[binary]" confluent-kafka redis beautifulsoup4
 
 ENV PYTHONUNBUFFERED=1
 ENV RSS_COOLDOWN_SECONDS=0

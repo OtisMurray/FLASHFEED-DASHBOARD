@@ -35,7 +35,7 @@ export function ArticleFilters({ filters, onChange }: Props) {
       {open && (
         <div className="mt-2 p-3 bg-surface border border-border rounded-lg grid grid-cols-2 sm:grid-cols-4 gap-3">
           <FilterSelect label="Sentiment" k="sentiment" options={['bullish','bearish','neutral']} filters={filters} setFilter={setFilter} />
-          <FilterInput label="Source" k="source" filters={filters} setFilter={setFilter} placeholder="e.g. Reuters" />
+          <FilterInput label="Source" k="source" filters={filters} setFilter={setFilter} placeholder="e.g. PR Newswire" />
           <FilterInput label="Ticker" k="ticker" filters={filters} setFilter={setFilter} placeholder="e.g. AAPL" />
           <FilterInput label="Search" k="search" filters={filters} setFilter={setFilter} placeholder="keyword..." />
         </div>

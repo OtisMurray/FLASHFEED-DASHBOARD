@@ -135,6 +135,32 @@ export function ScreenerFilterPanel({ filters, setFilter, activeTab, setActiveTa
         {/* Sentiment */}
         {show('sentiment') && (
           <>
+            <FilterSelect label="Prediction" k="prediction_direction" value={filters.prediction_direction} onChange={v => setFilter('prediction_direction', v)}
+              options={[
+                { value: 'up', label: 'Predicted Up' },
+                { value: 'down', label: 'Predicted Down' },
+                { value: 'watch', label: 'Watch' },
+              ]} />
+            <FilterSelect label="Source" k="source" value={filters.source} onChange={v => setFilter('source', v)}
+              options={[
+                'TradingView News Flow',
+                'Finviz News Flow',
+                'PR Newswire',
+                'GlobeNewswire',
+                'ACCESS Newswire',
+                'SEC EDGAR',
+                'StockTwits',
+                'Bluesky',
+              ]} />
+            <FilterSelect label="Catalyst" k="catalyst" value={filters.catalyst} onChange={v => setFilter('catalyst', v)}
+              options={[
+                { value: 'sec_filing', label: 'SEC Filing' },
+                { value: 'analyst', label: 'Analyst' },
+                { value: 'earnings', label: 'Earnings' },
+                { value: 'fda', label: 'FDA/Regulatory' },
+                { value: 'offering', label: 'Offering/Dilution' },
+                { value: 'contract', label: 'Contract/Partnership' },
+              ]} />
             <FilterSelect label="StockTwits Sentiment" k="stocktwits_sentiment" value={filters.stocktwits_sentiment} onChange={v => setFilter('stocktwits_sentiment', v)}
               options={['bullish','bearish','neutral']} />
             <FilterSelect label="StockTwits Density" k="stocktwits_density" value={filters.stocktwits_density} onChange={v => setFilter('stocktwits_density', v)}

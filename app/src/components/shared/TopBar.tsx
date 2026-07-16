@@ -16,23 +16,39 @@ const NAV = [
   { href: '/ai', label: 'AI' },
   { href: '/news', label: 'News' },
   { href: '/screener', label: 'Screener' },
+  { href: '/decision-map', label: 'Decision Map' },
   { href: '/social', label: 'Social' },
   { href: '/charts', label: 'Charts' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
+  { href: '/prediction-audit', label: 'Prediction Audit' },
+  { href: '/system-health', label: 'System Health' },
   { href: '/settings', label: 'Settings' },
 ]
+const PRIMARY_NAV = NAV.slice(0, 9)
+const MORE_NAV = NAV.slice(9)
+
+function compactCount(value: unknown): string {
+  const n = Number(value || 0)
+  if (!Number.isFinite(n)) return '0'
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 10_000) return `${Math.round(n / 1_000)}k`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
+}
 
 export function TopBar() {
   const { pathname } = useLocation()
   const { toast } = useToast()
   const { mutate } = useSWRConfig()
-  const { data: status, mutate: mutateStatus } = useSWR('/api/status', fetcher, { refreshInterval: 30_000 })
-  const { data: stats } = useSWR('/api/stats?days=0', fetcher, { refreshInterval: 30_000 })
+  const { data: status, mutate: mutateStatus } = useSWR('/api/status', fetcher, { refreshInterval: 60_000 })
+  const { data: stats } = useSWR('/api/stats?days=3', fetcher, { refreshInterval: 60_000 })
   const { data: marketStatus } = useSWR('/api/market/status', fetcher, { refreshInterval: 60_000 })
+  const { data: autoRefreshStatus } = useSWR('/api/auto-refresh/status', fetcher, { refreshInterval: 60_000 })
   // Hard-disk database status (RAM = Redis; this is the on-disk SQLite companion).
-  const { data: diskStats, mutate: mutateDisk } = useSWR('/api/disk/stats', fetcher, { refreshInterval: 30_000 })
+  const { data: diskStats, mutate: mutateDisk } = useSWR('/api/disk/stats', fetcher, { refreshInterval: 60_000 })
   const [savingDisk, setSavingDisk] = useState(false)
+  const [savingDaily, setSavingDaily] = useState(false)
   const [fetchElapsed, setFetchElapsed] = useState(0)
   const fetchTimerRef = useRef<number | null>(null)
 
@@ -45,7 +61,7 @@ export function TopBar() {
       }
     }
     ping()
-    const id = window.setInterval(ping, 30_000)
+    const id = window.setInterval(ping, 60_000)
     document.addEventListener('visibilitychange', ping)
     return () => { window.clearInterval(id); document.removeEventListener('visibilitychange', ping) }
   }, [])
@@ -86,15 +102,40 @@ export function TopBar() {
     }
   }
 
+  const saveDailyArchive = async () => {
+    if (savingDaily) return
+    setSavingDaily(true)
+    try {
+      const res = await fetch('/api/disk/save-daily', { method: 'POST' })
+      const data = await res.json()
+      if (data.ok) {
+        toast(`Archived ${data.saved} articles for ${data.date}`, `Rolling ${data.retention_days ?? 31}-day daily archive`, 'success')
+        mutateDisk()
+      } else {
+        toast('Daily archive failed', data.error || 'Hard-disk database unavailable', 'error')
+      }
+    } catch {
+      toast('Daily archive failed', 'Could not reach API', 'error')
+    } finally {
+      setSavingDaily(false)
+    }
+  }
+
   const [fetching, setFetching] = useState(false)
   const [fetchResult, setFetchResult] = useState<{ new_articles?: number; updated_articles?: number; unchanged_articles?: number; total_articles?: number; ms?: number } | null>(null)
   const [cooldownRemaining, setCooldownRemaining] = useState(0)
   const [watching, setWatching] = useState(false)
   const [watchInterval, setWatchInterval] = useState('60')
-  const [fetchMode, setFetchMode] = useState<'fast' | 'full'>('full')
+  const [fetchMode, setFetchMode] = useState<'fast' | 'full'>('fast')
   const [watchLines, setWatchLines] = useState<Array<{ text: string; type: string; ts: number }>>([])
   const [showSentiment, setShowSentiment] = useState(false)
+  const [showStorage, setShowStorage] = useState(false)
+  const [showControls, setShowControls] = useState(false)
+  const [showMoreNav, setShowMoreNav] = useState(false)
   const [lastAutoResult, setLastAutoResult] = useState<{ new?: number; updated?: number; ms?: number; at: number } | null>(null)
+  const [autoStatus, setAutoStatus] = useState<{ text: string; at: number; nextAt?: number | null; running?: boolean; skipped?: boolean; error?: boolean } | null>(null)
+  const [autoQueueStartedAt, setAutoQueueStartedAt] = useState<number | null>(null)
+  const [autoProgress, setAutoProgress] = useState(0)
   const watchRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
@@ -110,6 +151,21 @@ export function TopBar() {
     return () => window.clearInterval(timer)
   }, [])
 
+  useEffect(() => {
+    if (!watching || !autoQueueStartedAt) {
+      setAutoProgress(0)
+      return
+    }
+    const intervalMs = Math.max(60, Number(watchInterval || 60)) * 1000
+    const update = () => {
+      const elapsed = Date.now() - autoQueueStartedAt
+      setAutoProgress(Math.max(0, Math.min(100, (elapsed / intervalMs) * 100)))
+    }
+    update()
+    const timer = window.setInterval(update, 250)
+    return () => window.clearInterval(timer)
+  }, [watching, autoQueueStartedAt, watchInterval])
+
   const revalidateDashboardData = useCallback(() => {
     mutate(
       key => typeof key === 'string' && (
@@ -117,6 +173,7 @@ export function TopBar() {
         key.startsWith('/api/stats') ||
         key.startsWith('/api/status') ||
         key.startsWith('/api/screener') ||
+        key.startsWith('/api/decision-map') ||
         key.startsWith('/api/momentum') ||
         key.startsWith('/api/prices') ||
         key.startsWith('/api/prediction') ||
@@ -160,10 +217,17 @@ export function TopBar() {
       const socialNew = data.social_new ?? 0
       const socialUpdated = data.social_updated ?? 0
       const trackedMarketCount = data.tracked_market_ticker_count ? `; ${data.tracked_market_ticker_count} market tickers` : ''
+      const refreshDetail = Array.isArray(data.errors) && data.errors.length
+        ? data.errors.slice(0, 2).join(' | ')
+        : data.error || undefined
       toast(
-        `${data.quotes_updated ?? 0} quotes${trackedMarketCount}; +${data.new_articles ?? 0} new articles${data.updated_articles !== undefined ? `, ${data.updated_articles} refreshed` : ''}; +${socialNew} social${socialUpdated ? `, ${socialUpdated} refreshed` : ''}`,
-        undefined,
-        ((data.new_articles ?? 0) + (data.updated_articles ?? data.refreshed_articles ?? 0) + socialNew + socialUpdated) > 0 ? 'success' : 'info',
+        data.ok === false
+          ? 'Refresh needs attention'
+          : `${data.quotes_updated ?? 0} quotes${trackedMarketCount}; +${data.new_articles ?? 0} new articles${data.updated_articles !== undefined ? `, ${data.updated_articles} refreshed` : ''}; +${socialNew} social${socialUpdated ? `, ${socialUpdated} refreshed` : ''}`,
+        data.ok === false ? refreshDetail : undefined,
+        data.ok === false
+          ? 'error'
+          : ((data.new_articles ?? 0) + (data.updated_articles ?? data.refreshed_articles ?? 0) + socialNew + socialUpdated) > 0 ? 'success' : 'info',
         latency
       )
       mutateStatus()
@@ -188,13 +252,33 @@ export function TopBar() {
       watchRef.current?.close()
       watchRef.current = null
       setWatching(false)
+      setAutoQueueStartedAt(null)
+      setAutoProgress(0)
+      setAutoStatus({ text: 'Auto-watch stopped.', at: Date.now() })
     } else {
       setWatchLines([])
+      setAutoQueueStartedAt(Date.now())
+      setAutoStatus({ text: 'Connecting auto-watch...', at: Date.now(), running: true })
       const es = new EventSource(`/api/watch?interval=${watchInterval}&mode=${fetchMode}`)
 
       es.addEventListener('start', (e) => {
         const d = JSON.parse(e.data)
+        setAutoStatus({ text: d.message || 'Auto-watch started.', at: Date.now(), nextAt: d.next_run_at ?? null, running: false })
+        setAutoQueueStartedAt(Date.now())
         setWatchLines(l => [...l, { text: d.message, type: 'info', ts: Date.now() }])
+        toast('Auto-watch started', `Every ${d.interval ?? watchInterval}s in ${d.mode ?? fetchMode} mode`, 'info')
+      })
+      es.addEventListener('heartbeat', (e) => {
+        const d = JSON.parse(e.data)
+        setAutoStatus({
+          text: d.message || (d.running ? 'Auto-watch refresh started.' : 'Auto-watch waiting.'),
+          at: Date.now(),
+          nextAt: d.next_run_at ?? null,
+          running: Boolean(d.running),
+          skipped: Boolean(d.skipped),
+        })
+        setAutoQueueStartedAt(Date.now())
+        setWatchLines(l => [...l.slice(-200), { text: d.message || 'Auto-watch heartbeat.', type: d.skipped ? 'info' : 'new', ts: Date.now() }])
       })
       es.addEventListener('line', (e) => {
         const d = JSON.parse(e.data)
@@ -203,6 +287,8 @@ export function TopBar() {
         // Show toast notification with cycle results
         if (d.new !== undefined) {
           setLastAutoResult({ new: d.new, updated: d.updated, ms: d.ms, at: Date.now() })
+          setAutoStatus({ text: d.text || 'Auto-watch refresh complete.', at: Date.now(), nextAt: d.next_run_at ?? null, running: false })
+          setAutoQueueStartedAt(Date.now())
           toast(
             `${d.quotes_updated ?? 0} quotes${d.tracked_market_ticker_count ? `; ${d.tracked_market_ticker_count} market tickers` : ''}; +${d.new} new articles${d.updated > 0 ? `, ${d.updated} refreshed` : ''}; +${d.social_new ?? 0} social${d.social_updated > 0 ? `, ${d.social_updated} refreshed` : ''}`,
             undefined,
@@ -211,41 +297,86 @@ export function TopBar() {
           )
           mutateStatus()
           revalidateDashboardData()
+          mutateDisk()
         }
       })
       es.addEventListener('error', (e) => {
         try {
           const d = JSON.parse((e as any).data)
+          setAutoStatus({ text: d.message || 'Auto-watch error.', at: Date.now(), error: true })
           setWatchLines(l => [...l, { text: d.message, type: 'err', ts: Date.now() }])
         } catch {}
       })
       es.addEventListener('end', (e) => {
         const d = JSON.parse(e.data)
+        setAutoStatus({ text: d.message || 'Auto-watch ended.', at: Date.now() })
         setWatchLines(l => [...l, { text: d.message, type: 'info', ts: Date.now() }])
         setWatching(false)
+        setAutoQueueStartedAt(null)
+        setAutoProgress(0)
       })
       es.onerror = () => {
+        setAutoStatus({ text: 'Auto-watch connection lost.', at: Date.now(), error: true })
         setWatchLines(l => [...l, { text: 'Connection lost.', type: 'err', ts: Date.now() }])
         setWatching(false)
+        setAutoQueueStartedAt(null)
+        setAutoProgress(0)
         watchRef.current = null
       }
 
       watchRef.current = es
       setWatching(true)
     }
-  }, [watching, watchInterval, fetchMode, mutateStatus, revalidateDashboardData])
+  }, [watching, watchInterval, fetchMode, mutateStatus, revalidateDashboardData, mutateDisk])
+
+  const autoLabel = watching
+    ? autoStatus?.running
+      ? 'Auto refreshing...'
+      : autoStatus?.skipped
+        ? 'Auto waiting'
+        : lastAutoResult
+          ? `Auto +${lastAutoResult.new ?? 0} new${lastAutoResult.updated ? `, ${lastAutoResult.updated} upd` : ''}`
+          : 'Auto starting...'
+    : null
+  const serverAuto = autoRefreshStatus?.onsite_fetch
+  const serverAutoOn = Boolean(serverAuto?.enabled)
+  const serverAutoRunning = Boolean(serverAuto?.running || autoRefreshStatus?.away_fetch?.running)
+  const backendRefreshInFlight = Boolean(autoRefreshStatus?.refresh_cycle_in_flight)
+  const serverAutoLabel = serverAutoRunning
+    ? 'Server auto refreshing'
+    : serverAutoOn
+      ? serverAuto?.dashboard_present
+        ? `Server auto ${serverAuto.interval_minutes ?? 20}m`
+        : 'Server auto standby'
+      : 'Server auto off'
+  const serverAutoTitle = serverAutoOn
+    ? `Backend auto-refresh is ${serverAutoRunning ? 'currently running' : 'enabled'} · refresh lock ${backendRefreshInFlight ? 'active' : 'clear'} · dashboard ${serverAuto.dashboard_present ? 'present' : 'absent'} · next due ${serverAuto.next_due_at || 'waiting'} · market ${autoRefreshStatus?.market?.label || 'unknown'}`
+    : 'Backend auto-refresh is disabled'
 
   return (
     <>
-      <header className="bg-surface border-b border-border flex-shrink-0">
-        <div className="min-h-14 flex items-center gap-3 px-4 py-2">
+      <header className="relative bg-surface border-b border-border flex-shrink-0">
+        {watching && (
+          <div
+            className="absolute left-0 top-0 z-40 h-1 w-full overflow-hidden bg-bg"
+            title={autoQueueStartedAt ? `Auto refresh queue: ${Math.round(autoProgress)}% until next cycle` : 'Auto refresh is running the first cycle'}
+          >
+            <div
+              className="relative h-full overflow-hidden rounded-r-full bg-gradient-to-r from-sky-400 via-emerald-400 to-yellow-300 shadow-[0_0_12px_rgba(56,189,248,0.65)] transition-[width] duration-200 ease-linear"
+              style={{ width: `${autoQueueStartedAt ? autoProgress : 100}%` }}
+            >
+              <div className="absolute inset-y-0 right-0 w-16 animate-[auto-progress-glint_1.15s_linear_infinite] bg-gradient-to-r from-transparent via-white/70 to-transparent" />
+            </div>
+          </div>
+        )}
+        <div className="flex min-h-14 items-center gap-2 px-3 py-2 md:px-4">
           <NavLink to="/overview" className="flex-shrink-0">
             <div className="text-accent font-bold text-lg tracking-tight font-mono leading-none">FlashFeed</div>
             <div className="text-neutral text-[10px] mt-1 uppercase tracking-wide">Financial Intelligence</div>
           </NavLink>
 
-          <nav className="hidden xl:flex items-center gap-1 ml-2">
-            {NAV.map(({ href, label }) => {
+          <nav className="hidden min-w-0 flex-1 items-center gap-1 lg:flex">
+            {PRIMARY_NAV.map(({ href, label }) => {
               const active = pathname === href || pathname.startsWith(`${href}/`)
               return (
                 <NavLink
@@ -262,99 +393,186 @@ export function TopBar() {
                 </NavLink>
               )
             })}
+            <div className="relative">
+              <button
+                onClick={() => setShowMoreNav(v => !v)}
+                className={clsx(
+                  'px-3 py-2 text-xs rounded-md border transition-colors',
+                  MORE_NAV.some(({ href }) => pathname === href || pathname.startsWith(`${href}/`))
+                    ? 'bg-accent/15 border-accent/50 text-white'
+                    : 'border-transparent text-neutral hover:text-white hover:bg-bg/60'
+                )}
+              >
+                More
+              </button>
+              {showMoreNav && (
+                <div className="absolute left-0 top-full z-50 mt-2 w-40 rounded-lg border border-border bg-surface p-1 shadow-xl">
+                  {MORE_NAV.map(({ href, label }) => (
+                    <NavLink
+                      key={href}
+                      to={href}
+                      onClick={() => setShowMoreNav(false)}
+                      className={({ isActive }) => clsx(
+                        'block rounded px-3 py-2 text-xs transition-colors',
+                        isActive ? 'bg-accent/15 text-white' : 'text-neutral hover:bg-bg hover:text-white'
+                      )}
+                    >
+                      {label}
+                    </NavLink>
+                  ))}
+                </div>
+              )}
+            </div>
           </nav>
 
-          <div className="flex-1" />
-
-          {fetchResult && (
-            <span className="hidden lg:inline text-xs text-emerald-400 animate-in whitespace-nowrap">
-              +{fetchResult.new_articles ?? 0} new{fetchResult.updated_articles !== undefined ? `, ${fetchResult.updated_articles} refreshed` : fetchResult.refreshed_articles !== undefined ? `, ${fetchResult.refreshed_articles} refreshed` : ''} ({((fetchResult.ms ?? 0) / 1000).toFixed(1)}s)
-            </span>
-          )}
-
-          <button
-            onClick={doFetch}
-            disabled={fetching || cooldownRemaining > 0}
-            title={cooldownRemaining > 0 ? `Fetch available in ${cooldownRemaining}s` : `${fetchMode === 'fast' ? 'Fast trader refresh' : 'Full source refresh'}`}
-            className="px-3 py-1.5 bg-accent text-white text-xs font-medium rounded hover:bg-sky-400 disabled:opacity-50 transition-colors whitespace-nowrap"
-          >
-            {fetching ? `Fetching ${fetchElapsed}s…` : cooldownRemaining > 0 ? `Fetch ${cooldownRemaining}s` : 'Run Now'}
-          </button>
-
-          {/* Save-to-disk — sits right next to Run Now: fetch live, then persist to disk */}
-          <button
-            onClick={saveToDisk}
-            disabled={savingDisk}
-            title="Save the last 3 days of news to the local hard-disk database (auto-deletes after 3 days). Also runs automatically when you exit the site."
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded border border-amber-500/50 text-amber-300 bg-amber-500/10 hover:bg-amber-500/20 hover:border-amber-400 disabled:opacity-50 transition-colors whitespace-nowrap"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
-              <polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
-            </svg>
-            {savingDisk ? 'Saving…' : 'Save → Disk'}
-          </button>
-
-          <select
-            value={fetchMode}
-            onChange={e => setFetchMode(e.target.value as 'fast' | 'full')}
-            disabled={fetching || watching}
-            className="hidden md:block bg-bg border border-border text-xs text-neutral rounded px-2 py-1.5 focus:outline-none disabled:opacity-50"
-            title="Fast refresh is optimized for top movers. Full refresh runs every broader source sweep."
-          >
-            <option value="fast">Fast</option>
-            <option value="full">Full</option>
-          </select>
-
-          <div className="hidden md:flex items-stretch">
-            <select
-              value={watchInterval}
-              onChange={e => setWatchInterval(e.target.value)}
-              disabled={watching}
-              className="bg-bg border border-border border-r-0 text-xs text-neutral rounded-l px-2 py-1.5 focus:outline-none disabled:opacity-50"
-            >
-              <option value="60">1m</option>
-            </select>
+          <div className="ml-auto flex min-w-0 items-center justify-end gap-2">
+            {fetchResult && (
+              <span className="hidden max-w-[12rem] truncate text-xs text-emerald-400 animate-in lg:inline">
+                +{fetchResult.new_articles ?? 0} new{fetchResult.updated_articles !== undefined ? `, ${fetchResult.updated_articles} refreshed` : fetchResult.refreshed_articles !== undefined ? `, ${fetchResult.refreshed_articles} refreshed` : ''} ({((fetchResult.ms ?? 0) / 1000).toFixed(1)}s)
+              </span>
+            )}
             <button
-              onClick={toggleWatch}
-              className={`px-3 py-1.5 text-xs font-medium rounded-r border transition-colors ${
-                watching
-                  ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400'
-                  : 'bg-surface border-border text-neutral hover:text-white hover:border-accent'
-              }`}
-              title={watching ? 'Stop auto-watch' : 'Start auto-watch'}
+              onClick={doFetch}
+              disabled={fetching || cooldownRemaining > 0}
+              title={cooldownRemaining > 0 ? `Fetch available in ${cooldownRemaining}s` : `${fetchMode === 'fast' ? 'Fast trader refresh' : 'Full source refresh'}`}
+              className="min-w-[6.75rem] px-3 py-1.5 bg-accent text-white text-xs font-medium rounded hover:bg-sky-400 disabled:opacity-50 transition-colors whitespace-nowrap"
             >
-              {watching ? 'Stop' : 'Auto'}
+              {fetching ? `Fetching ${fetchElapsed}s...` : cooldownRemaining > 0 ? `Fetch ${cooldownRemaining}s` : 'Run Now'}
             </button>
+
+            <div className="relative">
+              <button
+                onClick={() => setShowControls(v => !v)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded border border-border text-neutral hover:text-white hover:border-accent transition-colors"
+                title="Refresh, auto-watch, sentiment, and storage controls"
+              >
+                Controls
+                <span className={watching || serverAutoOn ? 'text-emerald-300' : 'text-neutral'}>{watching ? 'Watch' : serverAutoOn ? 'Auto' : fetchMode}</span>
+              </button>
+
+              {showControls && (
+                <div className="absolute right-0 top-full z-50 mt-2 w-80 rounded-lg border border-border bg-surface shadow-xl">
+                  <div className="space-y-3 p-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="text-[10px] uppercase text-neutral">
+                        Mode
+                        <select
+                          value={fetchMode}
+                          onChange={e => setFetchMode(e.target.value as 'fast' | 'full')}
+                          disabled={fetching || watching}
+                          className="mt-1 w-full bg-bg border border-border text-xs text-neutral rounded px-2 py-1.5 focus:outline-none disabled:opacity-50"
+                          title="Fast refresh is optimized for top movers. Full refresh runs every broader source sweep."
+                        >
+                          <option value="fast">Fast</option>
+                          <option value="full">Full</option>
+                        </select>
+                      </label>
+                      <label className="text-[10px] uppercase text-neutral">
+                        Auto interval
+                        <select
+                          value={watchInterval}
+                          onChange={e => setWatchInterval(e.target.value)}
+                          disabled={watching}
+                          className="mt-1 w-full bg-bg border border-border text-xs text-neutral rounded px-2 py-1.5 focus:outline-none disabled:opacity-50"
+                        >
+                          <option value="60">1m</option>
+                          <option value="120">2m</option>
+                          <option value="300">5m</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <div className="rounded-lg border border-border bg-bg/40 p-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-white">Server auto-refresh</span>
+                        <span className={clsx('font-mono text-[11px]', serverAutoRunning ? 'text-sky-300' : serverAutoOn ? 'text-emerald-300' : 'text-neutral')}>
+                          {serverAutoRunning ? 'running' : serverAutoOn ? 'enabled' : 'off'}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-[11px] text-neutral">
+                        {serverAutoOn
+                          ? `Runs every ${serverAuto.interval_minutes ?? 20}m while the dashboard is present; checks every ${serverAuto.check_seconds ?? 60}s.`
+                          : 'Backend auto-refresh is disabled.'}
+                      </div>
+                      {serverAutoOn && (
+                        <div className="mt-1 text-[11px] text-slate-400">
+                          Next due: {serverAuto.next_due_at ? new Date(serverAuto.next_due_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'waiting'} · Dashboard: {serverAuto.dashboard_present ? 'present' : 'absent'}
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={toggleWatch}
+                        className={`px-3 py-2 text-xs font-medium rounded border transition-colors ${
+                          watching
+                            ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                            : 'bg-bg border-border text-neutral hover:text-white hover:border-accent'
+                        }`}
+                      >
+                        {watching ? 'Stop auto-watch' : 'Start auto-watch'}
+                      </button>
+                      <button
+                        onClick={() => { setShowSentiment(true); setShowControls(false) }}
+                        className="px-3 py-2 text-xs font-medium rounded border border-border bg-bg text-neutral hover:text-white hover:border-accent transition-colors"
+                      >
+                        Sentiment settings
+                      </button>
+                    </div>
+
+                    <div className="rounded-lg border border-border bg-bg/40 p-2">
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="text-xs font-semibold text-white">Storage</span>
+                        {diskStats?.available && <span className="font-mono text-xs text-emerald-300">{compactCount(diskStats.total)}</span>}
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          onClick={() => { saveDailyArchive(); setShowControls(false) }}
+                          disabled={savingDaily}
+                          className="px-3 py-2 text-xs font-medium rounded bg-emerald-500/15 border border-emerald-500/40 text-emerald-200 hover:bg-emerald-500/25 disabled:opacity-50 transition-colors"
+                        >
+                          {savingDaily ? 'Archiving...' : 'Archive 24h now'}
+                        </button>
+                        <button
+                          onClick={() => { saveToDisk(); setShowControls(false); setShowStorage(false) }}
+                          disabled={savingDisk}
+                          className="px-3 py-2 text-xs font-medium rounded bg-amber-500/15 border border-amber-500/40 text-amber-200 hover:bg-amber-500/25 disabled:opacity-50 transition-colors"
+                        >
+                          {savingDisk ? 'Saving...' : 'Save 3d snapshot'}
+                        </button>
+                      </div>
+                      <div className="mt-2 rounded border border-emerald-500/20 bg-emerald-500/5 px-2 py-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] uppercase text-neutral">Daily archive</span>
+                          <span className="font-mono text-xs text-emerald-300">
+                            {diskStats?.daily_archive?.days ?? 0}/{diskStats?.daily_archive?.retention_days ?? diskStats?.daily_archive?.max_days ?? 31} days
+                          </span>
+                        </div>
+                        <div className="mt-0.5 truncate text-[10px] text-neutral">
+                          {diskStats?.daily_archive?.newest_day
+                            ? `Newest ${diskStats.daily_archive.newest_day} · ${compactCount(diskStats.daily_archive.total_articles)} articles`
+                            : 'Saves the last 24h once per day'}
+                        </div>
+                      </div>
+                      <div className="mt-2 grid grid-cols-3 gap-2 text-center">
+                        <StorageMetric label="Manual" value={diskStats?.by_bucket?.manual ?? 0} />
+                        <StorageMetric label="Auto" value={diskStats?.by_bucket?.auto ?? 0} />
+                        <StorageMetric label="Fetch" value={diskStats?.by_bucket?.fetch ?? 0} />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
-          <button
-            onClick={() => setShowSentiment(true)}
-            className="hidden lg:inline-flex px-3 py-1.5 text-xs font-medium rounded border border-border text-neutral hover:text-white hover:border-accent transition-colors"
-          >
-            Sentiment
-          </button>
-
-          <div className="hidden sm:flex items-center gap-2">
-            {(status || stats) && <StatusBadge ok={status?.ok !== false} label={`${stats?.total_all ?? status?.database?.total_all ?? status?.database?.articles ?? 0} articles`} />}
-            {marketStatus && <StatusBadge ok={marketStatus.open} label={marketStatus.label || (marketStatus.open ? 'Market Open' : 'Market Closed')} />}
-            {diskStats?.available && (
-              <StatusBadge
-                ok={true}
-                label={`Disk Auto ${diskStats.total ?? 0} (A${diskStats.by_bucket?.auto ?? 0}/F${diskStats.by_bucket?.fetch ?? 0})`}
-              />
-            )}
-            {watching && <StatusBadge ok={true} label={`Auto ${watchInterval}s`} />}
-            {lastAutoResult && (
-              <StatusBadge
-                ok={true}
-                label={`Last +${lastAutoResult.new ?? 0}/${lastAutoResult.updated ?? 0} ${Math.floor((Date.now() - lastAutoResult.at) / 1000)}s ago`}
-              />
-            )}
+          <div className="hidden min-w-0 items-center justify-end gap-2 sm:flex">
+            {(status || stats) && <StatusBadge ok={status?.ok !== false} label={`${compactCount(stats?.total ?? status?.database?.recent_articles ?? status?.database?.articles)} 3d cache`} />}
+            {marketStatus && <StatusBadge ok={marketStatus.open} label={marketStatus.open ? 'Open' : 'Closed'} />}
           </div>
         </div>
 
-        <nav className="xl:hidden flex items-center gap-1 overflow-x-auto px-4 pb-2">
+        <nav className="lg:hidden flex items-center gap-1 overflow-x-auto px-3 pb-2 md:px-4">
           {NAV.map(({ href, label }) => {
             const active = pathname === href || pathname.startsWith(`${href}/`)
             return (
@@ -376,5 +594,14 @@ export function TopBar() {
       </header>
       <SentimentModal open={showSentiment} onClose={() => setShowSentiment(false)} />
     </>
+  )
+}
+
+function StorageMetric({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div className="rounded border border-border bg-bg px-2 py-1.5">
+      <div className="font-mono text-xs text-white">{compactCount(value)}</div>
+      <div className="text-[9px] uppercase text-neutral">{label}</div>
+    </div>
   )
 }

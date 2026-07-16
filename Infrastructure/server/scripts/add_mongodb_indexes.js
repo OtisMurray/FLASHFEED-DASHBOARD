@@ -1,7 +1,7 @@
 import mongoose from 'mongoose'
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017'
-const DB_NAME = process.env.MONGO_DB || 'ds440'
+const MONGO_URI = process.env.MONGODB_URI || process.env.MONGO_URI || 'mongodb://localhost:27017/feedflash'
+const DB_NAME = process.env.MONGO_DB || process.env.DB_NAME || 'feedflash'
 
 async function addIndexes() {
   await mongoose.connect(MONGO_URI)
@@ -18,6 +18,11 @@ async function addIndexes() {
     { keys: { publish_date: -1 }, name: 'publish_date' },
     { keys: { source: 1, publish_date: -1 }, name: 'source_publish_date' },
     { keys: { sentiment: 1, publish_date: -1 }, name: 'sentiment_publish_date' },
+    { keys: { feed_sort_time: -1 }, name: 'feed_sort_time_desc' },
+    { keys: { ticker: 1, event_sec: -1 }, name: 'ticker_event_sec_desc' },
+    { keys: { tickers: 1, event_sec: -1 }, name: 'tickers_event_sec_desc' },
+    { keys: { market_session: 1, event_sec: -1 }, name: 'market_session_event_sec_desc' },
+    { keys: { catalystCategory: 1, event_sec: -1 }, name: 'catalyst_category_event_sec_desc' },
   ]
 
   for (const idx of articlesIndexes) {
@@ -54,14 +59,64 @@ async function addIndexes() {
   }
 
   // Screener collection
-  try {
-    await db.collection('screeners').createIndex({ ticker: 1 }, { unique: true, background: true })
-    console.log('✓ Created unique index: ticker on screeners')
-  } catch (err) {
-    if (err.codeName === 'IndexOptionsConflict') {
-      console.log('- Index already exists: ticker on screeners')
-    } else {
-      console.error('✗ Failed to create index on screeners:', err.message)
+  const screenerIndexes = [
+    { keys: { ticker: 1 }, options: { unique: true, background: true }, name: 'ticker' },
+    { keys: { quote_updated_at: -1, change_pct: -1 }, name: 'quote_updated_change_desc' },
+    { keys: { rel_volume: -1, volume: -1 }, name: 'rel_volume_volume_desc' },
+    { keys: { threshold_feature_updated_at: -1 }, name: 'threshold_feature_updated_desc' },
+  ]
+
+  for (const idx of screenerIndexes) {
+    try {
+      await db.collection('screeners').createIndex(idx.keys, { ...(idx.options || { background: true }), name: idx.name })
+      console.log(`✓ Created index: ${idx.name} on screeners`)
+    } catch (err) {
+      if (err.codeName === 'IndexOptionsConflict') {
+        console.log(`- Index already exists: ${idx.name}`)
+      } else {
+        console.error(`✗ Failed to create index ${idx.name} on screeners:`, err.message)
+      }
+    }
+  }
+
+  const sourceStatusIndexes = [
+    { keys: { source: 1 }, name: 'source' },
+    { keys: { type: 1, last_checked_at: -1 }, name: 'type_last_checked_desc' },
+    { keys: { status: 1, last_success_at: -1 }, name: 'status_last_success_desc' },
+  ]
+
+  for (const idx of sourceStatusIndexes) {
+    try {
+      await db.collection('source_status').createIndex(idx.keys, { name: idx.name, background: true })
+      console.log(`✓ Created index: ${idx.name} on source_status`)
+    } catch (err) {
+      if (err.codeName === 'IndexOptionsConflict') {
+        console.log(`- Index already exists: ${idx.name}`)
+      } else {
+        console.error(`✗ Failed to create index ${idx.name} on source_status:`, err.message)
+      }
+    }
+  }
+
+  const predictionSignalIndexes = [
+    { keys: { ticker: 1, signal_sec: -1 }, name: 'ticker_signal_sec_desc' },
+    { keys: { label_status: 1, signal_sec: -1 }, name: 'label_status_signal_sec_desc' },
+    { keys: { signal_sec: -1, ticker: 1, entry_price: 1 }, name: 'signal_sec_ticker_entry_price' },
+    { keys: { 'labels.return_5m.label_source': 1, signal_sec: -1 }, name: 'return_5m_label_source_signal_sec' },
+    { keys: { 'labels.return_15m.label_source': 1, signal_sec: -1 }, name: 'return_15m_label_source_signal_sec' },
+    { keys: { 'labels.return_60m.label_source': 1, signal_sec: -1 }, name: 'return_60m_label_source_signal_sec' },
+  ]
+
+  for (const idx of predictionSignalIndexes) {
+    try {
+      await db.collection('prediction_signals').createIndex(idx.keys, { name: idx.name, background: true })
+      console.log(`✓ Created index: ${idx.name} on prediction_signals`)
+    } catch (err) {
+      if (err.codeName === 'IndexOptionsConflict') {
+        console.log(`- Index already exists: ${idx.name}`)
+      } else {
+        console.error(`✗ Failed to create index ${idx.name} on prediction_signals:`, err.message)
+      }
     }
   }
 

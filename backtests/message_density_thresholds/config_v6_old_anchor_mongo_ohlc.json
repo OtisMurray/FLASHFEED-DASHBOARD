@@ -1,0 +1,13 @@
+{
+  "extends": "config_threshold_v6_ohlc_expanded.json",
+  "priceSource": "mongo_ohlcv",
+  "ohlcCollection": "ohlcv_bars",
+  "ohlcSource": "yahoo_chart_ohlcv",
+  "outputDir": "backtests/message_density_thresholds/outputs_v6_old_anchor_mongo_ohlc",
+  "peerResearch": {
+    "enabled": false
+  },
+  "v6FullImprovementGrid": {
+    "enabled": false
+  }
+}

@@ -1,0 +1,6 @@
+FROM mongo:7
+
+COPY scripts/news_source_guard.js /scripts/news_source_guard_runtime.js
+COPY scripts/news_source_guard_loop.sh /scripts/news_source_guard_loop.sh
+
+CMD ["sh", "/scripts/news_source_guard_loop.sh"]

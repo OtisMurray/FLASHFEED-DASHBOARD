@@ -219,12 +219,12 @@ export function ResearchChart({ ticker, mode, window: win }: { ticker: string; m
     setStatus('Loading…'); setBundle(null)
 
     const run = async () => {
-      const d: PriceData = await fetchJSON(`/api/charts/${encodeURIComponent(ticker)}?window=${encodeURIComponent(win)}`)
+      const d: PriceData = await fetchJSON(`/api/chart?${new URLSearchParams({ ticker, window: win })}`)
       if (cancelled) return
       if (d.error) { setStatus(d.error); return }
 
       const poll = async () => {
-        const s: SocialData = await fetchJSON(`/api/social/series/${encodeURIComponent(d.ticker)}`)
+        const s: SocialData = await fetchJSON(`/api/chart/social?${new URLSearchParams({ ticker: d.ticker, date: d.date })}`)
         if (cancelled) return
         if (s.error) { setStatus('Social data: ' + s.error); return }
         if (s.status === 'walking') {
@@ -232,7 +232,7 @@ export function ResearchChart({ ticker, mode, window: win }: { ticker: string; m
           pollRef.current = window.setTimeout(poll, 1500) as unknown as number
           return
         }
-        if (!s.messages) { setStatus('No social data available.'); return }
+        if (!s.messages) { setStatus('No social data for this chart window.'); return }
         let txt = `Social: ${s.source} · ${s.messages} msgs (${s.bullish}B/${s.bearish}B tagged)`
         if (!s.complete && s.coverage_start) txt += ` · partial, from ${s.coverage_start}`
         setStatus(txt)

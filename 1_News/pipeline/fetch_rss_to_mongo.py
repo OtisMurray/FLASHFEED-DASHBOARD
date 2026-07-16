@@ -31,7 +31,8 @@ except Exception:
 
 from fetch_rss import RSS_FEEDS, _fetch_feed
 from keyword_filter import load_keywords, filter_articles
-from sentiment_utils import classify_financial_event, score_financial_sentiment
+from sentiment_utils import classify_financial_event, score_financial_sentiment, signed_sentiment_score
+from source_status import record_source_status
 
 load_dotenv()
 
@@ -42,20 +43,25 @@ MARKET_WINDOW_CLOSE_HOUR = int(os.environ.get("MARKET_WINDOW_CLOSE_HOUR_ET", "17
 PRUNE_OLD_ARTICLES = os.environ.get("MARKET_WINDOW_PRUNE", "false").lower() in ("1", "true", "yes")
 FILTER_TO_MARKET_WINDOW = os.environ.get("MARKET_WINDOW_FILTER", "true").lower() in ("1", "true", "yes")  # Enabled by default to reduce noise
 ARTICLE_CACHE_DAYS = max(1, int(os.environ.get("ARTICLE_CACHE_DAYS", "3")))
-INCLUDE_CUSTOM_RSS = os.environ.get("INCLUDE_CUSTOM_RSS_SOURCES", "false").lower() in ("1", "true", "yes")
-ENABLE_DEDUP_HASH = os.environ.get("ENABLE_DEDUP_HASH", "false").lower() in ("1", "true", "yes")
+INCLUDE_CUSTOM_RSS = False
+ENABLE_DEDUP_HASH = os.environ.get("ENABLE_DEDUP_HASH", "true").lower() in ("1", "true", "yes")
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+RSS_FAST_MODE = os.environ.get("RSS_FAST_MODE", "false").lower() in ("1", "true", "yes")
+RSS_HTTP_TIMEOUT = int(os.environ.get("RSS_HTTP_TIMEOUT", "12"))
+NEWSWIRE_HTTP_TIMEOUT = int(os.environ.get("NEWSWIRE_HTTP_TIMEOUT", "8" if RSS_FAST_MODE else "20"))
+NEWSWIRE_MAX_PAGES = max(0, int(os.environ.get("NEWSWIRE_MAX_PAGES", "1" if RSS_FAST_MODE else "0")))
+ENABLE_COMPANY_ALIAS_MATCH = os.environ.get(
+    "ENABLE_COMPANY_ALIAS_MATCH",
+    "false" if RSS_FAST_MODE else "true",
+).lower() in ("1", "true", "yes")
 
 APPROVED_STRUCTURED_FEED_NAMES = {
     "PR Newswire",
     "PR Newswire Financial",
     "ACCESS Newswire",
+    "Business Wire",
     "BusinessWire",
     "GlobeNewswire Public Companies",
-    "SEC EDGAR Current",
-    "SEC EDGAR 8-K",
-    "SEC EDGAR 10-Q",
-    "SEC EDGAR 10-K",
     "FDA Press Releases",
     "FDA Recalls",
     "FDA Drug Approvals",
@@ -66,11 +72,27 @@ APPROVED_SOURCE_PREFIXES = (
     "PR Newswire",
     "PR Newswire Financial",
     "ACCESS Newswire",
+    "Business Wire",
     "BusinessWire",
     "GlobeNewswire",
-    "SEC EDGAR",
     "FDA",
+    "SEC EDGAR",
 )
+
+GENERIC_COMPANY_ALIAS_WORDS = {
+    "the", "inc", "incorporated", "corp", "corporation", "company", "co",
+    "ltd", "limited", "plc", "group", "holdings", "holding", "class",
+    "common", "ordinary", "shares", "technologies", "technology",
+    "news", "newswire", "wire", "press", "release", "releases",
+}
+
+GENERIC_COMPANY_ALIASES = {
+    "global", "american", "international", "united", "first", "new",
+    "energy", "capital", "financial", "markets", "digital", "solutions",
+    "systems", "resources", "partners", "industries", "properties",
+    "access", "access newswire", "globenewswire", "business wire",
+    "businesswire", "pr newswire", "press releases", "market news",
+}
 
 CRYPTO_TICKERS = {
     "BTC", "ETH", "LTC", "DOGE", "SOL", "ADA", "XRP", "BNB", "DOT", "AVAX",
@@ -138,12 +160,7 @@ BLOCKED_TICKERS = {
     "MHRA", "TXM", "ANTHROPIC", "OPENAI", *CRYPTO_TICKERS
 }
 
-ALWAYS_STOCK_NEWS_SOURCES = {
-    "SEC EDGAR Current",
-    "SEC EDGAR 8-K",
-    "SEC EDGAR 10-Q",
-    "SEC EDGAR 10-K",
-}
+ALWAYS_STOCK_NEWS_SOURCES = set()
 
 STOCK_MARKET_TERMS = [
     "stock", "stocks", "share", "shares", "shareholder", "shareholders",
@@ -164,6 +181,13 @@ STOCK_MARKET_RE = re.compile(
 )
 
 EXCHANGE_TICKER_RE = re.compile(r"\b(?:NASDAQ|Nasdaq|NYSE|AMEX|OTC|TSX|LSE)\s*:\s*[A-Z][A-Z0-9.-]{0,5}\b")
+LEGAL_SPAM_RE = re.compile(
+    r"shareholder alert|stockholder alert|investor alert|securities fraud|securities class action|"
+    r"class action|lead plaintiff|substantial losses|losses in excess|secure counsel|your rights|"
+    r"deadline|rosen law|hagens berman|kirby mcinerney|robbins llp|pomerantz|bragar eagel|"
+    r"levi korsinsky|glancy prongay|the law offices|law firm|investor counsel",
+    re.IGNORECASE,
+)
 
 
 def _normalize_headline(text: str) -> str:
@@ -179,6 +203,75 @@ def _headline_hash(headline: str) -> str:
     """Create a hash from normalized headline for cross-wire deduplication."""
     normalized = _normalize_headline(headline)
     return hashlib.md5(normalized.encode()).hexdigest()
+
+
+def _to_epoch_seconds(value, fallback: int | None = None) -> int | None:
+    if value in (None, ""):
+        return fallback
+    if isinstance(value, (int, float)):
+        number = int(value)
+        return number // 1000 if number > 10_000_000_000 else number
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return fallback
+        if re.fullmatch(r"\d+(\.\d+)?", text):
+            return _to_epoch_seconds(float(text), fallback)
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            parsed = parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+            return int(parsed.timestamp())
+        except Exception:
+            return fallback
+    return fallback
+
+
+def _market_session_for_sec(sec: int | None) -> str:
+    if not sec:
+        return "missing"
+    dt = datetime.fromtimestamp(sec, timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    if dt.weekday() >= 5:
+        return "weekend"
+    minutes = dt.hour * 60 + dt.minute
+    if 4 * 60 <= minutes < 9 * 60 + 30:
+        return "premarket"
+    if 9 * 60 + 30 <= minutes < 16 * 60:
+        return "regular"
+    if 16 * 60 <= minutes < 20 * 60:
+        return "postmarket"
+    return "overnight"
+
+
+def _normalize_company_alias(value: str) -> str:
+    text = (value or "").lower()
+    text = text.replace("&", " and ")
+    text = re.sub(r"[^a-z0-9 ]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _company_aliases(company: str) -> set[str]:
+    normalized = _normalize_company_alias(company)
+    if not normalized:
+        return set()
+    aliases = {normalized}
+    tokens = [token for token in normalized.split() if token not in GENERIC_COMPANY_ALIAS_WORDS]
+    trimmed = " ".join(tokens).strip()
+    if trimmed and len(tokens) >= 2:
+        aliases.add(trimmed)
+    raw_first = re.sub(r"[^A-Za-z0-9]", "", (company or "").strip().split()[0]) if (company or "").strip().split() else ""
+    distinctive_single_token = bool(re.search(r"[a-z][A-Z]|[A-Z][a-z]+[A-Z]", raw_first))
+    if tokens and distinctive_single_token and len(tokens[0]) >= 7 and tokens[0] not in GENERIC_COMPANY_ALIASES:
+        aliases.add(tokens[0])
+    return {
+        alias for alias in aliases
+        if len(alias) >= 5
+        and alias not in GENERIC_COMPANY_ALIASES
+        and not alias.isdigit()
+    }
 
 
 def extract_lightweight_tickers(title: str, content: str) -> str:
@@ -198,6 +291,16 @@ def extract_lightweight_tickers(title: str, content: str) -> str:
         if re.search(rf"(?<![a-z0-9]){re.escape(company)}(?![a-z0-9])", lower_text):
             found.add(ticker)
 
+    if ENABLE_COMPANY_ALIAS_MATCH:
+        alias_map = _load_public_company_alias_map()
+        normalized_title = _normalize_company_alias(title)
+        normalized_context = _normalize_company_alias(f"{title} {content[:600]}")
+        for alias, ticker in alias_map.items():
+            if re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", normalized_title):
+                found.add(ticker)
+            elif len(alias) >= 12 and re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", normalized_context):
+                found.add(ticker)
+
     found = {ticker for ticker in found if ticker not in BLOCKED_TICKERS}
     return ",".join(sorted(found))
 
@@ -210,6 +313,38 @@ client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
 articles_col = db["articles"]
 _SEC_CIK_TICKER_MAP: dict[str, str] | None = None
+_PUBLIC_COMPANY_ALIAS_MAP: dict[str, str] | None = None
+
+
+def _load_public_company_alias_map() -> dict[str, str]:
+    """Build a lightweight company-name resolver from the current screener universe."""
+    global _PUBLIC_COMPANY_ALIAS_MAP
+    if _PUBLIC_COMPANY_ALIAS_MAP is not None:
+        return _PUBLIC_COMPANY_ALIAS_MAP
+
+    alias_map: dict[str, str] = {}
+    try:
+        cursor = db["screeners"].find(
+            {
+                "ticker": {"$type": "string", "$ne": ""},
+                "company": {"$type": "string", "$ne": ""},
+            },
+            {"_id": 0, "ticker": 1, "company": 1},
+        ).limit(int(os.environ.get("COMPANY_ALIAS_MAX_SCREENERS", "12000")))
+        for row in cursor:
+            ticker = str(row.get("ticker") or "").upper().strip()
+            if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,5}", ticker) or ticker in BLOCKED_TICKERS:
+                continue
+            for alias in _company_aliases(str(row.get("company") or "")):
+                alias_map.setdefault(alias, ticker)
+    except Exception as exc:
+        print(f"Public company alias map unavailable: {exc}")
+
+    for company, ticker in COMMON_COMPANY_TICKERS.items():
+        alias_map.setdefault(_normalize_company_alias(company), ticker)
+
+    _PUBLIC_COMPANY_ALIAS_MAP = alias_map
+    return _PUBLIC_COMPANY_ALIAS_MAP
 
 
 def _load_sec_cik_ticker_map() -> dict[str, str]:
@@ -373,7 +508,7 @@ def _runtime_rss_feeds():
     feeds = [
         feed for feed in RSS_FEEDS
         if feed[0] in APPROVED_STRUCTURED_FEED_NAMES
-        and feed[0] not in {"PR Newswire", "PR Newswire Financial", "GlobeNewswire Public Companies"}
+        and feed[0] not in {"PR Newswire", "PR Newswire Financial", "GlobeNewswire Public Companies", "ACCESS Newswire"}
     ]
     feeds.extend([
         ("PR Newswire", "prnewswire://newsroom", "press_releases"),
@@ -418,6 +553,89 @@ NEWSWIRE_LISTING_HEADERS = {
 def _strip_html(value: str) -> str:
     text = re.sub(r"<[^>]+>", " ", value or "")
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _source_display_name(name: str) -> str:
+    return "Business Wire" if re.sub(r"\s+", "", name or "").lower() == "businesswire" else name
+
+
+def _ticker_list(value: str) -> list[str]:
+    tickers = []
+    for raw in dict.fromkeys(str(value or "").upper().replace(";", ",").split(",")):
+        ticker = raw.strip()
+        if re.fullmatch(r"[A-Z][A-Z0-9.-]{0,5}", ticker):
+            tickers.append(ticker)
+    return tickers
+
+
+def _parse_businesswire_listing_time(value: str) -> int | None:
+    text = re.sub(r"\s+", " ", value or "").strip()
+    for fmt in ("%b %d, %Y at %I:%M %p", "%b %d, %Y %I:%M %p", "%B %d, %Y at %I:%M %p"):
+        try:
+            return int(datetime.strptime(text, fmt).replace(tzinfo=ZoneInfo(MARKET_WINDOW_TIMEZONE)).astimezone(timezone.utc).timestamp())
+        except ValueError:
+            continue
+    return None
+
+
+def _fetch_business_wire() -> list[dict]:
+    """Use the official RSS channel, then the public English newsroom if the RSS channel is empty."""
+    rss_articles = _fetch_feed("Business Wire", "https://feed.businesswire.com/rss/home/?rss=G1", "press_releases", timeout=RSS_HTTP_TIMEOUT)
+    if rss_articles:
+        for article in rss_articles:
+            article["source"] = "Business Wire"
+            article["provider"] = "Business Wire"
+        return rss_articles
+
+    if not _HAS_CURL:
+        print("Business Wire: RSS returned 0 rows and curl_cffi is unavailable for public newsroom fallback")
+        return []
+
+    url = "https://www.businesswire.com/newsroom/language/en"
+    try:
+        resp = curl_requests.get(url, headers=NEWSWIRE_LISTING_HEADERS, impersonate="chrome124", timeout=NEWSWIRE_HTTP_TIMEOUT)
+        resp.raise_for_status()
+    except Exception as exc:
+        print(f"Business Wire public newsroom: SKIP {exc}")
+        return []
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    articles = []
+    seen_urls = set()
+    for anchor in soup.select('a[href*="/news/home/"]'):
+        href = anchor.get("href") or ""
+        title = anchor.get_text(" ", strip=True)
+        if not href or not title:
+            continue
+        release_url = urljoin("https://www.businesswire.com", href)
+        if release_url in seen_urls:
+            continue
+        seen_urls.add(release_url)
+
+        card = anchor.find_parent("div", class_=lambda value: value and "border-b" in value)
+        card_text = card.get_text(" ", strip=True) if card else ""
+        date_match = re.search(r"\b[A-Z][a-z]{2} \d{1,2}, \d{4} at \d{1,2}:\d{2} [AP]M\b", card_text)
+        publish_date = _parse_businesswire_listing_time(date_match.group(0)) if date_match else None
+        summary = card_text
+        if date_match:
+            summary = summary.replace(date_match.group(0), "", 1).strip()
+        if summary.startswith(title):
+            summary = summary[len(title):].strip()
+
+        articles.append({
+            "id": f"bw-{hashlib.sha1(release_url.encode('utf-8')).hexdigest()[:20]}",
+            "title": title,
+            "content": summary[:2000],
+            "summary": summary[:1000],
+            "url": release_url,
+            "source": "Business Wire",
+            "provider": "Business Wire",
+            "category": "press_releases",
+            "publish_date": publish_date,
+            "raw_source": "businesswire_public_newsroom",
+        })
+
+    return articles
 
 
 def _known_recent_urls(source_name: str) -> set[str]:
@@ -465,9 +683,9 @@ def _fetch_pr_newswire() -> list[dict]:
         url = f"{base_url}/news-releases/news-releases-list/?page={page_index}&pagesize=100"
         try:
             if _HAS_CURL:
-                resp = curl_requests.get(url, headers=NEWSWIRE_LISTING_HEADERS, impersonate="chrome124", timeout=25)
+                resp = curl_requests.get(url, headers=NEWSWIRE_LISTING_HEADERS, impersonate="chrome124", timeout=NEWSWIRE_HTTP_TIMEOUT)
             else:
-                resp = requests.get(url, headers=NEWSWIRE_LISTING_HEADERS, timeout=25)
+                resp = requests.get(url, headers=NEWSWIRE_LISTING_HEADERS, timeout=NEWSWIRE_HTTP_TIMEOUT)
             resp.raise_for_status()
         except Exception as exc:
             print(f"PR Newswire page {page_index}: STOP {exc}")
@@ -512,6 +730,8 @@ def _fetch_pr_newswire() -> list[dict]:
             break
         if page_dates and max(page_dates) < MARKET_WINDOW_START_TS:
             break
+        if NEWSWIRE_MAX_PAGES and page_index >= NEWSWIRE_MAX_PAGES:
+            break
         page_index += 1
     return articles
 
@@ -527,9 +747,9 @@ def _fetch_globenewswire() -> list[dict]:
         url = f"{base_url}/search?page={page_index}&pageSize=100"
         try:
             if _HAS_CURL:
-                resp = curl_requests.get(url, headers=NEWSWIRE_LISTING_HEADERS, impersonate="chrome124", timeout=25)
+                resp = curl_requests.get(url, headers=NEWSWIRE_LISTING_HEADERS, impersonate="chrome124", timeout=NEWSWIRE_HTTP_TIMEOUT)
             else:
-                resp = requests.get(url, headers=NEWSWIRE_LISTING_HEADERS, timeout=25)
+                resp = requests.get(url, headers=NEWSWIRE_LISTING_HEADERS, timeout=NEWSWIRE_HTTP_TIMEOUT)
             resp.raise_for_status()
         except Exception as exc:
             print(f"GlobeNewswire page {page_index}: STOP {exc}")
@@ -572,6 +792,8 @@ def _fetch_globenewswire() -> list[dict]:
             break
         if page_dates and max(page_dates) < MARKET_WINDOW_START_TS:
             break
+        if NEWSWIRE_MAX_PAGES and page_index >= NEWSWIRE_MAX_PAGES:
+            break
         page_index += 1
     return articles
 
@@ -580,7 +802,10 @@ def is_stock_market_news(article: dict, source_name: str, category: str, ticker:
     """Accept public-company market news without requiring ticker extraction."""
     title = article.get("title", "")
     content = article.get("content", "")
-    text = f"{title} {content}"
+    text = f"{title} {content} {article.get('company', '')}"
+
+    if LEGAL_SPAM_RE.search(text):
+        return False, "legal_spam"
 
     if source_name in ALWAYS_STOCK_NEWS_SOURCES:
         return True, "trusted_stock_feed"
@@ -605,9 +830,9 @@ def _fetch_access_newswire() -> list[dict]:
     try:
         session = requests.Session()
         if _HAS_CURL:
-            page = curl_requests.get(ACCESS_NEWSWIRE_URL, headers=ACCESS_HEADERS, impersonate="chrome124", timeout=20)
+            page = curl_requests.get(ACCESS_NEWSWIRE_URL, headers=ACCESS_HEADERS, impersonate="chrome124", timeout=NEWSWIRE_HTTP_TIMEOUT)
         else:
-            page = session.get(ACCESS_NEWSWIRE_URL, headers=ACCESS_HEADERS, timeout=20)
+            page = session.get(ACCESS_NEWSWIRE_URL, headers=ACCESS_HEADERS, timeout=NEWSWIRE_HTTP_TIMEOUT)
         page.raise_for_status()
         match = re.search(r'<input name="AntiforgeryFieldname" type="hidden" value="([^"]+)"', page.text)
         headers = {
@@ -632,9 +857,9 @@ def _fetch_access_newswire() -> list[dict]:
         api_url = f"https://www.accessnewswire.com/newsroom/api?pageindex={page_index}&pageSize={ACCESS_NEWSWIRE_PAGE_SIZE}"
         try:
             if _HAS_CURL:
-                resp = curl_requests.post(api_url, headers=headers, impersonate="chrome124", timeout=20)
+                resp = curl_requests.post(api_url, headers=headers, impersonate="chrome124", timeout=NEWSWIRE_HTTP_TIMEOUT)
             else:
-                resp = session.post(api_url, headers=headers, timeout=20)
+                resp = session.post(api_url, headers=headers, timeout=NEWSWIRE_HTTP_TIMEOUT)
             resp.raise_for_status()
             items = resp.json().get("data", {}).get("articles", [])
         except Exception as exc:
@@ -683,6 +908,8 @@ def _fetch_access_newswire() -> list[dict]:
             break
         if page_dates and max(page_dates) < MARKET_WINDOW_START_TS:
             break
+        if NEWSWIRE_MAX_PAGES and page_index + 1 >= NEWSWIRE_MAX_PAGES:
+            break
         page_index += 1
 
     return articles
@@ -718,6 +945,7 @@ cooldown_skips = []
 
 def process_feed(feed):
     name, url, category = feed
+    source_name = _source_display_name(name)
     now_ts = int(time.time())
 
     last_fetch = int(fetch_state.get(url, 0))
@@ -725,9 +953,9 @@ def process_feed(feed):
     seconds_left = COOLDOWN_SECONDS - seconds_since
 
     if seconds_left > 0:
-        return name, url, [], False, seconds_left
+        return source_name, url, [], False, seconds_left, 0, 0
 
-    print(f"Fetching {name}...")
+    print(f"Fetching {source_name}...")
 
     if url == "accessnewswire://newsroom":
         raw_articles = _fetch_access_newswire()
@@ -735,10 +963,13 @@ def process_feed(feed):
         raw_articles = _fetch_pr_newswire()
     elif url == "globenewswire://search":
         raw_articles = _fetch_globenewswire()
+    elif re.sub(r"\s+", "", name or "").lower() == "businesswire":
+        raw_articles = _fetch_business_wire()
     else:
-        raw_articles = _fetch_feed(name, url, category, timeout=RSS_HTTP_TIMEOUT)
+        raw_articles = _fetch_feed(source_name, url, category, timeout=RSS_HTTP_TIMEOUT)
     if FILTER_TO_MARKET_WINDOW:
         raw_articles = [article for article in raw_articles if _within_market_window(article)]
+    raw_count = len(raw_articles)
 
     docs = []
 
@@ -768,6 +999,7 @@ def process_feed(feed):
         event_type, event_score, event_reason = classify_financial_event(title, content)
         article["sentiment"] = sentiment
         article["ml_confidence"] = confidence
+        article["sentiment_score"] = signed_sentiment_score(sentiment, confidence)
         article["sentiment_at"] = now_ts if sentiment != "neutral" else None
         article["event_type"] = event_type
         article["event_score"] = event_score
@@ -788,29 +1020,59 @@ def process_feed(feed):
 
         headline = article.get("title", "")
         headline_hash = _headline_hash(headline) if ENABLE_DEDUP_HASH and headline else None
+        publish_sec = _to_epoch_seconds(article.get("publish_date"))
+        detected_sec = _to_epoch_seconds(article.get("detected_at"), now_ts)
+        fetched_sec = now_ts
+        event_sec = publish_sec or detected_sec or fetched_sec
+        feed_sort_time = max(sec for sec in [publish_sec, detected_sec, fetched_sec] if sec)
+        market_session = _market_session_for_sec(event_sec)
 
         docs.append({
             "article_id": article_id,
             "title": headline,
             "content": article.get("content", ""),
+            "summary": article.get("summary") or article.get("content", "")[:1000],
+            "bodyText": article.get("content", ""),
             "url": article_url,
-            "source": article.get("source", name),
+            "source": _source_display_name(article.get("source", source_name)),
+            "provider": article.get("provider") or _source_display_name(article.get("source", source_name)),
             "category": article.get("category", category),
+            "catalystCategory": article.get("event_type", "general_news"),
+            "catalystScore": article.get("event_score", 0),
             "article_kind": "structured",
             "source_type": "filing" if category == "filings" else "regulatory" if category == "fda" else "newswire" if category == "press_releases" else "structured_rss",
+            "isStructuredNews": True,
+            "isNewswire": category == "press_releases",
             "collector": "structured_rss_to_mongo_v2",
             "publish_date": article.get("publish_date"),
+            "publishedAt": article.get("publish_date"),
+            "publish_sec": publish_sec,
+            "event_sec": event_sec,
+            "feed_sort_time": feed_sort_time,
+            "market_session": market_session,
             "publish_time_trusted": article.get("publish_date") is not None,
             "fetched_date": now_ts,
+            "fetchedAt": now_ts,
+            "ingested_sec": now_ts,
             "detected_at": article.get("detected_at", now_ts),
+            "detected_sec": detected_sec,
             "ticker": article.get("ticker", ""),
+            "tickers": _ticker_list(article.get("ticker", "")),
             "company": article.get("company", ""),
+            "companies": [article.get("company", "")] if article.get("company") else [],
             "sentiment": article.get("sentiment", "neutral"),
             "ml_confidence": article.get("ml_confidence", 0),
+            "sentiment_score": article.get("sentiment_score", 0),
             "sentiment_at": article.get("sentiment_at"),
             "event_type": article.get("event_type", "general_news"),
             "event_score": article.get("event_score", 0),
             "sentiment_reason": article.get("sentiment_reason", ""),
+            "dedupeKey": f"{_source_display_name(article.get('source', source_name)).lower()}:{_normalize_headline(headline)}:{article.get('publish_date') or ''}",
+            "raw": {
+                "collector": article.get("raw_source") or "structured_rss_to_mongo_v2",
+                "source": article.get("source", source_name),
+                "category": category,
+            },
             "keyword_match": keyword_match_list,
             "headline_hash": headline_hash,
             "stock_news_relevance": article.get("stock_news_relevance", ""),
@@ -819,11 +1081,10 @@ def process_feed(feed):
             "main_feed_priority": article.get("main_feed_priority", 50),
         })
 
-    return name, url, docs, True, 0
+    return name, url, docs, True, 0, raw_count, len(processed_articles)
 
 
 MAX_WORKERS = int(os.environ.get("RSS_MAX_WORKERS", "16"))
-RSS_HTTP_TIMEOUT = int(os.environ.get("RSS_HTTP_TIMEOUT", "12"))
 
 feeds_to_run = _runtime_rss_feeds()
 pruned_count = prune_old_articles()
@@ -848,7 +1109,7 @@ with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
     futures = [executor.submit(process_feed, feed) for feed in feeds_to_run]
 
     for future in as_completed(futures):
-        name, url, docs, did_fetch, seconds_left = future.result()
+        name, url, docs, did_fetch, seconds_left, raw_count, processed_count = future.result()
 
         if not did_fetch:
             cooldown_skips.append(seconds_left)
@@ -928,7 +1189,49 @@ with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         total_updated += feed_updated
         total_skip += feed_skip
 
-        print(f"{name}: {feed_new} new, {feed_updated} updated, {feed_skip} unchanged")
+        status = "working" if raw_count > 0 else "no_rows"
+        detail = (
+            f"scanned {raw_count} rows in rolling {ARTICLE_CACHE_DAYS}d window; "
+            f"{processed_count} passed stock-news relevance; "
+            f"{len(docs)} persisted after keyword/dedup filters; "
+            f"{feed_new} new, {feed_updated} updated, {feed_skip} unchanged"
+        )
+        record_source_status(
+            db,
+            name,
+            status,
+            count=len(docs),
+            detail=detail,
+            source_type="structured_news",
+            metrics={
+                "records_received": raw_count,
+                "records_relevance_passed": processed_count,
+                "records_relevance_rejected": max(0, raw_count - processed_count),
+                "records_filtered": max(0, raw_count - processed_count),
+                "records_accepted": len(docs),
+                "records_new": feed_new,
+                "records_updated": feed_updated,
+                "records_duplicates": feed_skip,
+                "records_malformed": 0,
+                "dedupe_hash_enabled": ENABLE_DEDUP_HASH,
+                "article_cache_days": ARTICLE_CACHE_DAYS,
+            },
+        )
+
+        ticker_matched = sum(1 for doc in docs if doc.get("ticker") or doc.get("tickers"))
+        source_debug = {
+            "source": _source_display_name(name),
+            "attempted": True,
+            "ok": status == "working",
+            "fetched": raw_count,
+            "inserted": feed_new,
+            "updated": feed_updated,
+            "deduped": feed_skip,
+            "tickerMatched": ticker_matched,
+            "errors": [] if status == "working" else [detail],
+        }
+        print(f"{_source_display_name(name)}: {feed_new} new, {feed_updated} updated, {feed_skip} unchanged")
+        print(f"SOURCE_DEBUG_JSON {json.dumps(source_debug, sort_keys=True)}")
 
 if cooldown_skips:
     print(

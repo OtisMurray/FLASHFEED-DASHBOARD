@@ -17,6 +17,14 @@ function fmtCompact(n: number | null | undefined): string {
   return String(n)
 }
 
+function sessionLabel(value?: string): string {
+  const session = String(value || 'regular').toLowerCase()
+  if (session === 'premarket') return 'Premarket'
+  if (session === 'postmarket') return 'After-hours'
+  if (session === 'auto') return 'Auto'
+  return 'Regular'
+}
+
 function quoteAgeLabel(value: MomentumRow['quote_updated_at']): string {
   const numeric = typeof value === 'number' ? value : Number(value || 0)
   const raw = Number.isFinite(numeric) && numeric > 0 ? numeric : Math.floor(Date.parse(String(value || '')) / 1000)
@@ -65,8 +73,10 @@ export function MomentumCard({ row, rank }: Props) {
         {/* Metrics */}
         <div className="flex items-center gap-4 flex-1 flex-wrap">
           <MetricCell label="Price" value={row.price != null ? `$${row.price.toFixed(2)}` : '—'} />
+          <MetricCell label="Session" value={sessionLabel(row.active_session)} color="text-sky-300" />
           <MetricCell label="Change" value={`${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%`}
             color={chg >= 0 ? 'text-emerald-400' : 'text-red-400'} />
+          <MetricCell label="Mkt Cap" value={`${row.market_cap_bucket || '—'} ${row.market_cap ? `$${fmtCompact(row.market_cap)}` : ''}`.trim()} />
           <MetricCell label="Abs Move" value={`${Math.abs(chg).toFixed(2)}%`} color="text-yellow-300" />
           <MetricCell label="Volume" value={fmtCompact(row.volume)} />
           <MetricCell label="Weighted Sent" value={`${sent >= 0 ? '+' : ''}${sent.toFixed(2)}`}

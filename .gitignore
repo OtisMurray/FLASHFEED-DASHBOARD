@@ -1,57 +1,125 @@
 # Dependencies
 node_modules/
+**/node_modules/
 *.node
 
-# Environment files
+# Environment and secrets
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
 
-# IDE
+# Local IDE/editor state
 .idea/
 .vscode/
+.claude/settings.local*.json
 *.swp
 *.swo
 *~
-.DS_Store
 
-# Docker
+# macOS / OS metadata
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes/
+
+# Docker/local orchestration
 .docker/
 docker-compose.override.yml
+docker-compose.*.override.yml
 
-# Logs
+# Logs and runtime state
+logs/
 *.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.pid
+.pm2/
 
-# Build output
+# Node / React / Vite build output
 dist/
 build/
+.vite/
+vite.svg
 *.tsbuildinfo
 
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
+# Python local environments and caches
 .venv/
 venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
-# Runtime
-.pm2/
-logs/
-*.pid
-
-# Testing
+# Test and coverage output
 coverage/
 .nyc_output/
+test-results/
+playwright-report/
+backtests/**/outputs*/
 
-# Temp
+# Temporary/generated files
 tmp/
 temp/
 *.tmp
+*.temp
+*.cache
+.cache/
+**/.chart_cache/
+**/.chart_cache_*/
 
-# Backup files
+# Database/runtime dumps
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+dump.rdb
+appendonly.aof
+mongo-data/
+mongodb-data/
+redis-data/
+kafka-data/
+zookeeper-data/
+
+# Archives, generated exports, and local review artifacts
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+debug_outputs/
+
+# Local backup/comparison trees
+_backups/
+backups/
+_archive/
+_comparison/
+app_broken_vite_backup_*/
+OtisMurray_WorkingCode/
+sentiment-scout/
+
+# Legacy disabled/temporary copies
 *.bak
 *.bak_*
+*.bak-*
+*.backup
 *.DISABLED*
+* 2.*
 .rss_fetch_state.json

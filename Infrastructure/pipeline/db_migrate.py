@@ -162,28 +162,18 @@ CREATE INDEX IF NOT EXISTS idx_rss_sources_category ON rss_sources(category);
 
 -- Seed default RSS sources
 INSERT INTO rss_sources (name, url, category) VALUES
-  ('CNBC Markets',          'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258',  'markets'),
-  ('CNBC Finance',          'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664',  'markets'),
-  ('MarketWatch Top',       'https://feeds.marketwatch.com/marketwatch/topstories/',                                'markets'),
-  ('MarketWatch Breaking',  'https://feeds.marketwatch.com/marketwatch/bulletins/',                                 'markets'),
-  ('Yahoo Finance',         'https://finance.yahoo.com/news/rssindex',                                              'markets'),
-  ('Benzinga',              'https://www.benzinga.com/feed/',                                                       'markets'),
-  ('Seeking Alpha',         'https://seekingalpha.com/market_currents.xml',                                         'markets'),
-  ('The Motley Fool',       'https://www.fool.com/feeds/index.aspx?id=fool-headlines',                              'equities'),
-  ('Investopedia',          'https://www.investopedia.com/feedbuilder/feed/getNewsFeed',                            'markets'),
-  ('Reuters Business',      'https://feeds.reuters.com/reuters/businessNews',                                       'economy'),
-  ('Reuters Finance',       'https://feeds.reuters.com/reuters/financialsNews',                                     'economy'),
-  ('BBC Business',          'https://feeds.bbci.co.uk/news/business/rss.xml',                                      'economy'),
-  ('Federal Reserve',       'https://www.federalreserve.gov/feeds/press_all.xml',                                   'economy'),
-  ('Forbes Business',       'https://www.forbes.com/business/feed/',                                               'economy'),
-  ('ZeroHedge',             'https://cms.zerohedge.com/fullrss2.xml',                                              'equities'),
-  ('Business Insider',      'https://feeds2.feedburner.com/businessinsider',                                        'equities'),
   ('PR Newswire',           'https://www.prnewswire.com/rss/news-releases-list.rss',                               'press_releases'),
+  ('PR Newswire Financial', 'https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss', 'press_releases'),
   ('BusinessWire',          'https://feed.businesswire.com/rss/home/?rss=G1',                                      'press_releases'),
-  ('CoinDesk',              'https://www.coindesk.com/arc/outboundfeeds/rss/',                                     'crypto'),
-  ('CoinTelegraph',         'https://cointelegraph.com/rss',                                                        'crypto'),
-  ('OilPrice',              'https://oilprice.com/rss/main',                                                        'commodities'),
-  ('AccessWire',            'https://www.accesswire.com/rss/default.aspx',                                         'press_releases')
+  ('GlobeNewswire Public Companies', 'https://www.globenewswire.com/RssFeed/orgclass/1',                          'press_releases'),
+  ('GlobeNewswire Earnings', 'https://www.globenewswire.com/RssFeed/orgclass/2',                                  'press_releases'),
+  ('GlobeNewswire M&A',      'https://www.globenewswire.com/RssFeed/orgclass/3',                                  'press_releases'),
+  ('ACCESS Newswire',       'https://www.accesswire.com/rss/default.aspx',                                        'press_releases'),
+  ('Benzinga',              'https://www.benzinga.com/latest?feed=rss&page=1',                                    'markets'),
+  ('FDA Press Releases',    'https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml', 'fda'),
+  ('FDA Recalls',           'https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/recalls/rss.xml', 'fda'),
+  ('FDA MedWatch Safety Alerts', 'https://www.fda.gov/AboutFDA/ContactFDA/StayInformed/RSSFeeds/MedWatch/rss.xml', 'fda'),
+  ('TradingView News',      'https://www.tradingview.com/news/',                                                  'markets')
 ON CONFLICT (url) DO NOTHING;
 
 -- ── Watched social accounts (for Twitter, Bluesky handles) ───────────────

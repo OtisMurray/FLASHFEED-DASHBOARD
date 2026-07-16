@@ -1,55 +1,88 @@
 [
-    {
-        "source": "MarketWatch News",
-        "url": "https://www.marketwatch.com/latest-news",
-        "allowed_domains": [
-            "www.marketwatch.com",
-            "marketwatch.com"
-        ],
-        "required_path_contains": [
-            "/story/",
-            "/articles/"
-        ]
-    },
-    {
-        "source": "CNBC Markets",
-        "url": "https://www.cnbc.com/markets/",
-        "allowed_domains": [
-            "www.cnbc.com",
-            "cnbc.com"
-        ],
-        "required_path_contains": [
-            "/202"
-        ]
-    },
-    {
-        "source": "Finviz News",
-        "url": "https://finviz.com/news.ashx",
-        "required_path_contains": [
-            "/"
-        ]
-    },
-    {
-        "source": "TradingView News",
-        "url": "https://www.tradingview.com/news/",
-        "allowed_domains": [
-            "www.tradingview.com",
-            "tradingview.com"
-        ],
-        "required_path_contains": [
-            "/news/"
-        ]
-    },
-    {
-        "source": "BBC Business",
-        "url": "https://www.bbc.com/business",
-        "allowed_domains": [
-            "www.bbc.com",
-            "bbc.com"
-        ],
-        "required_path_contains": [
-            "/news/articles/",
-            "/news/"
-        ]
-    }
+  {
+    "source": "Finviz News Flow",
+    "type": "platform_news_flow",
+    "url": "https://elite.finviz.com/news.ashx"
+  },
+  {
+    "source": "Finviz News",
+    "type": "platform_news",
+    "url": "https://finviz.com/news.ashx",
+    "allowed_domains": ["finviz.com", "www.finviz.com"],
+    "required_path_contains": ["/news.ashx"]
+  },
+  {
+    "source": "TradingView News",
+    "type": "platform_news_flow",
+    "url": "https://www.tradingview.com/news/",
+    "allowed_domains": ["tradingview.com", "www.tradingview.com"],
+    "required_path_contains": ["/news/"]
+  },
+  {
+    "source": "PR Newswire",
+    "type": "official_newswire",
+    "url": "https://www.prnewswire.com/news-releases/news-releases-list/",
+    "allowed_domains": ["prnewswire.com", "www.prnewswire.com"],
+    "required_path_contains": ["/news-releases/"]
+  },
+  {
+    "source": "PR Newswire Financial",
+    "type": "official_newswire",
+    "url": "https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss",
+    "allowed_domains": ["prnewswire.com", "www.prnewswire.com"],
+    "required_path_contains": ["/rss/", "/news-releases/"]
+  },
+  {
+    "source": "BusinessWire",
+    "type": "official_newswire",
+    "url": "https://feed.businesswire.com/rss/home/?rss=G1",
+    "allowed_domains": ["businesswire.com", "feed.businesswire.com", "www.businesswire.com"],
+    "required_path_contains": ["/rss/", "/news/"]
+  },
+  {
+    "source": "GlobeNewswire Public Companies",
+    "type": "official_newswire",
+    "url": "https://www.globenewswire.com/search",
+    "allowed_domains": ["globenewswire.com", "www.globenewswire.com"],
+    "required_path_contains": ["/search", "/news-release/", "/RssFeed/"]
+  },
+  {
+    "source": "ACCESS Newswire",
+    "type": "official_newswire",
+    "url": "https://www.accessnewswire.com/newsroom",
+    "allowed_domains": ["accessnewswire.com", "www.accessnewswire.com", "accesswire.com", "www.accesswire.com"],
+    "required_path_contains": ["/newsroom", "/news/", "/rss/"]
+  },
+  {
+    "source": "Benzinga",
+    "type": "official_market_news",
+    "url": "https://www.benzinga.com/latest?feed=rss&page=1",
+    "allowed_domains": ["benzinga.com", "www.benzinga.com"],
+    "required_path_contains": ["/latest", "/news/"]
+  },
+  {
+    "source": "Dow Jones Newswires",
+    "type": "licensed_newswire",
+    "auth_required": true,
+    "env_var": "DOW_JONES_API_KEY"
+  },
+  {
+    "source": "FDA",
+    "type": "official_regulatory",
+    "url": "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds",
+    "allowed_domains": ["fda.gov", "www.fda.gov"],
+    "required_path_contains": ["/rss", "/safety", "/press-releases", "/recalls"]
+  },
+  {
+    "source": "Interactive Brokers News",
+    "type": "broker_news",
+    "auth_required": true,
+    "env_var": "IBKR_ENABLE_NEWS"
+  },
+  {
+    "source": "Charles Schwab / TD Ameritrade News",
+    "type": "broker_news",
+    "auth_required": true,
+    "env_var": "SCHWAB_ACCESS_TOKEN"
+  }
 ]

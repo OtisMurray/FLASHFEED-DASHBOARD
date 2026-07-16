@@ -10,6 +10,7 @@ events into Redis so the dashboard has a hot RAM feed per ticker.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -164,6 +165,41 @@ def publish_articles(docs) -> int:
 
 def publish_social(docs) -> int:
     events = list(_social_events(docs))
+    if not events:
+        return 0
+    producer = _get_producer()
+    for event in events:
+        producer.send(event)
+    producer.flush(5)
+    return len(events)
+
+
+def decision_map_point_to_event_dict(point: dict) -> dict:
+    ticker = str(point.get("ticker", "") or "").strip().upper()
+    snapshot_sec = point.get("snapshotSec") or point.get("snapshot_sec") or point.get("timestamp")
+    seed = f"{ticker}:{snapshot_sec}:{point.get('x')}:{point.get('y')}:{point.get('z')}"
+    return {
+        "event_id": "decision_map:" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:20],
+        "user_id": ticker,
+        "event_type": "decision_map_point",
+        "timestamp": _to_iso(snapshot_sec),
+        "payload": {
+            **point,
+            "ticker": ticker,
+            "snapshot_sec": snapshot_sec,
+            "source": point.get("source", "decision_map_api"),
+        },
+    }
+
+
+def publish_decision_map_points(points) -> int:
+    from models import FeedEvent
+
+    events = [
+        FeedEvent(**decision_map_point_to_event_dict(point))
+        for point in (points or [])
+        if str(point.get("ticker", "") or "").strip()
+    ]
     if not events:
         return 0
     producer = _get_producer()

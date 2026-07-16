@@ -1,0 +1,60 @@
+{
+  "extends": "config_v6_old_anchor_mongo_ohlc.json",
+  "outputDir": "backtests/message_density_thresholds/outputs_v6_exit_structure_sweep_mongo_ohlc",
+  "v6WinRateQualityGrid": {
+    "enabled": true,
+    "baseRules": [
+      { "name": "anchor_all", "windowMinutes": 120, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 1, "minTrailing60Messages": 3 },
+      { "name": "anchor_trail10_all", "windowMinutes": 120, "thresholdC": 0.4, "trailingStopPct": 10, "protectiveStopPct": 3, "maxPre60Pct": 1, "minTrailing60Messages": 3 },
+      { "name": "large_only", "tier": "Large", "windowMinutes": 120, "thresholdC": 0.38, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 1, "minTrailing60Messages": 3 },
+      { "name": "mid_only", "tier": "Mid", "windowMinutes": 90, "thresholdC": 0.32, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 8 },
+      { "name": "small_only", "tier": "Small", "windowMinutes": 90, "thresholdC": 0.32, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 8 },
+      { "name": "nano_only", "tier": "Nano", "windowMinutes": 90, "thresholdC": 0.3, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 1, "minTrailing60Messages": 10 }
+    ],
+    "dashboardScores": [0],
+    "rankMax": [null],
+    "relVolumeMin": [null],
+    "changeBands": [
+      { "name": "anymom", "min": null, "max": null },
+      { "name": "mom0to12", "min": 0, "max": 12 }
+    ],
+    "exitOverlays": [
+      { "name": "eod", "overlay": {} },
+      { "name": "gb5_a1", "overlay": { "profitGivebackPct": 5, "profitGivebackActivationPct": 1 } },
+      { "name": "gb10_a1", "overlay": { "profitGivebackPct": 10, "profitGivebackActivationPct": 1 } },
+      { "name": "gb20_a1", "overlay": { "profitGivebackPct": 20, "profitGivebackActivationPct": 1 } },
+      { "name": "gb5_a5", "overlay": { "profitGivebackPct": 5, "profitGivebackActivationPct": 5 } },
+      { "name": "gb10_a5", "overlay": { "profitGivebackPct": 10, "profitGivebackActivationPct": 5 } },
+      { "name": "gb20_a5", "overlay": { "profitGivebackPct": 20, "profitGivebackActivationPct": 5 } },
+      { "name": "gb5_a10", "overlay": { "profitGivebackPct": 5, "profitGivebackActivationPct": 10 } },
+      { "name": "gb10_a10", "overlay": { "profitGivebackPct": 10, "profitGivebackActivationPct": 10 } },
+      { "name": "gb20_a10", "overlay": { "profitGivebackPct": 20, "profitGivebackActivationPct": 10 } },
+      { "name": "be2", "overlay": { "breakevenActivationPct": 2, "breakevenOffsetPct": 0 } },
+      { "name": "be5", "overlay": { "breakevenActivationPct": 5, "breakevenOffsetPct": 0 } },
+      { "name": "lock1_a5", "overlay": { "breakevenActivationPct": 5, "breakevenOffsetPct": 1 } },
+      { "name": "lock2_a10", "overlay": { "breakevenActivationPct": 10, "breakevenOffsetPct": 2 } },
+      { "name": "range1_a2", "overlay": { "rangeGivebackMultiple": 1, "rangeGivebackActivationPct": 2, "rangeLookbackBars": 12 } },
+      { "name": "range1p5_a2", "overlay": { "rangeGivebackMultiple": 1.5, "rangeGivebackActivationPct": 2, "rangeLookbackBars": 12 } },
+      { "name": "range2_a2", "overlay": { "rangeGivebackMultiple": 2, "rangeGivebackActivationPct": 2, "rangeLookbackBars": 12 } },
+      { "name": "range1p5_a5", "overlay": { "rangeGivebackMultiple": 1.5, "rangeGivebackActivationPct": 5, "rangeLookbackBars": 12 } },
+      { "name": "partial33_pt5_gb10a10", "overlay": { "partialExitFraction": 0.33, "partialProfitTargetPct": 5, "profitGivebackPct": 10, "profitGivebackActivationPct": 10 } },
+      { "name": "partial50_pt5_gb10a10", "overlay": { "partialExitFraction": 0.5, "partialProfitTargetPct": 5, "profitGivebackPct": 10, "profitGivebackActivationPct": 10 } },
+      { "name": "partial50_pt10_gb10a10", "overlay": { "partialExitFraction": 0.5, "partialProfitTargetPct": 10, "profitGivebackPct": 10, "profitGivebackActivationPct": 10 } },
+      { "name": "partial50_pt5_gb5a10", "overlay": { "partialExitFraction": 0.5, "partialProfitTargetPct": 5, "profitGivebackPct": 5, "profitGivebackActivationPct": 10 } },
+      { "name": "partial50_pt5_be5", "overlay": { "partialExitFraction": 0.5, "partialProfitTargetPct": 5, "breakevenActivationPct": 5, "breakevenOffsetPct": 0 } },
+      { "name": "partial50_pt5_lock1", "overlay": { "partialExitFraction": 0.5, "partialProfitTargetPct": 5, "breakevenActivationPct": 5, "breakevenOffsetPct": 1 } },
+      { "name": "hybrid_gb5a10_be5", "overlay": { "profitGivebackPct": 5, "profitGivebackActivationPct": 10, "breakevenActivationPct": 5, "breakevenOffsetPct": 0 } },
+      { "name": "hybrid_gb10a10_be5", "overlay": { "profitGivebackPct": 10, "profitGivebackActivationPct": 10, "breakevenActivationPct": 5, "breakevenOffsetPct": 0 } },
+      { "name": "hybrid_gb5a10_lock1", "overlay": { "profitGivebackPct": 5, "profitGivebackActivationPct": 10, "breakevenActivationPct": 5, "breakevenOffsetPct": 1 } },
+      { "name": "hybrid_range1p5_be5", "overlay": { "rangeGivebackMultiple": 1.5, "rangeGivebackActivationPct": 5, "rangeLookbackBars": 12, "breakevenActivationPct": 5, "breakevenOffsetPct": 0 } },
+      { "name": "partial33_pt5_range1p5", "overlay": { "partialExitFraction": 0.33, "partialProfitTargetPct": 5, "rangeGivebackMultiple": 1.5, "rangeGivebackActivationPct": 5, "rangeLookbackBars": 12 } },
+      { "name": "partial50_pt5_range1p5", "overlay": { "partialExitFraction": 0.5, "partialProfitTargetPct": 5, "rangeGivebackMultiple": 1.5, "rangeGivebackActivationPct": 5, "rangeLookbackBars": 12 } }
+    ],
+    "dashboardScore": {
+      "enabledChecks": ["correlation"]
+    },
+    "minWinRateTrades": 20,
+    "targetWinRate": 0.35,
+    "maxVariants": 360
+  }
+}

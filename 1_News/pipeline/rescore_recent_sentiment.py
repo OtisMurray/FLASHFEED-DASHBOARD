@@ -8,7 +8,7 @@ import time
 
 from pymongo import MongoClient, UpdateOne
 
-from sentiment_utils import classify_financial_event, score_financial_sentiment, score_social_sentiment
+from sentiment_utils import classify_financial_event, score_financial_sentiment, score_social_sentiment, signed_sentiment_score
 
 
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/feedflash")
@@ -49,8 +49,8 @@ def rescore_articles(db) -> int:
             {"$set": {
                 "sentiment": label,
                 "ml_confidence": confidence,
-                "sentiment_score": confidence if label == "bullish" else -confidence if label == "bearish" else 0,
-                "sentiment_method": "shared_financial_phrase_v2",
+                "sentiment_score": signed_sentiment_score(label, confidence),
+                "sentiment_method": "shared_financial_phrase_v3",
                 "sentiment_at": now if label != "neutral" else None,
                 "event_type": event_type,
                 "event_score": event_score,

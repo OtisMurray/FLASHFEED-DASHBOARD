@@ -86,52 +86,34 @@ SEC_HEADERS = {
 }
 RSS_FEED_ENTRY_LIMIT = int(os.environ.get("RSS_FEED_ENTRY_LIMIT", "0"))
 
-# ── RSS feed list (mirrors config.json in the C++ repo — fallback if DB unavailable)
+# ── RSS feed list (PROFESSOR-APPROVED SOURCES ONLY — fallback if DB unavailable)
 RSS_FEEDS: list[tuple[str, str, str]] = [
-    ("CNBC Markets",          "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=20910258",  "markets"),
-    ("CNBC Finance",          "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664",  "markets"),
-    ("MarketWatch Top",       "https://feeds.marketwatch.com/marketwatch/topstories/",                                "markets"),
-    ("MarketWatch Breaking",  "https://feeds.marketwatch.com/marketwatch/bulletins/",                                 "markets"),
-    ("Yahoo Finance",         "https://finance.yahoo.com/news/rssindex",                                              "markets"),
-    # DISABLED: returned HTML, use official Benzinga API/key: ("Benzinga",              "https://www.benzinga.com/latest?feed=rss&page=1",                                                       "markets"),
-    ("Seeking Alpha",         "https://seekingalpha.com/market_currents.xml",                                         "markets"),
-    ("The Motley Fool",       "https://www.fool.com/feeds/index.aspx?id=fool-headlines",                              "equities"),
-    ("BBC Business",          "https://feeds.bbci.co.uk/news/business/rss.xml",                                      "economy"),
-    ("Federal Reserve",       "https://www.federalreserve.gov/feeds/press_all.xml",                                   "economy"),
-    ("Forbes Business",       "https://www.forbes.com/business/feed/",                                               "economy"),
-    ("ZeroHedge",             "https://cms.zerohedge.com/fullrss2.xml",                                              "equities"),
-    ("Business Insider",      "https://feeds2.feedburner.com/businessinsider",                                        "equities"),
-    ("SEC EDGAR Current",     "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&dateb=&owner=include&count=100&search_text=&output=atom", "filings"),
-    ("SEC EDGAR 8-K",         "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&dateb=&owner=include&count=100&search_text=&output=atom", "filings"),
-    ("SEC EDGAR 10-Q",        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-Q&dateb=&owner=include&count=100&search_text=&output=atom", "filings"),
-    ("SEC EDGAR 10-K",        "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=10-K&dateb=&owner=include&count=100&search_text=&output=atom", "filings"),
     ("PR Newswire",           "https://www.prnewswire.com/rss/news-releases-list.rss",                               "press_releases"),
     ("PR Newswire Financial", "https://www.prnewswire.com/rss/financial-services-latest-news/financial-services-latest-news-list.rss", "press_releases"),
-    # Team candidate returned no RSS/Atom entries on 2026-06-12; keep disabled until a valid BusinessWire feed is confirmed.
-    # ("BusinessWire",          "https://feed.businesswire.com/rss/home/?rss=G1",                                      "press_releases"),
+    ("Business Wire",         "https://feed.businesswire.com/rss/home/?rss=G1",                                      "press_releases"),
     ("GlobeNewswire Public Companies", "https://www.globenewswire.com/RssFeed/orgclass/1",                            "press_releases"),
-    ("FDA Press Releases", "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml", "fda"),
-    ("FDA Recalls", "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/recalls/rss.xml", "fda"),
-    # Team candidate returned 404 on 2026-06-12; keep disabled until a valid approvals-only feed is confirmed.
-    # ("FDA Drug Approvals", "https://www.fda.gov/drugs/resources-information-approved-drugs/rss", "fda"),
-    # Broad FDA drug update feed intentionally excluded; use ticker-matched FDA press/recall/safety feeds only.
+    ("GlobeNewswire Earnings", "https://www.globenewswire.com/RssFeed/orgclass/2",                                  "press_releases"),
+    ("GlobeNewswire M&A",      "https://www.globenewswire.com/RssFeed/orgclass/3",                                   "press_releases"),
+    ("ACCESS Newswire",       "https://www.accesswire.com/rss/default.aspx",                                         "press_releases"),
+    ("Benzinga",              "https://www.benzinga.com/latest?feed=rss&page=1",                                     "markets"),
+    ("FDA Press Releases",    "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/press-releases/rss.xml", "fda"),
+    ("FDA Recalls",           "https://www.fda.gov/about-fda/contact-fda/stay-informed/rss-feeds/recalls/rss.xml", "fda"),
     ("FDA MedWatch Safety Alerts", "https://www.fda.gov/AboutFDA/ContactFDA/StayInformed/RSSFeeds/MedWatch/rss.xml", "fda"),
-    ("CoinDesk",              "https://www.coindesk.com/arc/outboundfeeds/rss/",                                     "crypto"),
-    ("CoinTelegraph",         "https://cointelegraph.com/rss",                                                        "crypto"),
-    ("OilPrice",              "https://oilprice.com/rss/main",                                                        "commodities"),
-    # DISABLED: current RSS URL redirects to invalid HTML page; needs verified ACCESS/Newswire feed: ("AccessWire",            "https://www.accesswire.com/rss/default.aspx",                                         "press_releases"),
+    ("TradingView News",      "https://www.tradingview.com/news/",                                                   "markets"),
 ]
 
 
 def _load_feeds_from_db(dsn: str) -> list[tuple[str, str, str]]:
     """Load enabled RSS sources from the rss_sources PostgreSQL table."""
+    approved_names = {name.lower() for name, _url, _category in RSS_FEEDS}
     try:
         with psycopg.connect(dsn) as conn:
             rows = conn.execute(
                 "SELECT name, url, category FROM rss_sources WHERE enabled = TRUE ORDER BY name"
             ).fetchall()
+        rows = [r for r in rows if str(r[0]).strip().lower() in approved_names]
         if rows:
-            log.info("Loaded %d RSS sources from database", len(rows))
+            log.info("Loaded %d professor-approved RSS sources from database", len(rows))
             return [(r[0], r[1], r[2]) for r in rows]
     except Exception as exc:
         log.debug("Could not load feeds from DB (%s); using hardcoded list", exc)

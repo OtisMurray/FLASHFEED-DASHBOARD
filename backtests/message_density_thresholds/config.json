@@ -1,0 +1,48 @@
+{
+  "mongoUri": "mongodb://localhost:27017/feedflash",
+  "database": "feedflash",
+  "priceCollection": "finviz_momentum_snapshots",
+  "socialCollection": "socials",
+  "outputDir": "backtests/message_density_thresholds/outputs",
+  "sessionMode": "regular",
+  "minCorrelationObservations": 30,
+  "minPriceBarsPerTicker": 60,
+  "maxTickers": 600,
+  "protectiveStopPct": 3,
+  "cooldownMinutes": 0,
+  "slippagePctByTier": {
+    "Mega": 0.05,
+    "Large": 0.07,
+    "Mid": 0.12,
+    "Small": 0.25,
+    "Nano": 0.45,
+    "Unknown": 0.35
+  },
+  "tierRules": {
+    "Mega": { "entrySignal": "corr_crosses_above", "windowMinutes": 120, "thresholdC": 0.5, "trailingStopPct": 2 },
+    "Large": { "entrySignal": "corr_crosses_above", "windowMinutes": 360, "thresholdC": 0.0, "trailingStopPct": 5 },
+    "Mid": { "entrySignal": "corr_crosses_above", "windowMinutes": 360, "thresholdC": 0.8, "trailingStopPct": 8 },
+    "Small": { "entrySignal": "corr_crosses_above", "windowMinutes": 240, "thresholdC": 0.6, "trailingStopPct": 8 },
+    "Nano15": { "tier": "Nano", "entrySignal": "density_rise_3x_60m", "windowMinutes": 360, "densityRiseMultiple": 3, "minTrailing60Messages": 5, "trailingStopPct": 15 },
+    "Nano20": { "tier": "Nano", "entrySignal": "density_rise_3x_60m", "windowMinutes": 360, "densityRiseMultiple": 3, "minTrailing60Messages": 5, "trailingStopPct": 20 }
+  },
+  "pooledRules": [
+    { "name": "pooled_2h_c0.7_trail2", "windowMinutes": 120, "thresholdC": 0.7, "trailingStopPct": 2 },
+    { "name": "pooled_3h_c0.7_trail2", "windowMinutes": 180, "thresholdC": 0.7, "trailingStopPct": 2 },
+    { "name": "pooled_4h_c0.7_trail2", "windowMinutes": 240, "thresholdC": 0.7, "trailingStopPct": 2 },
+    { "name": "pooled_5h_c0.4_trail2", "windowMinutes": 300, "thresholdC": 0.4, "trailingStopPct": 2 },
+    { "name": "pooled_6h_c0.0_trail8", "windowMinutes": 360, "thresholdC": 0.0, "trailingStopPct": 8 }
+  ],
+  "sensitivity": {
+    "thresholds": [-0.2, 0, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+    "windowsMinutes": [60, 120, 180, 240, 300, 360],
+    "trailingStopsPct": [2, 3, 5, 8, 10, 15, 20],
+    "nanoRiseMultiples": [1.5, 2, 2.5, 3, 4],
+    "nanoMinTrailing60Messages": [3, 5, 10]
+  },
+  "baselines": {
+    "momentumChangePct": 5,
+    "relVolumeThreshold": 5,
+    "topRankThreshold": 20
+  }
+}

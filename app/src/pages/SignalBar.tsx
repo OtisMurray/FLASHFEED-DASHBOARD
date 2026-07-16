@@ -27,6 +27,8 @@ const ORDER_OPTIONS = [
   { value: 'stocktwits_message_density', label: 'StockTwits Density' },
   { value: 'stocktwits_message_count', label: 'StockTwits Msgs' },
   { value: 'structured_sentiment', label: 'News Sent.' },
+  { value: 'predicted_return', label: 'Predicted Return' },
+  { value: 'prediction_confidence', label: 'Prediction Conf.' },
   { value: 'message_count', label: 'Messages' },
   { value: 'news_article_count', label: 'News Count' },
   { value: 'sector', label: 'Sector' },

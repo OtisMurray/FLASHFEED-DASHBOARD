@@ -1,0 +1,125 @@
+{
+  "mongoUri": "mongodb://localhost:27017/feedflash",
+  "database": "feedflash",
+  "priceSource": "yahoo_chart",
+  "priceCollection": "finviz_momentum_snapshots",
+  "socialCollection": "socials",
+  "outputDir": "backtests/message_density_thresholds/outputs_threshold_v6_ohlc_expanded",
+  "chartCacheDir": "backtests/message_density_thresholds/.chart_cache_expanded",
+  "chartCacheMaxAgeHours": 18,
+  "chartRange": "1mo",
+  "chartInterval": "5m",
+  "chartQueries": [
+    { "label": "recent_dense_60d_5m", "range": "60d", "interval": "5m" },
+    { "label": "long_history_6mo_1h", "range": "6mo", "interval": "1h" }
+  ],
+  "chartFetchConcurrency": 5,
+  "chartFetchDelayMs": 75,
+  "maxChartTickers": 600,
+  "sessionMode": "regular",
+  "minCorrelationObservations": 8,
+  "minPriceBarsPerTicker": 60,
+  "maxTickers": 600,
+  "protectiveStopPct": 3,
+  "cooldownMinutes": 0,
+  "referencePolicy": {
+    "version": "density_corr_tiered_ohlc_candidate_v6",
+    "bestCandidateTrades": 43,
+    "sourceBacktest": "backtests/message_density_thresholds/outputs_threshold_v5_ohlc/summary.json"
+  },
+  "promotionMinTrades": 80,
+  "promotionMinValidationTrades": 3,
+  "promotionMinTestTrades": 3,
+  "promotionMinTemporalDevTrades": 5,
+  "promotionMinTemporalValidationTrades": 5,
+  "promotionMinTemporalTestTrades": 5,
+  "slippagePctByTier": {
+    "Mega": 0.05,
+    "Large": 0.07,
+    "Mid": 0.12,
+    "Small": 0.25,
+    "Nano": 0.45,
+    "Unknown": 0.35
+  },
+  "tierRules": {
+    "Mega": {
+      "tier": "Mega",
+      "entrySignal": "corr_crosses_above_with_news_validation",
+      "windowMinutes": 120,
+      "thresholdC": 0.42,
+      "maxPreSignalReturn60mPct": 1,
+      "minTrailing60Messages": 3,
+      "trailingStopPct": 5,
+      "protectiveStopPct": 3
+    },
+    "Large": {
+      "tier": "Large",
+      "entrySignal": "corr_crosses_above_with_news_validation",
+      "windowMinutes": 120,
+      "thresholdC": 0.38,
+      "maxPreSignalReturn60mPct": 1,
+      "minTrailing60Messages": 3,
+      "trailingStopPct": 5,
+      "protectiveStopPct": 3
+    },
+    "Mid": {
+      "tier": "Mid",
+      "entrySignal": "corr_crosses_above_with_catalyst_or_density_validation",
+      "windowMinutes": 90,
+      "thresholdC": 0.32,
+      "maxPreSignalReturn60mPct": 4,
+      "minTrailing60Messages": 8,
+      "trailingStopPct": 5,
+      "protectiveStopPct": 3
+    },
+    "Small": {
+      "tier": "Small",
+      "entrySignal": "corr_crosses_above_with_catalyst_or_squeeze_validation",
+      "windowMinutes": 90,
+      "thresholdC": 0.32,
+      "maxPreSignalReturn60mPct": 4,
+      "minTrailing60Messages": 8,
+      "trailingStopPct": 7,
+      "protectiveStopPct": 3
+    },
+    "Nano": {
+      "tier": "Nano",
+      "entrySignal": "corr_crosses_above_plus_message_squeeze_gate",
+      "windowMinutes": 90,
+      "thresholdC": 0.3,
+      "maxPreSignalReturn60mPct": 1,
+      "minTrailing60Messages": 10,
+      "trailingStopPct": 7,
+      "protectiveStopPct": 3
+    }
+  },
+  "pooledRules": [
+    { "name": "v5_high_conviction_w90_c0.30_trail7_pre1_msg10", "windowMinutes": 90, "thresholdC": 0.30, "trailingStopPct": 7, "protectiveStopPct": 3 },
+    { "name": "v5_strict_w90_c0.32_trail5_pre1_msg8", "windowMinutes": 90, "thresholdC": 0.32, "trailingStopPct": 5, "protectiveStopPct": 3 },
+    { "name": "v5_core_w90_c0.32_trail5_pre4_msg8", "windowMinutes": 90, "thresholdC": 0.32, "trailingStopPct": 5, "protectiveStopPct": 3 },
+    { "name": "v5_broader_w90_c0.30_trail5_pre4_msg8", "windowMinutes": 90, "thresholdC": 0.30, "trailingStopPct": 5, "protectiveStopPct": 3 },
+    { "name": "v5_large_w120_c0.40_trail5_pre1_msg3", "windowMinutes": 120, "thresholdC": 0.40, "trailingStopPct": 5, "protectiveStopPct": 3 },
+    { "name": "legacy_slow_w180_c0.20_trail2", "windowMinutes": 180, "thresholdC": 0.20, "trailingStopPct": 2, "protectiveStopPct": 3 }
+  ],
+  "sensitivity": {
+    "thresholds": [-0.2, 0, 0.2, 0.3, 0.32, 0.36, 0.38, 0.4, 0.42, 0.5, 0.6, 0.8],
+    "windowsMinutes": [60, 75, 90, 120, 180, 240, 360],
+    "trailingStopsPct": [2, 3, 4, 5, 7, 10],
+    "nanoRiseMultiples": [2, 2.5, 3, 4],
+    "nanoMinTrailing60Messages": [3, 5, 8, 10]
+  },
+  "optimizationGrid": {
+    "windowsMinutes": [90, 120, 180],
+    "thresholds": [0.3, 0.36, 0.38, 0.4, 0.42],
+    "trailingStopsPct": [7, 10],
+    "maxPre60Pct": [1, 4],
+    "minTrailing60Messages": [3, 8, 10],
+    "minRelVolumeAtSignal": [0],
+    "maxAbsChangePctAtSignal": [null]
+  },
+  "baselines": {
+    "momentumChangePct": 5,
+    "relVolumeThreshold": 5,
+    "topRankThreshold": 20
+  }
+}

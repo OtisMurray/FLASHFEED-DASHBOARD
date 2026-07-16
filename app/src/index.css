@@ -39,6 +39,15 @@ body {
   background: var(--neutral);
 }
 
+@keyframes auto-progress-glint {
+  from {
+    transform: translateX(-220%);
+  }
+  to {
+    transform: translateX(120%);
+  }
+}
+
 
 /* FlashFeed dashboard fix: Overview should fill the screen, not create one giant page scroll. */
 @media (min-width: 900px) {
@@ -62,6 +71,13 @@ body {
     overflow: hidden;
     display: flex;
     flex-direction: column;
+  }
+
+  .overview-page > .grid:last-child > .overview-side-rail {
+    max-height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    display: block;
   }
 
   .overview-page > .grid:last-child [class*="overflow-y-auto"],

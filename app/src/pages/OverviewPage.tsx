@@ -35,6 +35,20 @@ type SentimentAuditRow = {
 
 const fetcher = (url: string) => fetch(url).then(r => r.json())
 
+const livePanelSWR = {
+  refreshInterval: 60_000,
+  dedupingInterval: 60_000,
+  keepPreviousData: true,
+  revalidateOnFocus: false,
+}
+
+const slowerPanelSWR = {
+  refreshInterval: 60_000,
+  dedupingInterval: 45_000,
+  keepPreviousData: true,
+  revalidateOnFocus: false,
+}
+
 function asArray<T>(value: any, keys: string[] = []): T[] {
   if (Array.isArray(value)) return value
   for (const key of keys) {
@@ -83,13 +97,13 @@ function socialText(post: SocialPreview) {
 
 export function OverviewPage() {
   const targetLanguage = useTargetLanguage()
-  const { data: stats } = useSWR('/api/stats?days=3', fetcher, { refreshInterval: 30_000 })
-  const { data: status } = useSWR('/api/status', fetcher, { refreshInterval: 30_000 })
-  const { data: articlesData } = useSWR('/api/articles?limit=30&ticker_only=1&recent_days=3', fetcher, { refreshInterval: 15_000 })
-  const { data: socialData } = useSWR('/api/social/rolling?window_minutes=1440&limit=80&ranked=1', fetcher, { refreshInterval: 30_000 })
-  const { data: socialStats } = useSWR('/api/social/rolling/stats?window_minutes=1440', fetcher, { refreshInterval: 30_000 })
-  const { data: correlationData } = useSWR('/api/correlation', fetcher, { refreshInterval: 60_000 })
-  const { data: auditData } = useSWR('/api/sentiment/audit?limit=8&days=3', fetcher, { refreshInterval: 60_000 })
+  const { data: stats } = useSWR('/api/stats?days=3', fetcher, livePanelSWR)
+  const { data: status } = useSWR('/api/status', fetcher, livePanelSWR)
+  const { data: articlesData } = useSWR('/api/articles?limit=30&ticker_only=1&recent_days=3', fetcher, livePanelSWR)
+  const { data: socialData } = useSWR('/api/social/rolling?window_minutes=1440&limit=80&ranked=1', fetcher, livePanelSWR)
+  const { data: socialStats } = useSWR('/api/social/rolling/stats?window_minutes=1440', fetcher, livePanelSWR)
+  const { data: correlationData } = useSWR('/api/correlation', fetcher, slowerPanelSWR)
+  const { data: auditData } = useSWR('/api/sentiment/audit?limit=8&days=3', fetcher, slowerPanelSWR)
 
   const articles = asArray<Article>(articlesData, ['articles'])
   const socialPosts = asArray<SocialPreview>(socialData, ['rows', 'posts']).slice(0, 10)
@@ -113,8 +127,8 @@ export function OverviewPage() {
 
   const bullishArticles = stats?.sentiment?.bullish ?? 0
   const bearishArticles = stats?.sentiment?.bearish ?? 0
-  const trackedMarkets = compact(stats?.tracked_market_ticker_count ?? stats?.tracked_ticker_count ?? stats?.tracked_market_count ?? stats?.tracked_markets?.length ?? 3)
-  const totalArticleCount = stats?.total_all ?? status?.database?.articles ?? articlesData?.total ?? stats?.total
+  const trackedMarkets = compact(stats?.tracked_market_ticker_count ?? stats?.tracked_ticker_count)
+  const totalArticleCount = stats?.total ?? status?.database?.recent_articles ?? articlesData?.total ?? 0
   const socialTotal = socialStats?.total ?? socialData?.count ?? socialPosts.length
   const pearsonR = correlationData?.summary?.pearson_correlation ?? null
 
@@ -183,7 +197,30 @@ export function OverviewPage() {
           </div>
         </section>
 
-        <section className="min-w-0 bg-surface border border-border rounded-lg overflow-y-auto">
+        <section className="overview-side-rail min-w-0 bg-surface border border-border rounded-lg overflow-y-auto">
+          <SectionTitle title="Correlation Signals" meta={`${correlations.length} rows`} />
+          <div className="p-3 space-y-2 flex-none">
+            {correlations.length ? correlations.map(entry => (
+              <div key={entry.ticker} className="bg-bg/60 border border-border rounded p-2">
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <span className="font-mono font-bold text-accent text-xs">{entry.ticker}</span>
+                  <span className={clsx('font-mono text-xs', Number(entry.correlation || 0) >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                    {Number(entry.correlation || 0) >= 0 ? '+' : ''}{Number(entry.correlation || 0).toFixed(3)}
+                  </span>
+                </div>
+                <div className="h-1.5 rounded-full bg-slate-700 overflow-hidden">
+                  <div
+                    className={clsx('h-full rounded-full', Number(entry.correlation || 0) >= 0 ? 'bg-emerald-500' : 'bg-red-500')}
+                    style={{ width: `${Math.min(100, Math.abs(Number(entry.correlation || 0)) * 100)}%` }}
+                  />
+                </div>
+                <div className="text-[10px] text-neutral mt-1">{entry.sample_size ?? 0} samples</div>
+              </div>
+            )) : (
+              <div className="text-sm text-neutral border border-border rounded p-3 bg-bg/40">Run alignment after fresh articles and quotes to populate this panel.</div>
+            )}
+          </div>
+
           <SectionTitle title="Ticker Tracker" meta={tickerMentions.length ? 'top 5 by mentions' : 'waiting'} />
           <div className="p-4 space-y-3 flex-none">
             {tickerMentions.length ? tickerMentions.map(row => {
@@ -208,29 +245,6 @@ export function OverviewPage() {
               )
             }) : (
               <div className="text-sm text-neutral border border-border rounded p-3 bg-bg/40">Ticker mentions appear after articles include ticker symbols.</div>
-            )}
-          </div>
-
-          <SectionTitle title="Correlation Signals" meta={`${correlations.length} rows`} />
-          <div className="p-3 space-y-2 flex-none">
-            {correlations.length ? correlations.map(entry => (
-              <div key={entry.ticker} className="bg-bg/60 border border-border rounded p-2">
-                <div className="flex items-center justify-between gap-2 mb-1">
-                  <span className="font-mono font-bold text-accent text-xs">{entry.ticker}</span>
-                  <span className={clsx('font-mono text-xs', Number(entry.correlation || 0) >= 0 ? 'text-emerald-400' : 'text-red-400')}>
-                    {Number(entry.correlation || 0) >= 0 ? '+' : ''}{Number(entry.correlation || 0).toFixed(3)}
-                  </span>
-                </div>
-                <div className="h-1.5 rounded-full bg-slate-700 overflow-hidden">
-                  <div
-                    className={clsx('h-full rounded-full', Number(entry.correlation || 0) >= 0 ? 'bg-emerald-500' : 'bg-red-500')}
-                    style={{ width: `${Math.min(100, Math.abs(Number(entry.correlation || 0)) * 100)}%` }}
-                  />
-                </div>
-                <div className="text-[10px] text-neutral mt-1">{entry.sample_size ?? 0} samples</div>
-              </div>
-            )) : (
-              <div className="text-sm text-neutral border border-border rounded p-3 bg-bg/40">Run alignment after fresh articles and quotes to populate this panel.</div>
             )}
           </div>
 

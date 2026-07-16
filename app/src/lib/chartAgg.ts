@@ -162,8 +162,13 @@ export function overlaySeries(
 ): { density: LinePoint[]; sentiment: LinePoint[] } {
   if (!social || !rawCandles.length) return { density: [], sentiment: [] }
 
-  const minTime = Number(rawCandles[0]?.time ?? 0) - tfMin * 60
-  const maxTime = Number(rawCandles[rawCandles.length - 1]?.time ?? 0) + tfMin * 60
+  const candleBuckets = Array.from(new Set(
+    rawCandles
+      .map(c => bucketStart(Number(c.time), tfMin))
+      .filter(t => Number.isFinite(t)),
+  )).sort((a, b) => a - b)
+  const minTime = Number(candleBuckets[0] ?? 0) - tfMin * 60
+  const maxTime = Number(candleBuckets[candleBuckets.length - 1] ?? 0) + tfMin * 60
   const inVisibleRange = (t: number) => Number.isFinite(t) && t >= minTime && t <= maxTime
   const add = (acc: Map<number, { sum: number; n: number }>, time: number, value: number | undefined) => {
     if (!Number.isFinite(time) || !Number.isFinite(value as number) || !inVisibleRange(time)) return
@@ -204,9 +209,16 @@ export function overlaySeries(
   }
 
   const toLine = (acc: Map<number, { sum: number; n: number }>): LinePoint[] =>
-    Array.from(acc.entries()).filter(([, v]) => v.n > 0)
-      .map(([time, v]) => ({ time, value: +(v.sum / v.n).toFixed(4) }))
-      .sort((a, b) => a.time - b.time)
+    candleBuckets.map(time => {
+      const v = acc.get(time)
+      // A bucket with no matched social rows is zero observed evidence for that
+      // candle bucket, not a hidden/missing point. This keeps intraday overlays
+      // spanning the full price range without inventing social activity.
+      return { time, value: v && v.n > 0 ? +(v.sum / v.n).toFixed(4) : 0 }
+    })
 
-  return { density: toLine(dAcc), sentiment: toLine(sAcc) }
+  return {
+    density: toLine(dAcc),
+    sentiment: toLine(sAcc),
+  }
 }

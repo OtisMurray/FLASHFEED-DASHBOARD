@@ -1,15 +1,155 @@
 [
-  {"source":"Finviz Elite Screener","type":"numeric_screener","status":"api_key_required","auth_required":true,"env_var":"FINVIZ_AUTH_TOKEN","collection":"screeners"},
-  {"source":"TradingView Numeric Screener","type":"numeric_screener","status":"working_public","auth_required":false,"collection":"screeners"},
-  {"source":"Finviz News","type":"public_news","status":"working_public","auth_required":false,"collection":"articles"},
-  {"source":"TradingView News","type":"public_news","status":"working_public","auth_required":false,"collection":"articles"},
-  {"source":"TradingView News Flow","type":"structured_news","status":"working_public","auth_required":false,"collection":"articles"},
-  {"source":"PR Newswire","type":"structured_news","status":"working_public","auth_required":false,"collection":"articles"},
-  {"source":"PR Newswire Financial","type":"structured_news","status":"working_public","auth_required":false,"collection":"articles"},
-  {"source":"GlobeNewswire Public Companies","type":"structured_news","status":"working_public","auth_required":false,"collection":"articles"},
-  {"source":"ACCESS Newswire","type":"structured_news","status":"working_public","auth_required":false,"collection":"articles"},
-  {"source":"Benzinga","type":"structured_news","status":"api_key_required","auth_required":true,"env_var":"BENZINGA_API_KEY","collection":"articles"},
-  {"source":"StockTwits","type":"social","status":"working_public","auth_required":false,"collection":"socials"},
-  {"source":"Reddit","type":"social","status":"rate_limited_public","auth_required":false,"collection":"socials"},
-  {"source":"Bluesky","type":"social","status":"working_public","auth_required":false,"collection":"socials"}
+  {
+    "source": "Finviz Elite Screener",
+    "type": "numeric_screener",
+    "status": "api_key_required",
+    "auth_required": true,
+    "env_var": "FINVIZ_AUTH_TOKEN",
+    "collection": "screeners"
+  },
+  {
+    "source": "TradingView Numeric Screener",
+    "type": "numeric_screener",
+    "status": "working_public",
+    "auth_required": false,
+    "collection": "screeners"
+  },
+  {
+    "source": "Finviz News Flow",
+    "type": "platform_news_flow",
+    "status": "working_elite_cookie",
+    "auth_required": true,
+    "collection": "articles"
+  },
+  {
+    "source": "Finviz News",
+    "type": "public_news",
+    "status": "working_public",
+    "auth_required": false,
+    "collection": "articles"
+  },
+  {
+    "source": "TradingView News",
+    "type": "public_news",
+    "status": "working_public",
+    "auth_required": false,
+    "collection": "articles"
+  },
+  {
+    "source": "TradingView News Flow",
+    "type": "structured_news",
+    "status": "working_public",
+    "auth_required": false,
+    "collection": "articles"
+  },
+  {
+    "source": "PR Newswire",
+    "type": "structured_news",
+    "status": "working_public",
+    "auth_required": false,
+    "collection": "articles"
+  },
+  {
+    "source": "PR Newswire Financial",
+    "type": "structured_news",
+    "status": "working_public",
+    "auth_required": false,
+    "collection": "articles"
+  },
+  {
+    "source": "GlobeNewswire Public Companies",
+    "type": "structured_news",
+    "status": "working_public",
+    "auth_required": false,
+    "collection": "articles"
+  },
+  {
+    "source": "ACCESS Newswire",
+    "type": "structured_news",
+    "status": "working_public",
+    "auth_required": false,
+    "collection": "articles"
+  },
+  {
+    "source": "SEC EDGAR",
+    "type": "filing",
+    "status": "working_public",
+    "auth_required": false,
+    "collection": "articles"
+  },
+  {
+    "source": "Benzinga",
+    "type": "structured_news",
+    "status": "api_key_required",
+    "auth_required": true,
+    "env_var": "BENZINGA_API_KEY",
+    "collection": "articles"
+  },
+  {
+    "source": "StockTwits",
+    "type": "social",
+    "status": "working_public",
+    "auth_required": false,
+    "collection": "socials"
+  },
+  {
+    "source": "Reddit",
+    "type": "social",
+    "status": "rate_limited_public",
+    "auth_required": false,
+    "collection": "socials"
+  },
+  {
+    "source": "Bluesky",
+    "type": "social",
+    "status": "working_public",
+    "auth_required": false,
+    "collection": "socials"
+  },
+  {
+    "source": "BusinessWire",
+    "type": "structured_news",
+    "status": "working_public",
+    "auth_required": false,
+    "collection": "articles"
+  },
+  {
+    "source": "FDA",
+    "type": "public_news",
+    "status": "working_public",
+    "auth_required": false,
+    "collection": "articles"
+  },
+  {
+    "source": "Interactive Brokers News",
+    "type": "broker_news",
+    "status": "gateway_required",
+    "auth_required": true,
+    "env_var": "IBKR_ENABLE_NEWS",
+    "collection": "articles"
+  },
+  {
+    "source": "Schwab News",
+    "type": "broker_news",
+    "status": "api_key_required",
+    "auth_required": true,
+    "env_var": "SCHWAB_ACCESS_TOKEN",
+    "collection": "articles"
+  },
+  {
+    "source": "X/Twitter",
+    "type": "social",
+    "status": "requires_official_api_access",
+    "auth_required": true,
+    "env_var": "X_BEARER_TOKEN",
+    "collection": "socials"
+  },
+  {
+    "source": "Dow Jones Newswires",
+    "type": "structured_news",
+    "status": "api_key_required",
+    "auth_required": true,
+    "env_var": "DOW_JONES_API_KEY",
+    "collection": "articles"
+  }
 ]

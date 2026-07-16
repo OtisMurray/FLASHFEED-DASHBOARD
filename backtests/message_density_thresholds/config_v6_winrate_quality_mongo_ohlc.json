@@ -1,0 +1,49 @@
+{
+  "extends": "config_v6_old_anchor_mongo_ohlc.json",
+  "outputDir": "backtests/message_density_thresholds/outputs_v6_winrate_quality_mongo_ohlc",
+  "v6WinRateQualityGrid": {
+    "enabled": true,
+    "baseRules": [
+      { "name": "v6_anchor", "windowMinutes": 120, "thresholdC": 0.4, "trailingStopPct": 10, "maxPre60Pct": 1, "minTrailing60Messages": 3 },
+      { "name": "v6_large", "windowMinutes": 120, "thresholdC": 0.38, "trailingStopPct": 5, "maxPre60Pct": 1, "minTrailing60Messages": 3 },
+      { "name": "v6_mid_small", "windowMinutes": 90, "thresholdC": 0.32, "trailingStopPct": 5, "maxPre60Pct": 4, "minTrailing60Messages": 8 }
+    ],
+    "dashboardScores": [3, 4, 5, 6],
+    "rankMax": [null, 100, 50],
+    "relVolumeMin": [null, 2.5],
+    "changeBands": [
+      { "name": "mom0to12", "min": 0, "max": 12 },
+      { "name": "mom1to10", "min": 1, "max": 10 },
+      { "name": "mom2to8", "min": 2, "max": 8 },
+      { "name": "anymom", "min": null, "max": null }
+    ],
+    "exitOverlays": [
+      { "name": "eodtrail", "overlay": {} },
+      { "name": "pt2", "overlay": { "profitTargetPct": 2 } },
+      { "name": "pt3", "overlay": { "profitTargetPct": 3 } },
+      { "name": "pt2_ts90", "overlay": { "profitTargetPct": 2, "timeStopMinutes": 90 } }
+    ],
+    "dashboardScore": {
+      "peerWindowMinutes": 60,
+      "peerCorrelationLookbackWindows": 10,
+      "relVolumeAtLeast": 2,
+      "rankAtMost": 50,
+      "changePctAtLeast": 1,
+      "changePctAtMost": 12,
+      "pre60AtMost": 4,
+      "pre15AtLeast": 0,
+      "densityAtLeast": 0.025,
+      "trailing60AtLeast": 3,
+      "catalystsAtLeast": 1,
+      "positiveCatalystsAtLeast": 1,
+      "sentimentTaggedAtLeast": 1,
+      "sentimentDeltaAtLeast": 1,
+      "peerDensityCorrAtLeast": 0.1,
+      "peerSentimentCorrAtLeast": 0.1,
+      "enabledChecks": ["relVolume", "topRank", "healthyMomentum", "notOverextended", "shortTermTrend", "density", "messageFlow", "catalyst", "sentiment", "peer", "correlation"]
+    },
+    "minWinRateTrades": 20,
+    "targetWinRate": 0.5,
+    "maxVariants": 320
+  }
+}

@@ -1,14 +1,39 @@
 import { useMemo, useState, useEffect } from 'react'
 
 export const DEFAULT_TRANSLATION_LANGUAGE = 'en'
+export const TRANSLATION_STORAGE_KEY = 'flashfeed.translationLanguage'
+
+export const SUPPORTED_TRANSLATION_LANGUAGES = [
+  { code: 'en', label: 'English' },
+  { code: 'es', label: 'Spanish' },
+  { code: 'fr', label: 'French' },
+  { code: 'de', label: 'German' },
+  { code: 'pt', label: 'Portuguese' },
+  { code: 'ja', label: 'Japanese' },
+] as const
+
+export type TranslationLanguage = typeof SUPPORTED_TRANSLATION_LANGUAGES[number]['code']
+
+export function isSupportedTranslationLanguage(value: string): value is TranslationLanguage {
+  return SUPPORTED_TRANSLATION_LANGUAGES.some(language => language.code === value)
+}
 
 export function getLanguageLabel(language: string) {
+  const match = SUPPORTED_TRANSLATION_LANGUAGES.find(item => item.code === language)
+  if (match) return match.label
   if (language === 'en') return 'English'
   return language.toUpperCase()
 }
 
 export function useTargetLanguage() {
-  return DEFAULT_TRANSLATION_LANGUAGE
+  const [language, setLanguage] = useState(DEFAULT_TRANSLATION_LANGUAGE)
+
+  useEffect(() => {
+    const stored = window.localStorage.getItem(TRANSLATION_STORAGE_KEY) || DEFAULT_TRANSLATION_LANGUAGE
+    setLanguage(isSupportedTranslationLanguage(stored) ? stored : DEFAULT_TRANSLATION_LANGUAGE)
+  }, [])
+
+  return language
 }
 
 export function canTranslateText(text: string | undefined | null) {

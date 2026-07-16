@@ -19,7 +19,10 @@ COPY Infrastructure/pipeline ./Infrastructure/pipeline
 COPY Infrastructure/kafka ./Infrastructure/kafka
 COPY 1_News ./1_News
 COPY 2_Screener ./2_Screener
+COPY 5_Social ./5_Social
 COPY config ./config
+COPY scripts ./scripts
+COPY scripts /scripts
 
 ENV PYTHONUNBUFFERED=1
 ENV RSS_COOLDOWN_SECONDS=0
