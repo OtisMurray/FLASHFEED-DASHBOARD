@@ -169,7 +169,7 @@ export function ScreenerPage() {
     revalidateOnFocus: false,
   })
   const { data: newsData } = useSWR(
-    '/api/articles?mover_only=1&ticker_only=1&article_kind=structured&recent_days=3&limit=24',
+    '/api/articles/recent-lite?mover_only=1&article_kind=structured&recent_days=3&limit=24',
     fetcher,
     {
       refreshInterval: 60_000,

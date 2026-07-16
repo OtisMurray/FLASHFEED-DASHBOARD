@@ -5112,6 +5112,30 @@ router.get('/', async (req, res) => {
       : mirrorMode
         ? Math.max(requestedLimit, 3000)
         : requestedLimit
+    const hasEvidenceSensitiveFilter = Boolean(
+      signal ||
+      sector ||
+      req.query.search ||
+      req.query.q ||
+      windowOverride ||
+      Object.keys(req.query || {}).some(key => [
+        'news_available',
+        'social_available',
+        'sentiment',
+        'catalyst',
+        'source',
+        'prediction_direction',
+        'decision_journey',
+      ].includes(key))
+    )
+    const leanFullUniverseOverview = Boolean(
+      compact &&
+      !predictionView &&
+      !mirrorMode &&
+      view === 'all' &&
+      requestedLimit > 1000 &&
+      !hasEvidenceSensitiveFilter
+    )
     
     let data = (await Screener.find(filter)
       .sort(sort)
@@ -5122,7 +5146,7 @@ router.get('/', async (req, res) => {
 
     const sessionContext = marketSessionContext()
 
-    if (mongoose.connection.db && data.length) {
+    if (mongoose.connection.db && data.length && !leanFullUniverseOverview) {
       const tickers = data.map(row => row.ticker)
       const [articleMap, socialMap, shortMap, watcherMap] = await Promise.all([
         loadArticleStatsForTickers(mongoose.connection.db, tickers, Number(days || 3), sessionContext),
@@ -5833,6 +5857,7 @@ router.get('/', async (req, res) => {
       visible_count: responseRows.length,
       result_count: filteredData.length,
       universe_count: filterUniverse.length,
+      data_load_mode: leanFullUniverseOverview ? 'lean_full_universe_overview' : 'live_enriched',
       prediction_session_context: sessionContext,
       catalyst_window: {
         session: sessionContext.session,

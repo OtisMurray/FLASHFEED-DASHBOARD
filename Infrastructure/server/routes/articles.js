@@ -7,6 +7,13 @@ const router = express.Router()
 const MARKET_WINDOW_TIME_ZONE = process.env.MARKET_WINDOW_TIMEZONE || 'America/New_York'
 const MARKET_WINDOW_CLOSE_HOUR = Number(process.env.MARKET_WINDOW_CLOSE_HOUR_ET || 17)
 const VALID_TICKER_FIELD_REGEX = /(^|[,\s$])\$?[A-Z][A-Z0-9.-]{0,5}(?=$|[,\s])/
+const ARTICLE_LIST_PROJECTION = {
+  content: 0,
+  raw_content: 0,
+  raw: 0,
+  html: 0,
+  embeddings: 0,
+}
 
 function normalizeUnixSeconds(value, fallback) {
   const n = Number(value || 0)
@@ -602,6 +609,39 @@ function mergeFacetRow(rows, key, value, count) {
   return rows.sort((a, b) => Number(b.count || 0) - Number(a.count || 0))
 }
 
+function lightweightArticleKind(article = {}) {
+  return article.article_kind || (PUBLIC_ARTICLE_CATEGORIES.includes(article.category) || article.collector === 'unstructured_news_title_only_v1' ? 'public' : 'structured')
+}
+
+function mapLightweightArticle(article = {}, moverTickers = []) {
+  const fetchedSeconds = normalizeUnixSeconds(article.fetched_date || article.detected_at || article.feed_sort_time, Math.floor(Date.now() / 1000))
+  const publishSeconds = normalizeUnixSeconds(article.publish_date || article.feed_sort_time, fetchedSeconds)
+  const tickers = storedArticleTickers(article)
+  const correctedSentiment = correctedArticleSentiment(article)
+  return {
+    ...article,
+    id: article.article_id,
+    ticker: tickers[0] || '',
+    tickers,
+    stored_ticker: article.ticker || '',
+    original_tickers: articleTickerValues(article),
+    ticker_match_method: tickers.length ? 'stored_ticker_lightweight' : 'none',
+    ticker_match_confidence: tickers.length ? 0.8 : 0,
+    ticker_match_verified: tickers.length > 0,
+    sentiment: correctedSentiment.sentiment,
+    sentiment_score: Number(correctedSentiment.score.toFixed(3)),
+    sentiment_original: correctedSentiment.original,
+    sentiment_rule_applied: correctedSentiment.ruleApplied,
+    sentiment_reason: correctedSentiment.reason || article.sentiment_reason || '',
+    publish_date: publishSeconds,
+    fetched_date: fetchedSeconds,
+    detected_at: normalizeUnixSeconds(article.detected_at, fetchedSeconds),
+    article_kind: lightweightArticleKind(article),
+    positive_mover_match: moverTickers.length ? matchedTickers(tickers, moverTickers).length > 0 : false,
+    matched_mover_tickers: moverTickers.length ? matchedTickers(tickers, moverTickers) : tickers,
+  }
+}
+
 function dateFilterFromRequest({ from, to, feed, today, recent_days, days }, { filingFacet = false } = {}) {
   if (from || to) {
     const dateRange = {}
@@ -620,6 +660,69 @@ function dateFilterFromRequest({ from, to, feed, today, recent_days, days }, { f
 
 // GET /api/articles
 // Query params: sentiment, source, ticker, ticker_only, from, to, recent_days, limit, skip, offset
+router.get('/recent-lite', async (req, res) => {
+  try {
+    const {
+      article_kind,
+      mover_only,
+      mover_source,
+      recent_days,
+      days,
+      limit = 24,
+    } = req.query
+    const pageLimit = Math.max(1, Math.min(100, Number(limit || 24) || 24))
+    const windowDays = Math.max(1, Math.min(10, Math.floor(Number(recent_days || days || 3) || 3)))
+    const cutoffSec = Math.floor(Date.now() / 1000) - windowDays * 86_400
+    const moverTickers = mover_only === '1' || mover_only === 'true'
+      ? await loadPositiveMoverTickers(mover_source)
+      : []
+    const scanLimit = Math.max(pageLimit * 20, 300)
+    const rawRows = await Article.collection.find({
+      suppress_from_main_news: { $ne: true },
+      feed_sort_time: { $gte: cutoffSec },
+    })
+      .project(ARTICLE_LIST_PROJECTION)
+      .sort({ feed_sort_time: -1 })
+      .limit(scanLimit)
+      .hint('feed_sort_time_desc')
+      .maxTimeMS(8_000)
+      .toArray()
+    const requestedKind = String(article_kind || '').toLowerCase()
+    const articles = rawRows
+      .map(row => mapLightweightArticle(row, moverTickers))
+      .filter(row => {
+        if (requestedKind && requestedKind !== 'all' && row.article_kind !== requestedKind) return false
+        if (moverTickers.length && !row.matched_mover_tickers.length) return false
+        return true
+      })
+      .slice(0, pageLimit)
+    const nowParts = easternParts(new Date())
+    const responseWindowStart = new Date(calendarWindowStart(windowDays))
+    res.json({
+      articles,
+      total: articles.length,
+      raw_total: null,
+      returned: articles.length,
+      raw_scanned: rawRows.length,
+      limit: pageLimit,
+      facets_included: false,
+      post_ticker_verification: false,
+      lightweight: true,
+      window_days: windowDays,
+      market_window_start: responseWindowStart.toISOString(),
+      market_window_end: new Date().toISOString(),
+      market_window_timezone: MARKET_WINDOW_TIME_ZONE,
+      window_date: `${String(nowParts.year).padStart(4, '0')}-${String(nowParts.month).padStart(2, '0')}-${String(nowParts.day).padStart(2, '0')}`,
+      mover_only: mover_only === '1' || mover_only === 'true',
+      mover_source: mover_source || 'all',
+      mover_ticker_count: moverTickers.length,
+    })
+  } catch (err) {
+    console.error('GET /api/articles/recent-lite failed:', err)
+    res.status(500).json({ error: 'Failed to load recent articles' })
+  }
+})
+
 router.get('/', async (req, res) => {
   try {
     const {
@@ -649,6 +752,7 @@ router.get('/', async (req, res) => {
     const explicitFilingRequest = isExplicitFilingRequest({ source, category, articleKind: article_kind })
     const includeFilings = shouldIncludeFilings(req, { source, category, articleKind: article_kind })
     const includeFacets = facets !== '0' && facets !== 'false'
+    const lightweightList = !includeFacets && pageSkip === 0 && pageLimit <= 100
 
     const filter = includeFilings ? {} : { suppress_from_main_news: { $ne: true } }
     const tickerFilters = []
@@ -742,7 +846,7 @@ router.get('/', async (req, res) => {
     const needsTickerAliasRows = requirePostTickerVerification || !(ticker_only === '1' || ticker_only === 'true')
 
     const [rawTotal, sourceRowsRaw, categoryRowsRaw, filingFacetCount, tickerAliasRows] = await Promise.all([
-      Article.collection.countDocuments(filter),
+      lightweightList ? Promise.resolve(null) : Article.collection.countDocuments(filter),
       includeFacets ? Article.collection.aggregate([
         { $match: sourceFacetFilter },
         { $match: { source: { $exists: true, $nin: ['', null] } } },
@@ -817,13 +921,17 @@ router.get('/', async (req, res) => {
     let totalMayBeTruncated = false
 
     if (requirePostTickerVerification) {
-      const scanLimit = Math.max(1000, Math.floor(Number(process.env.ARTICLE_VERIFICATION_SCAN_LIMIT || 20000) || 20000))
+      const scanLimit = lightweightList
+        ? Math.max(pageLimit * 40, Math.floor(Number(process.env.ARTICLE_LIGHTWEIGHT_SCAN_LIMIT || 1000) || 1000))
+        : Math.max(1000, Math.floor(Number(process.env.ARTICLE_VERIFICATION_SCAN_LIMIT || 20000) || 20000))
       const candidateArticles = await Article.collection.find(filter)
+        .project(ARTICLE_LIST_PROJECTION)
         .sort(sortSpec)
         .limit(scanLimit)
+        .maxTimeMS(lightweightList ? 15_000 : 45_000)
         .toArray()
       rawScanned = candidateArticles.length
-      totalMayBeTruncated = rawTotal > scanLimit
+      totalMayBeTruncated = rawTotal == null ? candidateArticles.length >= scanLimit : rawTotal > scanLimit
       const verifiedArticles = candidateArticles
         .map(mapArticle)
         .filter(articlePassesTickerVerification)
@@ -832,9 +940,11 @@ router.get('/', async (req, res) => {
       responseArticles = verifiedArticles.slice(pageSkip, pageSkip + pageLimit)
     } else {
       const pageArticles = await Article.collection.find(filter)
+        .project(ARTICLE_LIST_PROJECTION)
         .sort(sortSpec)
         .skip(pageSkip)
         .limit(pageLimit)
+        .maxTimeMS(lightweightList ? 15_000 : 45_000)
         .toArray()
       rawScanned = pageArticles.length
       responseArticles = pageArticles.map(mapArticle)

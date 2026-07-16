@@ -7978,6 +7978,84 @@ app.delete('/api/settings/keywords/:keyword', async (req, res) => {
     })
   })
 
+  app.get('/api/dashboard/freshness', async (req, res) => {
+    try {
+      const db = mongoose.connection.db
+      if (!db) return res.status(503).json({ ok: false, status: 'unavailable', error: 'MongoDB is not connected' })
+
+      const nowSec = Math.floor(Date.now() / 1000)
+      const ageSeconds = (value) => {
+        const sec = timestampSeconds(value)
+        return sec ? Math.max(0, nowSec - sec) : null
+      }
+      const sourceStatus = (age, count, staleAfterSec) => {
+        if (!Number(count || 0)) return 'empty'
+        if (age == null) return 'unknown'
+        return age <= staleAfterSec ? 'fresh' : 'stale'
+      }
+      const latestDoc = async (collection, sort, projection = {}) =>
+        db.collection(collection).find({}, { projection }).sort(sort).limit(1).next().catch(() => null)
+      const countDocs = async (collection, query = {}) =>
+        db.collection(collection).countDocuments(query).catch(() => 0)
+
+      const [latestArticle, latestScreener, latestSocial, latestDecision, articleCount, screenerCount, socialCount, decisionCount] = await Promise.all([
+        latestDoc('articles', { fetched_date: -1, publish_date: -1, createdAt: -1 }, { fetched_date: 1, publish_date: 1, createdAt: 1 }),
+        latestDoc('screeners', { quote_updated_at: -1, updated_at: -1, createdAt: -1 }, { quote_updated_at: 1, updated_at: 1, createdAt: 1 }),
+        latestDoc('socials', { fetched_at: -1, timestamp: -1, created_at: -1 }, { fetched_at: 1, timestamp: 1, created_at: 1 }),
+        latestDoc('decision_map_points', { timestamp_sec: -1, created_at: -1 }, { timestamp_sec: 1, created_at: 1 }),
+        countDocs('articles'),
+        countDocs('screeners'),
+        countDocs('socials'),
+        countDocs('decision_map_points'),
+      ])
+
+      const sources = {
+        news: {
+          count: articleCount,
+          age_seconds: ageSeconds(latestArticle?.fetched_date ?? latestArticle?.publish_date ?? latestArticle?.createdAt),
+        },
+        screener: {
+          count: screenerCount,
+          age_seconds: ageSeconds(latestScreener?.quote_updated_at ?? latestScreener?.updated_at ?? latestScreener?.createdAt),
+        },
+        social: {
+          count: socialCount,
+          age_seconds: ageSeconds(latestSocial?.fetched_at ?? latestSocial?.timestamp ?? latestSocial?.created_at),
+        },
+        decision_map: {
+          count: decisionCount,
+          age_seconds: ageSeconds(latestDecision?.timestamp_sec ?? latestDecision?.created_at),
+        },
+      }
+      sources.news.status = sourceStatus(sources.news.age_seconds, sources.news.count, 90 * 60)
+      sources.screener.status = sourceStatus(sources.screener.age_seconds, sources.screener.count, 20 * 60)
+      sources.social.status = sourceStatus(sources.social.age_seconds, sources.social.count, 90 * 60)
+      sources.decision_map.status = sourceStatus(sources.decision_map.age_seconds, sources.decision_map.count, 30 * 60)
+
+      const staleSources = Object.values(sources).filter(source => source.status === 'stale' || source.status === 'empty')
+      res.json({
+        ok: true,
+        status: staleSources.length ? 'stale' : 'fresh',
+        generated_at: new Date().toISOString(),
+        market: {
+          label: siteOpen() ? 'Dashboard present' : 'Dashboard absent',
+        },
+        sources,
+        auto_refresh: {
+          refresh_cycle_in_flight: Boolean(refreshCycleInFlight),
+          onsite_fetch_enabled: Boolean(ONSITE_FETCH_ENABLED),
+          onsite_fetch_running: Boolean(onSiteFetchRunning),
+          onsite_fetch_interval_minutes: Math.round(ONSITE_FETCH_INTERVAL_MS / 60000),
+          away_fetch_enabled: Boolean(AUTO_GRAB_ENABLED),
+          away_fetch_running: Boolean(autoGrabRunning),
+        },
+      })
+    } catch (err) {
+      console.error('GET /api/dashboard/freshness failed:', err)
+      res.status(500).json({ ok: false, status: 'error', error: String(err?.message || err) })
+    }
+  })
+
   app.get('/api/system/health', async (req, res) => {
     const started = Date.now()
     const nowSec = Math.floor(started / 1000)
