@@ -1,7 +1,6 @@
 import { TopBar } from './TopBar'
 import { ToastProvider } from '@/components/shared/Toast'
 import useSWR from 'swr'
-import { clsx } from 'clsx'
 import { useEffect, useState } from 'react'
 
 const fetcher = (url: string) => fetch(url).then(r => r.json())
@@ -21,21 +20,27 @@ function DataFreshnessBanner() {
     revalidateOnFocus: false,
   })
   if (!data) return null
-  const warning = data.status !== 'fresh'
   const sources = data.sources || {}
+  const coreSources = ['news', 'screener', 'social'] as const
+  const staleCoreSources = coreSources.filter(key => {
+    const source = sources[key]
+    const status = String(source?.status || '').toLowerCase()
+    return data.ok === false || status === 'stale' || status === 'missing' || status === 'empty' || status === 'error'
+  })
+
+  // Keep the global strip quiet during healthy operation. Decision Map can be
+  // loaded lazily, so an unknown map cache should not make fresh core data look broken.
+  if (staleCoreSources.length === 0) return null
+
   return (
-    <div className={clsx(
-      'border-b px-3 py-1.5 text-[11px] md:px-4',
-      warning ? 'border-amber-500/25 bg-amber-500/10 text-amber-100' : 'border-emerald-500/20 bg-emerald-500/10 text-emerald-100'
-    )}>
+    <div className="border-b border-amber-500/25 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-100 md:px-4">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="font-semibold">{warning ? 'Freshness warning' : 'Data fresh'}</span>
+        <span className="font-semibold">Freshness warning</span>
         <span>Market: {data.market?.label || 'unknown'}</span>
         <span>News {ageLabel(sources.news?.age_seconds)}</span>
         <span>Screener {ageLabel(sources.screener?.age_seconds)}</span>
         <span>Social {ageLabel(sources.social?.age_seconds)}</span>
-        <span>Decision Map {ageLabel(sources.decision_map?.age_seconds)}</span>
-        {data.auto_refresh?.refresh_cycle_in_flight && <span className="text-sky-200">refresh running</span>}
+        {data.auto_refresh?.refresh_cycle_in_flight && <span className="text-sky-200">refresh in progress</span>}
       </div>
     </div>
   )
