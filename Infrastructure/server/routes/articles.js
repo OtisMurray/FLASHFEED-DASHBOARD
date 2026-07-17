@@ -455,6 +455,19 @@ function inferArticleTickers(article = {}, aliasContext = []) {
         rejected: stored.filter(ticker => !unique.includes(ticker)),
       }
     }
+    if (stored.length === 1 && stored[0]) {
+      const source = String(article.source || article.collector || article.category || '').toLowerCase()
+      const structured = lightweightArticleKind(article) === 'structured'
+      const trustedStoredTicker = structured && /benzinga|tradingview|business wire|globenewswire|pr newswire|access newswire|reuters|dow jones|sec|edgar/.test(source)
+      if (trustedStoredTicker) {
+        return {
+          tickers: stored,
+          method: 'stored_single_trusted_source',
+          confidence: 0.68,
+          rejected: [],
+        }
+      }
+    }
   }
 
   if (!haystack) return { tickers: [], method: 'none', confidence: 0 }
@@ -935,6 +948,7 @@ router.get('/', async (req, res) => {
       const verifiedArticles = candidateArticles
         .map(mapArticle)
         .filter(articlePassesTickerVerification)
+        .sort((a, b) => Number(b.publish_date || b.fetched_date || b.detected_at || 0) - Number(a.publish_date || a.fetched_date || a.detected_at || 0))
       total = verifiedArticles.length
       unverifiedFiltered = rawScanned - verifiedArticles.length
       responseArticles = verifiedArticles.slice(pageSkip, pageSkip + pageLimit)

@@ -67,6 +67,7 @@ REDDIT_SUBREDDIT_LIMIT = max(1, int(os.getenv("SOCIAL_REDDIT_SUBREDDIT_LIMIT", "
 REDDIT_MAX_TICKERS_PER_CYCLE = max(0, int(os.getenv("SOCIAL_REDDIT_MAX_TICKERS_PER_CYCLE", "3")))
 REDDIT_PUBLIC_JSON = os.getenv("SOCIAL_REDDIT_PUBLIC_JSON", "false").lower() in ("1", "true", "yes")
 REDDIT_RECENT_SWEEP = os.getenv("SOCIAL_REDDIT_RECENT_SWEEP", "false").lower() in ("1", "true", "yes")
+REDDIT_ARCHIVE_FALLBACK = os.getenv("SOCIAL_REDDIT_ARCHIVE_FALLBACK", "true").lower() in ("1", "true", "yes")
 PRIVATE_SOCIAL_TICKERS = [
     s.strip().upper()
     for s in os.getenv("SOCIAL_PRIVATE_TICKERS", "").split(",")
@@ -216,6 +217,72 @@ def _reddit_child_to_entry(child: dict, now: int, fallback_subreddit: str = "") 
         "subreddit": subreddit,
         "source": f"r/{subreddit}" if subreddit else "Reddit",
     }
+
+
+def _reddit_archive_post_to_entry(post: dict, now: int, fallback_subreddit: str = "") -> dict | None:
+    if not isinstance(post, dict):
+        return None
+    post_id = str(post.get("id") or post.get("_id") or "").strip()
+    subreddit = str(post.get("subreddit") or fallback_subreddit or "").strip()
+    permalink = str(post.get("permalink") or "").strip()
+    link = (
+        f"https://www.reddit.com{permalink}"
+        if permalink.startswith("/")
+        else str(post.get("url") or post.get("full_link") or "").strip()
+    )
+    if not link and post_id and subreddit:
+        link = f"https://www.reddit.com/r/{subreddit}/comments/{post_id}"
+    if "/comments/" not in link:
+        return None
+    return {
+        "title": post.get("title") or "",
+        "link": link,
+        "summary": post.get("selftext") or post.get("body") or "",
+        "author": post.get("author") or "",
+        "created_at": int(post.get("created_utc") or post.get("created") or now),
+        "subreddit": subreddit,
+        "source": f"r/{subreddit}" if subreddit else "Reddit Archive",
+    }
+
+
+def _fetch_reddit_archive_entries(ticker: str, subreddit: str, limit: int, now: int) -> list[dict]:
+    if not REDDIT_ARCHIVE_FALLBACK:
+        return []
+
+    query = ticker.upper()
+    entries: list[dict] = []
+    archive_requests = [
+        (
+            "ArcticShift",
+            "https://arctic-shift.photon-reddit.com/api/posts/search",
+            {"query": query, "subreddit": subreddit, "limit": max(1, min(limit * 3, 50)), "sort": "desc"},
+        ),
+        (
+            "PullPush",
+            "https://api.pullpush.io/reddit/search/submission/",
+            {"q": query, "subreddit": subreddit, "size": max(1, min(limit * 3, 50)), "sort": "desc", "sort_type": "created_utc"},
+        ),
+    ]
+
+    for label, url, params in archive_requests:
+        try:
+            resp = _http_get(url, headers=REDDIT_HEADERS, params=params, timeout=REDDIT_TIMEOUT)
+            if resp.status_code != 200:
+                print(f"Reddit archive {label} r/{subreddit} ${ticker}: HTTP {resp.status_code}")
+                continue
+            payload = resp.json()
+            posts = payload if isinstance(payload, list) else payload.get("data") or payload.get("results") or payload.get("posts") or []
+            for post in posts[: max(1, min(limit * 3, 50))]:
+                entry = _reddit_archive_post_to_entry(post, now, subreddit)
+                if entry is not None:
+                    entries.append(entry)
+            if entries:
+                print(f"Reddit archive {label} r/{subreddit} ${ticker}: {len(entries)} candidate rows")
+                break
+        except Exception as exc:
+            print(f"Reddit archive {label} r/{subreddit} ${ticker}: SKIP {exc}")
+
+    return entries[:limit]
 
 
 def _fetch_reddit_recent_entries(subreddit: str, now: int) -> list[dict]:
@@ -626,9 +693,14 @@ def _fetch_reddit_ticker(ticker: str) -> list[dict]:
                         entry.setdefault("source", job["source"])
                 elif feed_resp.status_code not in (403, 429):
                     print(f"Reddit {job['source']} ${ticker}: HTTP {status_label}")
+
+            if not entries:
+                entries = _fetch_reddit_archive_entries(ticker, job["subreddit"], job["limit"], now)
         except Exception as exc:
             print(f"Reddit {job['source']} ${ticker}: SKIP {exc}")
-            continue
+            entries = _fetch_reddit_archive_entries(ticker, job["subreddit"], job["limit"], now)
+            if not entries:
+                continue
 
         message_volume = len(entries)
         message_density = round(message_volume / 30, 3)

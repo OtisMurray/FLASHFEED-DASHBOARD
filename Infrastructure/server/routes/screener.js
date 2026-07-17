@@ -1791,8 +1791,8 @@ function socialTimeStages() {
       $addFields: {
         _time_raw: {
           $ifNull: [
-            '$fetched_at',
-            { $ifNull: ['$detected_at', { $ifNull: ['$timestamp', { $ifNull: ['$created_at', '$publish_date'] }] }] },
+            '$created_at',
+            { $ifNull: ['$timestamp', { $ifNull: ['$publish_date', { $ifNull: ['$detected_at', '$fetched_at'] }] }] },
           ],
         },
       },
@@ -1819,14 +1819,17 @@ function socialTimeStages() {
 
 function catalystTypeWeight(value = '') {
   const text = String(value || '').toLowerCase()
+  if (/offering|dilution|reverse[_ -]?split|share[_ -]?consolidation|atm\b|warrant|convertible|bankruptcy|default|delisting|investigation|class action|lawsuit|downgrade|price target cut|cuts? target/.test(text)) return 0.2
+  if (/announces? date|announces? schedule|conference call|to report|monthly update|weekly share repurchase|director\/pdmr|shareholding|shareholder approval|annual general|special meeting|maintained at|reiterates? guidance|market report|market update|crude oil surges|top\s+.*gainers|stocks? moving|why shares|roundup/.test(text)) return 0.35
+  if (/merger|acquisition|completed acquisition|definitive agreement|business combination|buyout|takeover|tender offer/.test(text)) return 2.35
+  if (/private placement|secures?.{0,40}(financing|capital)|financing.{0,40}(pipeline|runway)|fund.{0,40}pipeline|non.?dilutive/.test(text)) return 2.15
   if (/short.?squeeze|short interest|days to cover|short covering|borrow|cost to borrow|watcher|stocktwits|retail interest|social squeeze/.test(text)) return 2.25
   if (/targets?\s+(up to\s+)?(us\$|\$|usd)|incremental annualized ebitda|annualized ebitda|ai data center|ai compute|battery energy storage|bess|preferred tenant|tenant bids|non.?dilutive/.test(text)) return 2.0
   if (/strategic capital|secures? capital|growth capital|support next phase|cooperation agreement|expected to generate.*profit|expected.*profit|media growth|entertainment and media growth/.test(text)) return 1.95
   if (/fda|approval|pdufa|clinical_positive|trial_positive|phase.*(success|positive)|breakthrough/.test(text)) return 2.1
   if (/earnings_beat|guidance_raise|revenue_growth|profit|contract|partnership|acquisition|merger|buyout|strategic/.test(text)) return 1.75
   if (/analyst_upgrade|price_target_raise|initiated.*buy|patent|product_launch|regulatory_clearance/.test(text)) return 1.45
-  if (/offering|dilution|reverse_split|share_consolidation|atm|warrant|convertible/.test(text)) return 1.35
-  if (/earnings_miss|guidance_cut|fda_rejection|clinical_negative|bankruptcy|default|delisting|investigation/.test(text)) return 1.9
+  if (/earnings_miss|guidance_cut|fda_rejection|clinical_negative/.test(text)) return 0.25
   if (/sec_filing|filing|8-k|13d|13g|form 4/.test(text)) return 0.85
   return 1
 }
@@ -1848,13 +1851,189 @@ function isRecognizedCatalystSource(value = '') {
 function isWeakGenericCatalystText(value = '') {
   const text = String(value || '').toLowerCase()
   if (!text.trim()) return true
-  return /these companies just dropped|market report|profiles?\s+.+\s+other|watchlist|latest news|morning market movers|top gainers|stocks? moving|why shares|newsletter|investor alert|law firm|lawsuit|class action|investigating claims|net worth|billionaire|wealth jumps|stock gains momentum|shares? gains? momentum|stock move up|shares? rise|shares? rose|shares? rally|stock rallies|market cap jumps|watch:/.test(text)
+  return /these companies just dropped|market report|market update|crude oil surges|profiles?\s+.+\s+other|watchlist|latest news|morning market movers|top\s+.*gainers|stocks? moving|why shares|newsletter|investor alert|law firm|lawsuit|class action|investigating claims|net worth|billionaire|wealth jumps|stock gains momentum|shares? gains? momentum|stock move up|shares? rise|shares? rose|shares? rally|stock rallies|market cap jumps|watch:|rest of the sector|sector is being repriced|announces? date|announces? schedule|conference call|to report|monthly update|weekly share repurchase|director\/pdmr|shareholding|shareholder approval|annual general|special meeting|maintained at|reiterates? guidance/.test(text)
 }
 
 function isBearishCatalystText(value = '') {
   const text = String(value || '').toLowerCase()
   if (!text.trim()) return false
   return /bearish|earnings_miss|guidance_cut|fda_rejection|clinical_negative|bankruptcy|default|delisting|investigation|investigating|lawsuit|class action|law firm|offering|dilution|reverse_split|share_consolidation|atm|warrant|convertible|short report|downgrade|price target cut|cuts? target|misses estimates|raises stakes/.test(text)
+}
+
+function parseCatalystMoneyAmount(value = '') {
+  const text = String(value || '').replace(/,/g, '')
+  const patterns = [
+    /(?:us\$|usd|\$)\s*([0-9]+(?:\.[0-9]+)?)\s*(billion|million|bn|m|k)?/ig,
+    /([0-9]+(?:\.[0-9]+)?)\s*(billion|million|bn|m)\s+(?:usd|us dollars|dollars)/ig,
+  ]
+  let best = null
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const raw = Number(match[1])
+      if (!Number.isFinite(raw) || raw <= 0) continue
+      const unit = String(match[2] || '').toLowerCase()
+      const multiplier = /billion|bn/.test(unit) ? 1_000_000_000 : /million|m/.test(unit) ? 1_000_000 : /k/.test(unit) ? 1_000 : 1
+      const amount = raw * multiplier
+      if (best == null || amount > best) best = amount
+    }
+  }
+  return best
+}
+
+function catalystTaxonomyAssessment(row = {}, context = {}) {
+  const title = String(context.catalystText || row.main_catalyst?.title || row.catalyst_summary || row.catalyst || row.structured_catalyst || '').trim()
+  const typeText = String(row.main_catalyst?.event_type || row.main_catalyst?.type || row.structured_catalyst_type || row.event_type || '').trim()
+  const sourceText = [
+    row.main_catalyst?.source,
+    row.main_catalyst?.publisher,
+    row.catalyst_source,
+    Array.isArray(row.sources) ? row.sources.join(' ') : row.sources,
+    row.news_source,
+    row.source,
+  ].filter(Boolean).join(' ')
+  const text = [title, typeText].join(' ').toLowerCase()
+  const source = sourceText.toLowerCase()
+  const marketCap = nullableNumber(row.market_cap ?? row.marketCap ?? row.cap_value)
+  const amount = parseCatalystMoneyAmount(title)
+  const amountToMarketCapPct = amount != null && marketCap != null && marketCap > 0
+    ? Number((amount / marketCap * 100).toFixed(2))
+    : null
+  const tickerSpecific = Boolean(context.tickerMatched || catalystMentionsTickerOrCompany(row, title))
+  const recognizedSource = isRecognizedCatalystSource(sourceText)
+  const roundup = isBroadRoundupCatalyst({ title, source: sourceText, ticker_count: row.main_catalyst?.ticker_count })
+  const weakGeneric = isWeakGenericCatalystText(title)
+  const bearishRisk = isBearishCatalystText([title, typeText].join(' '))
+
+  let category = 'ordinary_news'
+  let direction = 'neutral'
+  let baseScore = 12
+  let rejectionReason = null
+  const cautions = []
+
+  if (!title) {
+    rejectionReason = 'no_direct_catalyst'
+  } else if (roundup || /top\s+.*gainers|stocks? moving|why shares|market movers|market update|crude oil surges|roundup/.test(text)) {
+    category = 'roundup_or_recap'
+    rejectionReason = 'stale_recap'
+    baseScore = 3
+  } else if (/rest of the sector|sector is being repriced|sector read.?through|peer read.?through/.test(text)) {
+    category = 'indirect_sector_readthrough'
+    rejectionReason = 'indirect_ticker_match'
+    baseScore = 5
+  } else if (/reverse[_ -]?split|share[_ -]?consolidation/.test(text)) {
+    category = 'capital_structure_risk'
+    direction = 'negative'
+    rejectionReason = 'reverse_split_noise'
+    baseScore = 2
+  } else if (/offering|dilution|atm\b|warrant|convertible|registered direct|public offering/.test(text)) {
+    category = 'dilution_or_financing_risk'
+    direction = /fund.{0,40}pipeline|runway|secures?.{0,40}financing|private placement/.test(text) ? 'mixed' : 'negative'
+    rejectionReason = 'dilution_risk'
+    baseScore = direction === 'mixed' ? 22 : 2
+    cautions.push('dilution risk')
+  } else if (/lawsuit|class action|investigation|delisting|bankruptcy|default|downgrade|price target cut|guidance cut|clinical_negative|fda_rejection/.test(text)) {
+    category = 'negative_event'
+    direction = 'negative'
+    rejectionReason = 'bearish_catalyst'
+    baseScore = 2
+  } else if (/announces? date|announces? schedule|conference call|to report|monthly update|weekly share repurchase|director\/pdmr|shareholding|shareholder approval|annual general|special meeting|maintained at|reiterates? guidance/.test(text)) {
+    category = 'routine_news'
+    rejectionReason = 'routine_news'
+    baseScore = 6
+  } else if (/merger|acquisition|completed acquisition|definitive agreement|business combination|buyout|takeover|tender offer/.test(text)) {
+    category = 'merger_acquisition'
+    direction = 'positive'
+    baseScore = 42
+  } else if (/fda|pdufa|clearance|approval|breakthrough|orphan drug|fast track|phase\s*(1|2|3)|clinical|trial|endpoint|topline|data readout|nda\b|bla\b/.test(text)) {
+    category = 'biotech_regulatory_or_trial'
+    direction = 'positive'
+    baseScore = 40
+  } else if (/contract|award|purchase order|supply agreement|government award|defence|defense|navy|army|air force/.test(text)) {
+    category = 'contract_award'
+    direction = 'positive'
+    baseScore = 32
+  } else if (/partnership|collaboration|license agreement|commercial agreement|distribution agreement|strategic alliance/.test(text)) {
+    category = 'partnership_commercial'
+    direction = 'positive'
+    baseScore = 30
+  } else if (/private placement|secures?.{0,40}(financing|capital)|financing.{0,40}(pipeline|runway)|fund.{0,40}pipeline|non.?dilutive|grant|credit facility/.test(text)) {
+    category = 'financing_runway'
+    direction = /offering|warrant|convertible|registered direct/.test(text) ? 'mixed' : 'positive'
+    baseScore = direction === 'mixed' ? 26 : 34
+    if (direction === 'mixed') cautions.push('financing may dilute holders')
+  } else if (/earnings|revenue|eps|guidance|raises? outlook|raises? forecast|beats?|record sales|profitability|ebitda|annualized/.test(text)) {
+    category = 'earnings_guidance'
+    direction = /miss|cut|below|loss widens/.test(text) ? 'negative' : 'positive'
+    baseScore = direction === 'positive' ? 30 : 4
+    if (direction !== 'positive') rejectionReason = 'bearish_catalyst'
+  } else if (/analyst|upgrade|price target|initiates?|buy rating/.test(text)) {
+    category = 'analyst_action'
+    direction = /downgrade|cut|lower/.test(text) ? 'negative' : 'positive'
+    baseScore = direction === 'positive' ? 18 : 3
+    if (direction !== 'positive') rejectionReason = 'bearish_catalyst'
+  } else if (/patent|product launch|launches?|regulatory clearance/.test(text)) {
+    category = 'product_or_ip'
+    direction = 'positive'
+    baseScore = 22
+  }
+
+  let materialityScore = 10
+  if (amountToMarketCapPct != null && ['merger_acquisition', 'biotech_regulatory_or_trial', 'contract_award', 'partnership_commercial', 'financing_runway', 'earnings_guidance'].includes(category)) {
+    materialityScore = amountToMarketCapPct >= 50 ? 30
+      : amountToMarketCapPct >= 20 ? 25
+        : amountToMarketCapPct >= 5 ? 18
+          : amountToMarketCapPct >= 2 ? 10
+            : 3
+    if (['contract_award', 'financing_runway', 'earnings_guidance'].includes(category) && amountToMarketCapPct < 2 && marketCap >= 1_000_000_000) {
+      rejectionReason = rejectionReason || 'immaterial_for_company_size'
+    }
+  } else if (amountToMarketCapPct != null && category === 'ordinary_news') {
+    materialityScore = 4
+    rejectionReason = rejectionReason || 'indirect_ticker_match'
+  } else if (marketCap != null && marketCap >= 10_000_000_000 && ['contract_award', 'analyst_action', 'routine_news', 'ordinary_news'].includes(category)) {
+    materialityScore = 4
+    if (category === 'contract_award') rejectionReason = rejectionReason || 'immaterial_for_company_size'
+  } else if (marketCap != null && marketCap <= 500_000_000 && ['merger_acquisition', 'biotech_regulatory_or_trial', 'financing_runway', 'contract_award', 'partnership_commercial'].includes(category)) {
+    materialityScore = 18
+  }
+
+  const directnessScore = tickerSpecific ? 18 : 2
+  const sourceScore = recognizedSource ? (/pr newswire|globenewswire|business wire|accesswire|company|investor relations|sec|edgar/.test(source) ? 16 : 10) : 3
+  const simplicityScore = /merger|acquisition|fda|approval|contract|award|financing|private placement|revenue|guidance|clinical/.test(text) ? 10 : 4
+  const routinePenalty = weakGeneric || category === 'routine_news' ? 24 : 0
+  const indirectPenalty = tickerSpecific ? 0 : 22
+  const bearishPenalty = bearishRisk || direction === 'negative' ? 55 : 0
+  if (!tickerSpecific) rejectionReason = rejectionReason || 'indirect_ticker_match'
+  if (!recognizedSource) rejectionReason = rejectionReason || 'unrecognized_source'
+  if (weakGeneric && !['merger_acquisition', 'biotech_regulatory_or_trial', 'contract_award', 'partnership_commercial', 'financing_runway', 'earnings_guidance'].includes(category)) {
+    rejectionReason = rejectionReason || 'routine_news'
+  }
+
+  const explosionPotentialScore = Number(Math.max(0, Math.min(100,
+    baseScore + materialityScore + directnessScore + sourceScore + simplicityScore - routinePenalty - indirectPenalty - bearishPenalty
+  )).toFixed(1))
+  return {
+    category,
+    direction,
+    base_score: baseScore,
+    materiality_score: materialityScore,
+    directness_score: directnessScore,
+    source_score: sourceScore,
+    simplicity_score: simplicityScore,
+    routine_penalty: routinePenalty,
+    indirect_penalty: indirectPenalty,
+    bearish_penalty: bearishPenalty,
+    explosion_potential_score: explosionPotentialScore,
+    hard_rejection_reason: rejectionReason,
+    cautions,
+    ticker_specific: tickerSpecific,
+    recognized_source: recognizedSource,
+    weak_generic: weakGeneric,
+    bearish: bearishRisk || direction === 'negative',
+    amount_usd: amount != null ? Number(amount.toFixed(0)) : null,
+    amount_to_market_cap_pct: amountToMarketCapPct,
+    title,
+  }
 }
 
 function catalystQualityAssessment(row = {}, validation = {}, context = {}) {
@@ -1877,32 +2056,14 @@ function catalystQualityAssessment(row = {}, validation = {}, context = {}) {
   const recognizedSource = validation.recognizedSource ?? isRecognizedCatalystSource(sourceText)
   const weak = validation.weakCatalyst ?? isWeakGenericCatalystText(title)
   const bearish = validation.bearishCatalyst ?? isBearishCatalystText([title, typeText].join(' '))
+  const taxonomy = catalystTaxonomyAssessment(row, {
+    catalystText: title,
+    tickerMatched: Boolean(row.main_catalyst?.ticker_matched || row.main_catalyst?.ticker_match || row.main_catalyst?.matched_ticker),
+  })
   const isFiling = Boolean(row.main_catalyst?.isSecFiling || row.sec_filing_contributed || /sec|edgar|8-k|form\s+(8-k|10-q|10-k|6-k)/i.test(sourceText + ' ' + title))
 
-  let className = 'ordinary_news'
-  let classScore = 16
-  if (/fda|pdufa|approval|clearance|breakthrough|orphan drug|fast track|phase\s*(1|2|3)|clinical|trial|endpoint|data readout|topline|biologics license|nda\b|bla\b/.test(text)) {
-    className = 'biotech_regulatory_or_trial'
-    classScore = 36
-  } else if (/merger|acquisition|buyout|takeover|definitive agreement|strategic combination|all-stock merger|tender offer/.test(text)) {
-    className = 'merger_acquisition'
-    classScore = 34
-  } else if (/earnings|revenue|eps|guidance|raises? outlook|beats?|record sales|profitability|ebitda|annualized/.test(text)) {
-    className = 'earnings_or_guidance'
-    classScore = 30
-  } else if (/contract|award|partnership|collaboration|supply agreement|customer|order|purchase agreement|deployment|launches?|commercial/.test(text)) {
-    className = 'commercial_contract_or_launch'
-    classScore = 28
-  } else if (/financing|capital|non.?dilutive|grant|credit facility|strategic investment|preferred tenant|tenant bids/.test(text)) {
-    className = 'financing_or_capital'
-    classScore = 24
-  } else if (/analyst|upgrade|price target|initiates?|buy rating/.test(text)) {
-    className = 'analyst_action'
-    classScore = 20
-  } else if (isFiling) {
-    className = 'sec_filing'
-    classScore = 14
-  }
+  const className = taxonomy.category === 'ordinary_news' && isFiling ? 'sec_filing' : taxonomy.category
+  const classScore = taxonomy.category === 'ordinary_news' && isFiling ? 14 : taxonomy.base_score
 
   const sourceScore = /pr newswire|globenewswire|business wire|accesswire|access newswire|company|investor relations/.test(source)
     ? 18
@@ -1921,10 +2082,13 @@ function catalystQualityAssessment(row = {}, validation = {}, context = {}) {
   const weakPenalty = weak ? 28 : 0
   const bearishPenalty = bearish ? 60 : 0
   const genericFilingPenalty = isFiling && !/8-k|material agreement|merger|acquisition|contract|approval|clinical|guidance|earnings|financing|strategic/i.test(title + ' ' + typeText) ? 10 : 0
+  const materialityBonus = Math.min(14, Math.max(0, Number(taxonomy.materiality_score || 0) * 0.45))
+  const taxonomyBonus = Math.min(12, Math.max(0, Number(taxonomy.explosion_potential_score || 0) * 0.12))
+  const hardRejectPenalty = taxonomy.hard_rejection_reason ? 22 : 0
   const score = Number(Math.max(0, Math.min(100,
-    classScore + sourceScore + specificityScore + freshnessScore + powerScore + sentimentScore + articleScore - weakPenalty - bearishPenalty - genericFilingPenalty
+    classScore + sourceScore + specificityScore + freshnessScore + powerScore + sentimentScore + articleScore + materialityBonus + taxonomyBonus - weakPenalty - bearishPenalty - genericFilingPenalty - hardRejectPenalty
   )).toFixed(1))
-  const tier = bearish || weak || !tickerSpecific || !recognizedSource
+  const tier = bearish || weak || !tickerSpecific || !recognizedSource || ['routine_news', 'stale_recap', 'indirect_ticker_match', 'immaterial_for_company_size', 'dilution_risk', 'reverse_split_noise', 'bearish_catalyst'].includes(String(taxonomy.hard_rejection_reason || ''))
     ? 'reject'
     : score >= PREDICTION_PENDING_OPEN_STRONG_QUALITY
       ? 'strong'
@@ -1939,11 +2103,17 @@ function catalystQualityAssessment(row = {}, validation = {}, context = {}) {
     validation.freshSessionCatalyst ? 'fresh window' : 'not fresh window',
     weak ? 'weak/generic text' : '',
     bearish ? 'bearish/risk wording' : '',
+    taxonomy.hard_rejection_reason ? `reject ${taxonomy.hard_rejection_reason}` : '',
+    taxonomy.amount_to_market_cap_pct != null ? `amount/cap ${taxonomy.amount_to_market_cap_pct}%` : '',
   ].filter(Boolean)
   return {
     score,
     tier,
     class: className,
+    taxonomy,
+    hard_rejection_reason: taxonomy.hard_rejection_reason,
+    company_relative_materiality_score: taxonomy.materiality_score,
+    explosion_potential_score: taxonomy.explosion_potential_score,
     source_score: sourceScore,
     specificity_score: specificityScore,
     freshness_score: freshnessScore,
@@ -2166,7 +2336,9 @@ function predictionEvidenceValidation(row = {}, context = {}) {
     row.main_catalyst?.event_type,
     row.main_catalyst?.sentiment,
   ].filter(Boolean).join(' '))
-  const tickerSpecificCatalyst = catalystMentionsTickerOrCompany(row, catalystText)
+  const tickerMatchedByArticle = Boolean(row.main_catalyst?.ticker_matched || row.main_catalyst?.ticker_match || row.main_catalyst?.matched_ticker)
+  const taxonomy = catalystTaxonomyAssessment(row, { catalystText, tickerMatched: tickerMatchedByArticle })
+  const tickerSpecificCatalyst = tickerMatchedByArticle || catalystMentionsTickerOrCompany(row, catalystText)
   const tickerSpecificRequired = tier === 'Mega' || tier === 'Large' || largeUnknownWatcherProfile
   const recognizedSource = isRecognizedCatalystSource(sourceText)
   const hasThresholdSupport = ['entry_passed', 'active_setup_already_above_threshold', 'near_threshold_setup'].includes(setupStatus)
@@ -2190,10 +2362,29 @@ function predictionEvidenceValidation(row = {}, context = {}) {
     (Number(row.catalyst_window_count || row.catalyst_window_article_count || 0) > 0 && catalystAgeMinutes != null && catalystAgeMinutes <= PREDICTION_SESSION_CATALYST_MAX_AGE_MINUTES)
   )
 
-  const recognizedNewsCatalyst = news > 0 && !weakCatalyst && !bearishCatalyst && recognizedSource && tickerSpecificCatalyst && freshSessionCatalyst && (
+  const taxonomyHardReject = ['routine_news', 'stale_recap', 'indirect_ticker_match', 'immaterial_for_company_size', 'low_liquidity', 'abnormal_spread', 'dilution_risk', 'reverse_split_noise', 'bearish_catalyst', 'unrecognized_source'].includes(String(taxonomy.hard_rejection_reason || ''))
+  const materialDirectCatalyst = !taxonomyHardReject &&
+    taxonomy.ticker_specific &&
+    taxonomy.recognized_source &&
+    ['positive', 'mixed'].includes(taxonomy.direction) &&
+    taxonomy.explosion_potential_score >= 55 &&
+    ['merger_acquisition', 'biotech_regulatory_or_trial', 'contract_award', 'partnership_commercial', 'financing_runway', 'earnings_guidance', 'product_or_ip'].includes(taxonomy.category)
+  const socialConfirmation = peopleAttention.active || social >= PREDICTION_PEOPLE_MIN_MESSAGES || watcherCount >= SQUEEZE_WATCHER_MIN
+  const earlyMarketConfirmation = change >= 1 || relVolume >= PREDICTION_PENDING_OPEN_MIN_REL_VOLUME || hasThresholdSupport
+  const strongMateriality = Number(taxonomy.amount_to_market_cap_pct || 0) >= 5 || Number(taxonomy.explosion_potential_score || 0) >= 78
+  const largerCapNewsNeedsConfirmation = ['Mega', 'Large', 'Mid'].includes(tier) || largeUnknownWatcherProfile
+  const largeCapConfirmationOk = !largerCapNewsNeedsConfirmation ||
+    socialConfirmation ||
+    relVolume >= 3 ||
+    change >= 3 ||
+    Number(taxonomy.amount_to_market_cap_pct || 0) >= 5
+  const newsConfirmationOk = materialDirectCatalyst && (socialConfirmation || earlyMarketConfirmation || strongMateriality) && largeCapConfirmationOk
+
+  const recognizedNewsCatalyst = news > 0 && !weakCatalyst && !bearishCatalyst && !taxonomyHardReject && recognizedSource && tickerSpecificCatalyst && freshSessionCatalyst && newsConfirmationOk && (
     catalystPower >= 1 ||
     Number(row.catalyst_window_article_count || 0) > 0 ||
-    Math.abs(sentiment) >= 0.08
+    Math.abs(sentiment) >= 0.08 ||
+    materialDirectCatalyst
   )
   const recognizedSqueezeCatalyst = !bearishCatalyst && squeezeScore >= 70 && (
     verifiedShortInterest ||
@@ -2225,6 +2416,9 @@ function predictionEvidenceValidation(row = {}, context = {}) {
     bearishCatalyst && news > 0 ? 'BEARISH_OR_RISK_CATALYST_NOT_VALID_FOR_UP_PREDICTION' : '',
     news > 0 && !tickerSpecificCatalyst ? 'CATALYST_TITLE_NOT_TICKER_SPECIFIC' : '',
     news > 0 && tickerSpecificCatalyst && recognizedSource && !freshSessionCatalyst ? 'STALE_OR_OUT_OF_WINDOW_CATALYST' : '',
+    taxonomy.hard_rejection_reason ? `CATALYST_REJECT_${String(taxonomy.hard_rejection_reason).toUpperCase()}` : '',
+    news > 0 && materialDirectCatalyst && !newsConfirmationOk ? 'INSUFFICIENT_EARLY_CONFIRMATION_FOR_CATALYST' : '',
+    news > 0 && materialDirectCatalyst && !largeCapConfirmationOk ? 'LARGE_CAP_CATALYST_NEEDS_STRONGER_RETAIL_OR_VOLUME_CONFIRMATION' : '',
     largeUnknownWatcherProfile && watcherCount >= SQUEEZE_WATCHER_MIN ? 'LARGE_CAP_WATCHER_ONLY_SQUEEZE_REJECTED' : '',
     news > 0 && !recognizedSource ? 'UNRECOGNIZED_CATALYST_SOURCE' : '',
     !recognizedNewsCatalyst && !recognizedSqueezeCatalyst && !recognizedPeopleAttention ? 'NO_VALIDATED_PRIMARY_CATALYST' : '',
@@ -2237,6 +2431,15 @@ function predictionEvidenceValidation(row = {}, context = {}) {
     reason: labels.join(' + '),
     weakCatalyst,
     bearishCatalyst,
+    taxonomy,
+    materialDirectCatalyst,
+    taxonomyHardReject,
+    newsConfirmationOk,
+    socialConfirmation,
+    earlyMarketConfirmation,
+    strongMateriality,
+    largeCapConfirmationOk,
+    hardRejectionReason: taxonomy.hard_rejection_reason,
     recognizedSource,
     tickerSpecificCatalyst,
     tickerSpecificRequired,
@@ -2509,10 +2712,22 @@ async function loadArticleStatsForTickers(db, tickers, days = 3, sessionContext 
         const sessionWeight = item.in_session_window ? 1.35 : 0.8
         const sentimentAbs = Math.max(0.1, Math.min(1, Math.abs(Number(item.score || 0))))
         const roundupPenalty = item.roundup_article && Number(item.ticker_count || 0) >= 4 ? 0.12 : 1
-        const power = eventTypeWeight * sourceWeight * recencyWeight * sessionWeight * (0.75 + sentimentAbs * 0.5) * roundupPenalty
+        const taxonomy = catalystTaxonomyAssessment({
+          ticker: row._id,
+          main_catalyst: item,
+        }, { catalystText: item.title, tickerMatched: true })
+        const taxonomyBoost = taxonomy.explosion_potential_score >= 70 ? 1.3 : taxonomy.explosion_potential_score >= 55 ? 1.12 : 1
+        const taxonomyPenalty = taxonomy.hard_rejection_reason ? 0.25 : 1
+        const power = eventTypeWeight * sourceWeight * recencyWeight * sessionWeight * (0.75 + sentimentAbs * 0.5) * roundupPenalty * taxonomyBoost * taxonomyPenalty
         return {
           ...item,
+          ticker_matched: true,
           age_minutes: Number(((nowSec - Number(item.event_sec || nowSec)) / 60).toFixed(1)),
+          catalyst_taxonomy: taxonomy.category,
+          catalyst_direction: taxonomy.direction,
+          catalyst_hard_rejection_reason: taxonomy.hard_rejection_reason,
+          catalyst_explosion_potential_score: taxonomy.explosion_potential_score,
+          catalyst_amount_to_market_cap_pct: taxonomy.amount_to_market_cap_pct,
           catalyst_type_weight: Number(eventTypeWeight.toFixed(3)),
           catalyst_source_weight: Number(sourceWeight.toFixed(3)),
           catalyst_recency_weight: Number(recencyWeight.toFixed(3)),

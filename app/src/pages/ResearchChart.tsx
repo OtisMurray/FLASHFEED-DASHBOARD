@@ -1,7 +1,6 @@
 'use client'
 import { useEffect, useRef, useState } from 'react'
 import Chart from 'chart.js/auto'
-import { smoothSame } from '../lib/chartAgg'
 
 export type ResearchMode = 'pd' | 'sent' | 'ds'
 type Win = 'full' | '2h' | '1h'
@@ -25,6 +24,20 @@ const mapBy = (labels: string[], values: number[]) => {
 }
 
 const atMap = (m: Record<string, number>) => (l: string): number | null => (l in m ? m[l] : null)
+
+function trailingAverage(values: number[], k: number): number[] {
+  const n = values.length
+  const win = Math.max(1, Math.floor(k || 1))
+  const out: number[] = new Array(n).fill(0)
+  let sum = 0
+  for (let i = 0; i < n; i++) {
+    sum += Number(values[i] || 0)
+    const drop = i - win
+    if (drop >= 0) sum -= Number(values[drop] || 0)
+    out[i] = Number((sum / Math.min(win, i + 1)).toFixed(4))
+  }
+  return out
+}
 
 function researchLabels(d: PriceData, social: SocialData, win: Win): string[] {
   if (win === 'full') return social.labels
@@ -107,10 +120,12 @@ function buildConfig(mode: ResearchMode, d: PriceData, social: SocialData, win: 
   if (mode === 'pd') {
     const prices = labels.map(atMap(mapBy(d.labels, d.prices)))
     const dens   = labels.map(atMap(mapBy(social.labels, social.density)))
-    const densSm = labels.map(atMap(mapBy(social.labels, smoothSame(social.density, windowMin))))
+    const rollingAvg = trailingAverage(social.density, windowMin)
+    const densSm = labels.map(atMap(mapBy(social.labels, rollingAvg)))
     const pVals = prices.filter((v): v is number => v != null)
     const pMin = Math.min(...pVals), pMax = Math.max(...pVals)
     const maxDen = Math.max(...social.density, 1)
+    const maxRollingAvg = Math.max(...rollingAvg, 1)
     return {
       type: 'line',
       data: { labels, datasets: [
@@ -120,8 +135,9 @@ function buildConfig(mode: ResearchMode, d: PriceData, social: SocialData, win: 
         { label: 'Messages/min', type: 'bar', data: dens, yAxisID: 'y2',
           backgroundColor: 'rgba(144,202,249,.5)', borderWidth: 0,
           barPercentage: 1, categoryPercentage: 1 },
-        { label: `${windowMin}-min avg density`, data: densSm, yAxisID: 'y2', spanGaps: true,
-          borderColor: '#FF9800', borderWidth: 2, tension: .1, pointRadius: 0 },
+        { label: windowMin <= 1 ? 'Rolling 1-min avg msg/min' : `Rolling ${windowMin}-min avg msg/min`,
+          data: densSm, yAxisID: 'y2', spanGaps: true,
+          borderColor: '#FF9800', borderWidth: 2, tension: windowMin <= 1 ? 0 : .1, pointRadius: 0 },
       ] },
       plugins: [marketLinesPlugin, hiLoPlugin],
       options: { ...baseOpts,
@@ -131,9 +147,9 @@ function buildConfig(mode: ResearchMode, d: PriceData, social: SocialData, win: 
           y1: { position: 'left', min: pMin * 0.97, max: pMax * 1.08,
                 grid: { color: '#1e2330' }, ticks: { font: { size: 8 }, color: '#2196F3' },
                 title: { display: true, text: 'Close Price ($)', color: '#2196F3', font: { size: 10 } } },
-          y2: { position: 'right', beginAtZero: true, max: maxDen * 2.5,
+          y2: { position: 'right', beginAtZero: true, max: Math.max(maxDen * 2.5, maxRollingAvg * 1.15),
                 grid: { display: false }, ticks: { font: { size: 8 }, color: '#FF9800' },
-                title: { display: true, text: 'Messages per minute', color: '#FF9800', font: { size: 10 } } },
+                title: { display: true, text: 'Message density (bars: raw/min · line: rolling avg/min)', color: '#FF9800', font: { size: 10 } } },
         },
       },
     }
@@ -202,7 +218,14 @@ const TITLES: Record<ResearchMode, string> = {
   ds: 'Message Density vs Sentiment Score',
 }
 
-const WIN_MIN = 1, WIN_MAX = 60, WIN_DEFAULT = 15
+// Price+Density rolling window. The slider intentionally reaches 480 minutes
+// so the active Charts page matches the Aman/sentchart research view.
+const WIN_MIN = 1, WIN_MAX = 480, WIN_DEFAULT = 3
+const SOCIAL_LOOKBACKS = [
+  { minutes: 1440, label: '24h' },
+  { minutes: 4320, label: '72h' },
+  { minutes: 10080, label: '7d' },
+]
 
 export function ResearchChart({ ticker, mode, window: win }: { ticker: string; mode: ResearchMode; window: Win }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -224,8 +247,21 @@ export function ResearchChart({ ticker, mode, window: win }: { ticker: string; m
       if (d.error) { setStatus(d.error); return }
 
       const poll = async () => {
-        const s: SocialData = await fetchJSON(`/api/chart/social?${new URLSearchParams({ ticker: d.ticker, date: d.date })}`)
+        let s: SocialData | null = null
+        let usedWindow = SOCIAL_LOOKBACKS[0]
+        for (const lookback of SOCIAL_LOOKBACKS) {
+          const next: SocialData = await fetchJSON(`/api/chart/social?${new URLSearchParams({
+            ticker: d.ticker,
+            date: d.date,
+            window_minutes: String(lookback.minutes),
+            bucket_minutes: '1',
+          })}`)
+          s = next
+          usedWindow = lookback
+          if (next.error || next.status === 'walking' || Number(next.messages || 0) > 0) break
+        }
         if (cancelled) return
+        if (!s) { setStatus('No social data loaded.'); return }
         if (s.error) { setStatus('Social data: ' + s.error); return }
         if (s.status === 'walking') {
           setStatus(`Loading social history, ${s.count || 0} messages…`)
@@ -233,7 +269,8 @@ export function ResearchChart({ ticker, mode, window: win }: { ticker: string; m
           return
         }
         if (!s.messages) { setStatus('No social data for this chart window.'); return }
-        let txt = `Social: ${s.source} · ${s.messages} msgs (${s.bullish}B/${s.bearish}B tagged)`
+        let txt = `Social: ${s.source} · ${s.messages} msgs (${s.bullish}B/${s.bearish}B tagged) · ${usedWindow.label}`
+        if (usedWindow.minutes > SOCIAL_LOOKBACKS[0].minutes) txt += ' stored fallback'
         if (!s.complete && s.coverage_start) txt += ` · partial, from ${s.coverage_start}`
         setStatus(txt)
         setBundle({ d, s })

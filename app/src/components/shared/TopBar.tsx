@@ -19,20 +19,16 @@ const NAV = [
   { href: '/decision-map', label: 'Decision Map' },
   { href: '/social', label: 'Social' },
   { href: '/charts', label: 'Charts' },
-  { href: '/sentcharts', label: 'SentCharts' },
   { href: '/entry-screener', label: 'Entry Screener' },
   { href: '/exit-screener', label: 'Exit Screener' },
-  { href: '/window-mirror', label: 'Window Mirror' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
   { href: '/prediction-audit', label: 'Prediction Audit' },
   { href: '/system-health', label: 'System Health' },
   { href: '/settings', label: 'Settings' },
 ]
-// Split widened 10 → 13 for the three screener links so nothing already in the
-// primary row gets demoted into "More".
-const PRIMARY_NAV = NAV.slice(0, 13)
-const MORE_NAV = NAV.slice(13)
+const PRIMARY_NAV = NAV.slice(0, 11)
+const MORE_NAV = NAV.slice(11)
 
 function compactCount(value: unknown): string {
   const n = Number(value || 0)
@@ -50,7 +46,7 @@ export function TopBar() {
   const { data: status, mutate: mutateStatus } = useSWR('/api/status', fetcher, { refreshInterval: 60_000 })
   const { data: stats } = useSWR('/api/stats?days=3', fetcher, { refreshInterval: 60_000 })
   const { data: marketStatus } = useSWR('/api/market/status', fetcher, { refreshInterval: 60_000 })
-  const { data: autoRefreshStatus } = useSWR('/api/auto-refresh/status', fetcher, { refreshInterval: 60_000 })
+  const { data: autoRefreshStatus } = useSWR('/api/auto-refresh/status', fetcher, { refreshInterval: 5_000 })
   // Hard-disk database status (RAM = Redis; this is the on-disk SQLite companion).
   const { data: diskStats, mutate: mutateDisk } = useSWR('/api/disk/stats', fetcher, { refreshInterval: 60_000 })
   const [savingDisk, setSavingDisk] = useState(false)
@@ -142,6 +138,7 @@ export function TopBar() {
   const [autoStatus, setAutoStatus] = useState<{ text: string; at: number; nextAt?: number | null; running?: boolean; skipped?: boolean; error?: boolean } | null>(null)
   const [autoQueueStartedAt, setAutoQueueStartedAt] = useState<number | null>(null)
   const [autoProgress, setAutoProgress] = useState(0)
+  const [serverProgressNowMs, setServerProgressNowMs] = useState(() => Date.now())
   const watchRef = useRef<EventSource | null>(null)
 
   useEffect(() => {
@@ -171,6 +168,12 @@ export function TopBar() {
     const timer = window.setInterval(update, 250)
     return () => window.clearInterval(timer)
   }, [watching, autoQueueStartedAt, watchInterval])
+
+  useEffect(() => {
+    if (!autoRefreshStatus?.onsite_fetch?.enabled) return
+    const timer = window.setInterval(() => setServerProgressNowMs(Date.now()), 250)
+    return () => window.clearInterval(timer)
+  }, [autoRefreshStatus?.onsite_fetch?.enabled])
 
   const revalidateDashboardData = useCallback(() => {
     mutate(
@@ -348,6 +351,32 @@ export function TopBar() {
   const serverAutoOn = Boolean(serverAuto?.enabled)
   const serverAutoRunning = Boolean(serverAuto?.running || autoRefreshStatus?.away_fetch?.running)
   const backendRefreshInFlight = Boolean(autoRefreshStatus?.refresh_cycle_in_flight)
+  const serverAutoIntervalMs = Math.max(
+    60_000,
+    Number(serverAuto?.interval_minutes || autoRefreshStatus?.away_fetch?.interval_minutes || 1) * 60_000
+  )
+  const serverAutoLastRunMs = Number(serverAuto?.last_run_epoch_ms || 0)
+  const serverAutoNextRunMs = serverAuto?.next_due_at ? Date.parse(serverAuto.next_due_at) : 0
+  const serverAutoQueueStartMs = serverAutoLastRunMs || (serverAutoNextRunMs ? serverAutoNextRunMs - serverAutoIntervalMs : 0)
+  const serverAutoProgress = serverAutoQueueStartMs
+    ? Math.max(0, Math.min(100, ((serverProgressNowMs - serverAutoQueueStartMs) / serverAutoIntervalMs) * 100))
+    : backendRefreshInFlight ? 100 : 0
+  const showAutoProgressLine = Boolean(
+    watching ||
+    serverAutoRunning ||
+    backendRefreshInFlight ||
+    (serverAutoOn && serverAutoQueueStartMs)
+  )
+  const autoProgressWidth = watching
+    ? (autoQueueStartedAt ? autoProgress : 100)
+    : (backendRefreshInFlight || serverAutoRunning)
+      ? 100
+      : serverAutoProgress
+  const autoProgressTitle = watching
+    ? (autoQueueStartedAt ? `Auto refresh queue: ${Math.round(autoProgress)}% until next cycle` : 'Auto refresh is running the first cycle')
+    : (backendRefreshInFlight || serverAutoRunning)
+      ? 'Server auto-refresh cycle is running'
+      : `Server auto-refresh queue: ${Math.round(serverAutoProgress)}% until next cycle`
   const serverAutoLabel = serverAutoRunning
     ? 'Server auto refreshing'
     : serverAutoOn
@@ -362,14 +391,15 @@ export function TopBar() {
   return (
     <>
       <header className="relative bg-surface border-b border-border flex-shrink-0">
-        {watching && (
+        {showAutoProgressLine && (
           <div
+            data-testid="auto-progress-line"
             className="absolute left-0 top-0 z-40 h-1 w-full overflow-hidden bg-bg"
-            title={autoQueueStartedAt ? `Auto refresh queue: ${Math.round(autoProgress)}% until next cycle` : 'Auto refresh is running the first cycle'}
+            title={autoProgressTitle}
           >
             <div
               className="relative h-full overflow-hidden rounded-r-full bg-gradient-to-r from-sky-400 via-emerald-400 to-yellow-300 shadow-[0_0_12px_rgba(56,189,248,0.65)] transition-[width] duration-200 ease-linear"
-              style={{ width: `${autoQueueStartedAt ? autoProgress : 100}%` }}
+              style={{ width: `${autoProgressWidth}%` }}
             >
               <div className="absolute inset-y-0 right-0 w-16 animate-[auto-progress-glint_1.15s_linear_infinite] bg-gradient-to-r from-transparent via-white/70 to-transparent" />
             </div>
@@ -450,7 +480,7 @@ export function TopBar() {
               <button
                 onClick={() => setShowControls(v => !v)}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded border border-border text-neutral hover:text-white hover:border-accent transition-colors"
-                title="Refresh, auto-watch, sentiment, and storage controls"
+                title={`Refresh, auto-watch, sentiment, and storage controls. ${serverAutoTitle}`}
               >
                 Controls
                 <span className={watching || serverAutoOn ? 'text-emerald-300' : 'text-neutral'}>{watching ? 'Watch' : serverAutoOn ? 'Auto' : fetchMode}</span>

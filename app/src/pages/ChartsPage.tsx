@@ -96,6 +96,14 @@ const WINDOWS: Array<{ key: Win; label: string }> = [
   { key: '1h',   label: 'Last 1h' },
 ]
 
+const OVERLAY_ROLLING_WINDOWS = [
+  { value: 5, label: '5m' },
+  { value: 15, label: '15m' },
+  { value: 30, label: '30m' },
+  { value: 60, label: '1h' },
+  { value: 120, label: '2h' },
+]
+
 export function ChartsPage() {
   const [sp, setSp] = useSearchParams()
   const urlTicker = (sp.get('t') || '').toUpperCase().trim()
@@ -114,6 +122,7 @@ export function ChartsPage() {
   const [showSentiment, setShowSentiment] = useState(false)
   const [showWatchers, setShowWatchers] = useState(false)
   const [showStrategy, setShowStrategy] = useState(true)
+  const [overlayRollingMinutes, setOverlayRollingMinutes] = useState(15)
   const [social, setSocial] = useState<SocialSeries | null>(null)
   const [socialMsg, setSocialMsg] = useState('')
   const [watchers, setWatchers] = useState<WatcherSeries | null>(null)
@@ -212,7 +221,26 @@ export function ChartsPage() {
         if (cancelled) return
         if (s.error) { setSocialMsg('Social: ' + s.error); return }
         if (s.status === 'walking') { setSocialMsg(`Loading social history, ${s.count || 0} messages…`); timer = window.setTimeout(poll, 1500); return }
+        let payload = s
+        let fallbackWindow = ''
         if (!s.messages) {
+          for (const minutes of [4320, 10080]) {
+            const fallbackQs = new URLSearchParams({
+              ticker,
+              date: chartDate,
+              window_minutes: String(minutes),
+              bucket_minutes: '1',
+            })
+            const fallback = await fetch(`/api/chart/social?${fallbackQs}`).then(r => r.json())
+            if (cancelled) return
+            if (fallback?.messages) {
+              payload = fallback
+              fallbackWindow = minutes === 4320 ? '72h stored fallback' : '7d stored fallback'
+              break
+            }
+          }
+        }
+        if (!payload.messages) {
           const emptySeries: SocialSeries = {
             labels: [],
             density: [],
@@ -227,17 +255,18 @@ export function ChartsPage() {
           return
         }
         const series: SocialSeries = {
-          labels: s.labels || [],
-          density: s.density || [],
-          times: s.times || [],
-          sent_labels: s.sent_labels || s.labels || [],
-          scores_smooth: s.scores_smooth || [],
-          sent_times: s.sent_times || s.times || [],
+          labels: payload.labels || [],
+          density: payload.density || [],
+          times: payload.times || [],
+          sent_labels: payload.sent_labels || payload.labels || [],
+          scores_smooth: payload.scores_smooth || [],
+          sent_times: payload.sent_times || payload.times || [],
         }
         socialCache.current[key] = series
-        const socialCount = Number(s.social_messages || 0)
-        const articleCount = Number(s.article_messages || 0)
-        setSocial(series); setSocialMsg(`Evidence: ${s.source} · ${s.messages} rows (${articleCount} news, ${socialCount} social)`)
+        const socialCount = Number(payload.social_messages || 0)
+        const articleCount = Number(payload.article_messages || 0)
+        const suffix = fallbackWindow ? ` · ${fallbackWindow}` : ''
+        setSocial(series); setSocialMsg(`Evidence: ${payload.source} · ${payload.messages} rows (${articleCount} news, ${socialCount} social)${suffix}`)
       } catch { if (!cancelled) setSocialMsg('Social data: error') }
     }
     poll()
@@ -277,7 +306,7 @@ export function ChartsPage() {
   // Build optional overlays from the fetched candles + social (single-day tfs only).
   const overlays = useMemo(() => {
     if (!overlayOk || !data?.candles?.length) return { density: undefined, sentiment: undefined, watchers: undefined }
-    const ov = overlaySeries(data.candles as any, social, tfMinutes(tf), 15)
+    const ov = overlaySeries(data.candles as any, social, tfMinutes(tf), overlayRollingMinutes)
     const watcherSource = watchers || data?.watcher_series
     const watcherOverlay = (watcherSource?.times || []).map((time, i) => ({
       time,
@@ -288,7 +317,7 @@ export function ChartsPage() {
       sentiment: showSentiment ? ov.sentiment : undefined,
       watchers: showWatchers ? watcherOverlay : undefined,
     }
-  }, [data, social, watchers, showDensity, showSentiment, showWatchers, tf, overlayOk])
+  }, [data, social, watchers, showDensity, showSentiment, showWatchers, tf, overlayOk, overlayRollingMinutes])
 
   const candleCount = data?.candles?.length ?? 0
 
@@ -383,6 +412,18 @@ export function ChartsPage() {
                   </div>
                   {overlayOk && (
                     <>
+                      <label className="flex items-center gap-1.5 text-neutral">
+                        Rolling Window
+                        <select
+                          value={overlayRollingMinutes}
+                          onChange={event => setOverlayRollingMinutes(Number(event.target.value))}
+                          className="rounded border border-border bg-bg px-2 py-1 text-xs text-white focus:border-accent focus:outline-none"
+                        >
+                          {OVERLAY_ROLLING_WINDOWS.map(option => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </label>
                       <label className="flex items-center gap-1.5 cursor-pointer select-none">
                         <input type="checkbox" checked={showDensity} onChange={e => setShowDensity(e.target.checked)} className="accent-orange-500 cursor-pointer" />
                         <span style={{ color: '#FF9800' }}>Density</span>
@@ -481,10 +522,11 @@ function emptyEnrich(ticker: string, note = 'No FeedFlash news loaded for this t
     news: { days: 3, articles: [], ai: null, sources: [], source_filter_active: false, note },
     social: {
       stocktwits: null,
-      bluesky: { configured: false, metrics: null },
-      reddit: { configured: false, metrics: null },
+      bluesky: { configured: true, metrics: null },
+      reddit: { configured: true, metrics: null },
+      grok: { configured: true, metrics: null },
       rumor: null,
-      future_sources: ['X'],
+      future_sources: [],
     },
   }
 }
@@ -513,16 +555,6 @@ function ChartDiagnostics({ data }: { data: ChartData | null }) {
         <Status label="Entry Setups" value={`${setupCount} setups`} />
         <Status label="Watchers" value={watcherValue} />
       </div>
-      {data.strategy_signal_stats?.note && (
-        <div className="rounded border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-[11px] text-sky-100">
-          Strategy markers are entry-ready model/threshold setups, not executed trades. {data.strategy_signal_stats.note}
-        </div>
-      )}
-      {data.watcher_series?.note && (
-        <div className="rounded border border-blue-500/20 bg-blue-500/10 px-3 py-2 text-[11px] text-blue-100">
-          Watchers: {data.watcher_series.note}
-        </div>
-      )}
       {warn && (
         <div className="rounded border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200">
           {status.price_detail || 'Chart candles and screener quote disagree; use the screener quote for current-session change.'}

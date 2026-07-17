@@ -273,8 +273,15 @@ def _recent_items() -> list[dict]:
 
 
 def _item_tickers(item: dict) -> list[str]:
+    def _as_list(value):
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        return [value]
+
     values = []
-    for stock in (item.get("stocks") or []) + (item.get("tickers") or []):
+    for stock in _as_list(item.get("stocks")) + _as_list(item.get("tickers")):
         if isinstance(stock, dict):
             values.append(stock.get("name") or stock.get("symbol") or stock.get("ticker") or "")
         else:

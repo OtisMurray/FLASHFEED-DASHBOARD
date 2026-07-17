@@ -574,7 +574,11 @@ export function ScreenerPage() {
       </div>
 
       {workspaceTab === 'mirror' ? (
-        <ChartsGridPage />
+        <ChartsGridPage
+          embedded
+          socialWindow={socialWindow}
+          onSocialWindowChange={setSocialWindow}
+        />
       ) : (
       <>
       <div className="mb-3 flex items-center gap-1 overflow-x-auto border-b border-border">

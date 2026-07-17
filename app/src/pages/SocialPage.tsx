@@ -40,9 +40,121 @@ const tabs = [
   { id: 'all', label: 'All' },
   { id: 'reddit', label: 'Reddit' },
   { id: 'bluesky', label: 'Bluesky' },
-  { id: 'twitter', label: 'Twitter' },
+  { id: 'grok', label: 'Grok' },
   { id: 'stocktwits', label: 'StockTwits' },
 ]
+
+function GrokSocialAnalysis() {
+  const [input, setInput] = useState('AAPL')
+  const [ticker, setTicker] = useState('')
+  const [analysis, setAnalysis] = useState('')
+  const [model, setModel] = useState('')
+  const [engine, setEngine] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/grok/status')
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (cancelled || !data) return
+        setEngine(data.engine || '')
+        setModel(data.model || '')
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
+
+  async function analyze(sym = input) {
+    const cleanTicker = sym.trim().toUpperCase().replace(/[^A-Z0-9.-]/g, '')
+    if (!cleanTicker) return
+    setTicker(cleanTicker)
+    setLoading(true)
+    setError('')
+    setAnalysis('')
+
+    try {
+      const res = await fetch('/api/grok/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker: cleanTicker,
+          context: 'social sentiment',
+          prompt: `Analyze the current social-media sentiment for $${cleanTicker}. Focus on what traders are saying, Reddit/StockTwits/Bluesky confirmation, bull versus bear tone, notable rumors, and whether attention is actionable or noisy.`,
+        }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`)
+      setAnalysis(data.analysis || 'No analysis returned.')
+      setModel(data.model || model)
+      setEngine(data.engine || engine)
+    } catch (err: any) {
+      setError(err?.message || 'Grok analysis failed.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="border border-slate-700 bg-slate-800/60 rounded-xl p-6">
+      <div className="flex flex-wrap items-center gap-3">
+        <div>
+          <h2 className="text-xl font-semibold">Grok Social Analysis</h2>
+          <p className="text-sm text-neutral mt-1">
+            Reads the stored social/news context for one ticker. Uses Grok when configured, otherwise a local fallback.
+          </p>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <input
+            value={input}
+            onChange={e => setInput(e.target.value.toUpperCase())}
+            onKeyDown={e => { if (e.key === 'Enter') analyze() }}
+            placeholder="Ticker"
+            className="w-28 bg-slate-900 border border-slate-600 rounded-md px-3 py-2 text-sm uppercase font-mono"
+          />
+          <button
+            type="button"
+            onClick={() => analyze()}
+            disabled={loading}
+            className="bg-sky-600 hover:bg-sky-500 disabled:opacity-50 rounded-md px-4 py-2 text-sm font-medium"
+          >
+            {loading ? 'Analyzing...' : 'Analyze'}
+          </button>
+        </div>
+      </div>
+
+      {(engine || model) && (
+        <div className="mt-4 flex flex-wrap gap-2 text-xs text-neutral">
+          {engine && <span className="rounded border border-slate-600 px-2 py-1">Engine: {engine}</span>}
+          {model && <span className="rounded border border-slate-600 px-2 py-1">Model: {model}</span>}
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-4 rounded-lg border border-red-500/40 bg-red-950/30 p-3 text-sm text-red-200">
+          {error}
+        </div>
+      )}
+
+      <div className="mt-4 rounded-lg border border-slate-700 bg-slate-900/60 p-4 min-h-28">
+        {ticker && (
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-lg font-bold text-sky-300">${ticker}</span>
+            {loading && <span className="text-xs text-neutral">reading social context...</span>}
+          </div>
+        )}
+        {loading ? (
+          <div className="text-sm text-neutral animate-pulse">Analyzing stored social/news context...</div>
+        ) : analysis ? (
+          <p className="whitespace-pre-line text-sm leading-relaxed text-slate-100">{analysis}</p>
+        ) : (
+          <p className="text-sm text-neutral">Enter a ticker to get a social sentiment read.</p>
+        )}
+      </div>
+    </div>
+  )
+}
 
 function ts(post: SocialPost) {
   return post.fetched_at || post.timestamp || post.detected_at || post.created_at || 0
@@ -159,6 +271,12 @@ export default function SocialPage() {
   const [platformStatus, setPlatformStatus] = useState<PlatformStatus[]>([])
 
   async function loadSocial(filterTicker = tickerFilter) {
+    if (active === 'grok') {
+      setLoading(false)
+      setPosts([])
+      setError(null)
+      return
+    }
     setLoading(true)
     setError(null)
 
@@ -246,7 +364,7 @@ export default function SocialPage() {
 
   const platformCards = useMemo(() => {
     const byPlatform = new Map(platformStatus.map(row => [row.platform.toLowerCase(), row]))
-    return tabs.filter(tab => tab.id !== 'all').map(tab => {
+    return tabs.filter(tab => tab.id !== 'all' && tab.id !== 'grok').map(tab => {
       const row = byPlatform.get(tab.label.toLowerCase()) || byPlatform.get(tab.id)
       return {
         ...tab,
@@ -329,7 +447,11 @@ export default function SocialPage() {
         ))}
       </div>
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+      {active === 'grok' ? (
+        <GrokSocialAnalysis />
+      ) : (
+        <>
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
         {platformCards.map(row => (
           <div key={row.id} className="border border-slate-700 bg-slate-900/60 rounded-lg px-3 py-2">
             <div className="flex items-center justify-between gap-2">
@@ -435,6 +557,8 @@ export default function SocialPage() {
             )
           })}
         </div>
+      )}
+        </>
       )}
     </div>
   )

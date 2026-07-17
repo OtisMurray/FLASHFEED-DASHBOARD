@@ -366,7 +366,7 @@ function ensureDecisionMapHealthMonitor(req, db) {
 
 function stableQuerySignature(query = {}) {
   const ignored = new Set(['fresh', '_', 't'])
-  const normalized = { __cache_version: 'vector-path-history-v9' }
+  const normalized = { __cache_version: 'finviz-mover-broad-universe-v10' }
   for (const key of Object.keys(query).sort()) {
     if (ignored.has(key)) continue
     normalized[key] = String(query[key])
@@ -812,14 +812,49 @@ function sourceFilter(universe) {
 
 function activeScreenerMatch(query = {}, thresholds) {
   const minRel = Math.max(0, Number(query.min_rel_volume ?? query.minRelativeVolume ?? thresholds.minRelativeVolume))
-  return {
-    ...sourceFilter(query.universe),
+  const universe = String(query.universe || 'active_finviz').toLowerCase()
+  const source = sourceFilter(query.universe)
+  const match = {
+    ...source,
     ticker: { $not: /\./ },
-    exchange: { $in: Array.from(US_EXCHANGES) },
     price: { $gt: 0 },
     volume: { $gt: 0 },
-    rel_volume: { $gte: minRel },
   }
+  match.$and = [
+    ...(Array.isArray(match.$and) ? match.$and : []),
+    universe === 'active_finviz'
+      ? {
+          $or: [
+            { exchange: { $in: Array.from(US_EXCHANGES) } },
+            { exchange: { $exists: false } },
+            { exchange: null },
+            { exchange: '' },
+          ],
+        }
+      : { exchange: { $in: Array.from(US_EXCHANGES) } },
+  ]
+  if (minRel > 0) {
+    const relVolumeOr = universe === 'active_finviz'
+      ? [
+          { rel_volume: { $gte: minRel } },
+          { relative_volume: { $gte: minRel } },
+          {
+            quote_source: 'finviz_elite_screener',
+            change_pct: { $exists: true, $ne: null },
+          },
+        ]
+      : [
+          { rel_volume: { $gte: minRel } },
+          { relative_volume: { $gte: minRel } },
+        ]
+    if (Array.isArray(source.$or)) {
+      delete match.$or
+      match.$and = [...(match.$and || []), { $or: source.$or }, { $or: relVolumeOr }]
+    } else {
+      match.$or = relVolumeOr
+    }
+  }
+  return match
 }
 
 function normalizeScreenerRow(doc = {}, requestedSession = 'auto') {
@@ -899,11 +934,13 @@ async function activeScreenerRows(db, query, thresholds) {
               { $add: [{ $abs: { $ifNull: ['$change_pct', 0] } }, 1] },
             ],
           },
+          absChangeSort: { $abs: { $ifNull: ['$change_pct', 0] } },
         },
       },
       { $sort: { ticker: 1, _sourcePriority: -1, quote_updated_at: -1, finviz_seen_at: -1, activitySort: -1 } },
       { $group: { _id: '$ticker', doc: { $first: '$$ROOT' } } },
       { $replaceRoot: { newRoot: '$doc' } },
+      { $sort: { absChangeSort: -1, activitySort: -1, volume: -1 } },
       { $limit: internalLimit },
     ]).toArray()
 

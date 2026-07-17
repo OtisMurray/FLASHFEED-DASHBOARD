@@ -1,50 +1,6 @@
 import { TopBar } from './TopBar'
 import { ToastProvider } from '@/components/shared/Toast'
-import useSWR from 'swr'
 import { useEffect, useState } from 'react'
-
-const fetcher = (url: string) => fetch(url).then(r => r.json())
-
-function ageLabel(seconds?: number | null) {
-  if (seconds == null) return 'missing'
-  if (seconds < 60) return `${seconds}s`
-  if (seconds < 3600) return `${Math.round(seconds / 60)}m`
-  return `${Math.round(seconds / 3600)}h`
-}
-
-function DataFreshnessBanner() {
-  const { data } = useSWR('/api/dashboard/freshness', fetcher, {
-    refreshInterval: 60_000,
-    dedupingInterval: 60_000,
-    keepPreviousData: true,
-    revalidateOnFocus: false,
-  })
-  if (!data) return null
-  const sources = data.sources || {}
-  const coreSources = ['news', 'screener', 'social'] as const
-  const staleCoreSources = coreSources.filter(key => {
-    const source = sources[key]
-    const status = String(source?.status || '').toLowerCase()
-    return data.ok === false || status === 'stale' || status === 'missing' || status === 'empty' || status === 'error'
-  })
-
-  // Keep the global strip quiet during healthy operation. Decision Map can be
-  // loaded lazily, so an unknown map cache should not make fresh core data look broken.
-  if (staleCoreSources.length === 0) return null
-
-  return (
-    <div className="border-b border-amber-500/25 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-100 md:px-4">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="font-semibold">Freshness warning</span>
-        <span>Market: {data.market?.label || 'unknown'}</span>
-        <span>News {ageLabel(sources.news?.age_seconds)}</span>
-        <span>Screener {ageLabel(sources.screener?.age_seconds)}</span>
-        <span>Social {ageLabel(sources.social?.age_seconds)}</span>
-        {data.auto_refresh?.refresh_cycle_in_flight && <span className="text-sky-200">refresh in progress</span>}
-      </div>
-    </div>
-  )
-}
 
 function useGoogleTranslateActive() {
   const [active, setActive] = useState(false)
@@ -77,7 +33,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       >
         <div className="flex flex-col flex-1 min-w-0">
           <TopBar />
-          <DataFreshnessBanner />
           <main className="flex-1 overflow-auto p-4 md:p-5">{children}</main>
         </div>
       </div>

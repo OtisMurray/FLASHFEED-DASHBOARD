@@ -43,6 +43,10 @@ export interface EnrichData {
       configured: boolean
       metrics: { sentiment: number | null; density: number | null; bull: number | null; bear: number | null; window_hours: number } | null
     }
+    grok?: {
+      configured: boolean
+      metrics: { sentiment: number | null; density: number | null; bull: number | null; bear: number | null; window_hours: number } | null
+    }
     rumor: { text: string | null; direction: string | null; time: number | null; author: string | null } | null
     future_sources: string[]
   }
@@ -71,6 +75,8 @@ export function TickerEnrichPanels({ ticker, enrich }: { ticker: string; enrich:
   const bs = bsky?.metrics
   const reddit = social?.reddit
   const rd = reddit?.metrics
+  const grok = social?.grok
+  const gx = grok?.metrics
   const rumor = social?.rumor
 
   return (
@@ -195,73 +201,9 @@ export function TickerEnrichPanels({ ticker, enrich }: { ticker: string; enrich:
             )}
           </div>
 
-          {/* Bluesky */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[11px] text-neutral uppercase tracking-wide">Bluesky</span>
-              {bsky?.configured && bs && <span className="text-[10px] text-slate-500">{bs.window_hours}h window</span>}
-            </div>
-            {!enrich ? (
-              <div className="text-neutral text-sm animate-pulse">Loading…</div>
-            ) : !bsky?.configured ? (
-              <div className="text-slate-500 text-xs py-1">
-                Not configured — add a Bluesky handle + app password in Settings → Credentials.
-              </div>
-            ) : bs ? (
-              <div className="flex items-center gap-3">
-                <div>
-                  <div className="text-[9px] text-slate-500 uppercase">Sentiment</div>
-                  <div className={clsx('font-mono text-lg', (bs.sentiment ?? 0) >= 0.2 ? 'text-emerald-400' : (bs.sentiment ?? 0) <= -0.2 ? 'text-red-400' : 'text-neutral')}>
-                    {bs.sentiment != null ? bs.sentiment.toFixed(2) : '—'}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[9px] text-slate-500 uppercase">Density</div>
-                  <div className="font-mono text-lg text-accent">{bs.density ?? '—'}</div>
-                </div>
-                <div className="text-[11px] font-mono">
-                  <div className="text-emerald-400">▲ {bs.bull ?? 0} bull</div>
-                  <div className="text-red-400">▼ {bs.bear ?? 0} bear</div>
-                </div>
-              </div>
-            ) : (
-              <div className="text-slate-500 text-xs py-1">No Bluesky mentions in the last 72h.</div>
-            )}
-          </div>
-
-          {/* Reddit */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[11px] text-neutral uppercase tracking-wide">Reddit</span>
-              {reddit?.configured && rd && <span className="text-[10px] text-slate-500">{rd.window_hours}h window</span>}
-            </div>
-            {!enrich ? (
-              <div className="text-neutral text-sm animate-pulse">Loading…</div>
-            ) : !reddit?.configured ? (
-              <div className="text-slate-500 text-xs py-1">
-                Not configured — add Reddit API credentials in Settings → Credentials.
-              </div>
-            ) : rd ? (
-              <div className="flex items-center gap-3">
-                <div>
-                  <div className="text-[9px] text-slate-500 uppercase">Sentiment</div>
-                  <div className={clsx('font-mono text-lg', (rd.sentiment ?? 0) >= 0.2 ? 'text-emerald-400' : (rd.sentiment ?? 0) <= -0.2 ? 'text-red-400' : 'text-neutral')}>
-                    {rd.sentiment != null ? rd.sentiment.toFixed(2) : '—'}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-[9px] text-slate-500 uppercase">Density</div>
-                  <div className="font-mono text-lg text-accent">{rd.density ?? '—'}</div>
-                </div>
-                <div className="text-[11px] font-mono">
-                  <div className="text-emerald-400">▲ {rd.bull ?? 0} bull</div>
-                  <div className="text-red-400">▼ {rd.bear ?? 0} bear</div>
-                </div>
-              </div>
-            ) : (
-              <div className="text-slate-500 text-xs py-1">No Reddit mentions in the last 72h.</div>
-            )}
-          </div>
+          <SocialMetricBlock label="Bluesky" metrics={bs} loading={!enrich} />
+          <SocialMetricBlock label="Reddit" metrics={rd} loading={!enrich} />
+          <SocialMetricBlock label="Grok/X" metrics={gx} loading={!enrich} />
 
           {/* Rumor / gossip */}
           <div>
@@ -283,20 +225,61 @@ export function TickerEnrichPanels({ ticker, enrich }: { ticker: string; enrich:
             )}
           </div>
 
-          {/* Future sources */}
-          <div>
-            <span className="text-[11px] text-neutral uppercase tracking-wide">Other platforms</span>
-            <div className="flex gap-1.5 mt-1 flex-wrap">
-              {(social?.future_sources ?? ['X']).map(s => (
-                <span key={s} className="text-[10px] px-2 py-0.5 rounded border border-dashed border-slate-600 text-slate-500">
-                  {s} · soon
-                </span>
-              ))}
+          {(social?.future_sources?.length ?? 0) > 0 && (
+            <div>
+              <span className="text-[11px] text-neutral uppercase tracking-wide">Other platforms</span>
+              <div className="flex gap-1.5 mt-1 flex-wrap">
+                {(social?.future_sources ?? []).map(s => (
+                  <span key={s} className="text-[10px] px-2 py-0.5 rounded border border-dashed border-slate-600 text-slate-500">
+                    {s} · soon
+                  </span>
+                ))}
+              </div>
             </div>
-            <div className="text-[10px] text-slate-600 mt-1">Not yet ingested — shown for layout, no values fabricated.</div>
-          </div>
+          )}
         </div>
       </div>
+    </div>
+  )
+}
+
+function SocialMetricBlock({
+  label,
+  metrics,
+  loading,
+}: {
+  label: string
+  metrics?: { sentiment: number | null; density: number | null; bull: number | null; bear: number | null; window_hours: number } | null
+  loading: boolean
+}) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[11px] text-neutral uppercase tracking-wide">{label}</span>
+        {metrics && <span className="text-[10px] text-slate-500">{metrics.window_hours}h window</span>}
+      </div>
+      {loading ? (
+        <div className="text-neutral text-sm animate-pulse">Loading…</div>
+      ) : metrics ? (
+        <div className="flex items-center gap-3">
+          <div>
+            <div className="text-[9px] text-slate-500 uppercase">Sentiment</div>
+            <div className={clsx('font-mono text-lg', (metrics.sentiment ?? 0) >= 0.2 ? 'text-emerald-400' : (metrics.sentiment ?? 0) <= -0.2 ? 'text-red-400' : 'text-neutral')}>
+              {metrics.sentiment != null ? metrics.sentiment.toFixed(2) : '—'}
+            </div>
+          </div>
+          <div>
+            <div className="text-[9px] text-slate-500 uppercase">Density</div>
+            <div className="font-mono text-lg text-accent">{metrics.density ?? '—'}</div>
+          </div>
+          <div className="text-[11px] font-mono">
+            <div className="text-emerald-400">▲ {metrics.bull ?? 0} bull</div>
+            <div className="text-red-400">▼ {metrics.bear ?? 0} bear</div>
+          </div>
+        </div>
+      ) : (
+        <div className="text-slate-500 text-xs py-1">No {label} mentions in the last 72h.</div>
+      )}
     </div>
   )
 }

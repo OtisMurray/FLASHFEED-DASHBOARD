@@ -1109,7 +1109,12 @@ function articleMatchStage(match) {
   return Object.keys(match).length ? [{ $match: match }] : []
 }
 
-function tickerArticlePipeline({ days = 2, limit = 150, ticker = "" } = {}) {
+function tickerArticlePipeline({ days = 2, limit = 150, ticker = "", tickers = [] } = {}) {
+  const wantedTickers = normalizeTickerList(
+    ticker ? [ticker] : tickers,
+    500,
+    { ensurePrivate: false },
+  )
   const match = {
     ...recentArticleMatch(days),
     ticker: { $exists: true, $nin: ["", null] },
@@ -1132,7 +1137,7 @@ function tickerArticlePipeline({ days = 2, limit = 150, ticker = "" } = {}) {
     { $match: { _ticker_parts: { $ne: "", $nin: Array.from(NON_STOCK_TICKERS) } } },
   ]
 
-  if (ticker) pipeline.push({ $match: { _ticker_parts: String(ticker).toUpperCase() } })
+  if (wantedTickers.length) pipeline.push({ $match: { _ticker_parts: { $in: wantedTickers } } })
 
   pipeline.push(
     {
@@ -1806,7 +1811,7 @@ async function loadArticleStatsForTickers(db, tickers = [], days = 2) {
   if (!wanted.size) return new Map()
 
   const rows = await db.collection("articles")
-    .aggregate(tickerArticlePipeline({ days, limit: Math.max(wanted.size * 4, 150) }))
+    .aggregate(tickerArticlePipeline({ days, tickers: Array.from(wanted), limit: Math.max(wanted.size * 4, 150) }))
     .toArray()
 
   return new Map(
@@ -3594,17 +3599,17 @@ function socialTimeStages() {
   return [
     {
       $addFields: {
-        _time_raw: {
-          $ifNull: [
-            "$fetched_at",
-            { $ifNull: [
-              "$detected_at",
-              { $ifNull: [
-                "$timestamp",
-                { $ifNull: ["$created_at", "$publish_date"] }
-              ] }
-            ] }
-          ]
+	        _time_raw: {
+	          $ifNull: [
+	            "$created_at",
+	            { $ifNull: [
+	              "$timestamp",
+	              { $ifNull: [
+	                "$publish_date",
+	                { $ifNull: ["$detected_at", "$fetched_at"] }
+	              ] }
+	            ] }
+	          ]
         }
       }
     },
@@ -3697,7 +3702,7 @@ function socialTimeStages() {
                     }
                   ]
                 },
-                then: "Twitter"
+	                then: "Grok/X"
               }
             ],
             default: { $ifNull: ["$platform", "Unknown"] }
@@ -3903,8 +3908,9 @@ app.get("/api/social/rolling", async (req, res) => {
         reddit: "Reddit",
         bluesky: "Bluesky",
         bsky: "Bluesky",
-        twitter: "Twitter",
-        x: "Twitter",
+	        twitter: "Grok/X",
+	        x: "Grok/X",
+	        grok: "Grok/X",
         stocktwits: "StockTwits",
       }
       pipeline.push({ $match: { _norm_platform: platformMap[platform] || platform } })
@@ -3934,7 +3940,7 @@ app.get("/api/social/rolling", async (req, res) => {
             $switch: {
               branches: [
                 { case: { $eq: ["$_norm_platform", "StockTwits"] }, then: 4 },
-                { case: { $eq: ["$_norm_platform", "Twitter"] }, then: 3 },
+	                { case: { $eq: ["$_norm_platform", "Grok/X"] }, then: 3 },
                 { case: { $eq: ["$_norm_platform", "Reddit"] }, then: 2 },
                 { case: { $eq: ["$_norm_platform", "Bluesky"] }, then: 1 },
               ],
@@ -4002,7 +4008,7 @@ app.get("/api/social/rolling", async (req, res) => {
       db.collection("socials").aggregate(platformStatusPipeline).toArray(),
     ])
     if (ranked) {
-      const platformRank = { StockTwits: 4, Twitter: 3, Reddit: 2, Bluesky: 1 }
+	      const platformRank = { StockTwits: 4, "Grok/X": 3, Reddit: 2, Bluesky: 1 }
       rows.sort((a, b) => {
         const sentimentDiff = Math.abs(Number(b.sentiment_score || 0)) - Math.abs(Number(a.sentiment_score || 0))
         if (sentimentDiff) return sentimentDiff
@@ -4035,6 +4041,151 @@ app.get("/api/social/rolling", async (req, res) => {
     console.error("GET /api/social/rolling failed:", err)
     return res.status(500).json({ ok: false, error: String(err?.message || err), rows: [] })
   }
+})
+
+// Grok/X social analysis. Uses xAI Grok when configured, otherwise a local
+// evidence summary so the Social tab remains useful without API credentials.
+const GROK_API_KEY = process.env.GROK_API_KEY || ""
+const GROK_BASE_URL = process.env.GROK_BASE_URL || "https://api.x.ai/v1"
+const GROK_MODEL = process.env.GROK_MODEL || "grok-3-mini"
+
+function socialSentimentLabel(score) {
+  const value = Number(score || 0)
+  if (value >= 0.2) return "bullish"
+  if (value <= -0.2) return "bearish"
+  return "neutral/mixed"
+}
+
+async function buildLocalGrokSocialAnalysis(db, ticker, context = "") {
+  const cleanTicker = String(ticker || "").toUpperCase().replace(/[^A-Z0-9.-]/g, "")
+  if (!db || !cleanTicker) {
+    return { text: "No ticker context is available yet. Run a refresh cycle, then try again.", model: "local-social-rules", engine: "local" }
+  }
+
+  const sinceSec = Math.floor(Date.now() / 1000) - 24 * 60 * 60
+  const tickerRegex = new RegExp(`(^|[,\\s$])${cleanTicker}($|[,\\s])`, "i")
+  const [screener, socialRows, articles] = await Promise.all([
+    db.collection("screeners").findOne({ ticker: cleanTicker }),
+    db.collection("socials").aggregate([
+      ...socialTimeStages(),
+      { $match: { _event_sec: { $gte: sinceSec }, _ticker_candidates: cleanTicker } },
+      { $sort: { _event_sec: -1 } },
+      { $limit: 80 },
+      {
+        $project: {
+          platform: "$_norm_platform",
+          text: { $ifNull: ["$text", { $ifNull: ["$title", "$content"] }] },
+          sentiment: 1,
+          sentiment_score: 1,
+          fetched_at: "$_event_sec",
+          gossip_keywords: 1,
+          finance_keywords: 1,
+        }
+      }
+    ]).toArray(),
+    db.collection("articles")
+      .find({ $or: [{ ticker: tickerRegex }, { tickers: cleanTicker }, { symbols: cleanTicker }] })
+      .sort({ publish_date: -1, fetched_at: -1 })
+      .limit(5)
+      .toArray(),
+  ])
+
+  const platformCounts = {}
+  const sentimentScores = []
+  const keywordCounts = new Map()
+  for (const row of socialRows) {
+    const platform = row.platform || "Social"
+    platformCounts[platform] = (platformCounts[platform] || 0) + 1
+    const score = Number.isFinite(Number(row.sentiment_score))
+      ? Number(row.sentiment_score)
+      : /bull|positive/i.test(String(row.sentiment || "")) ? 1 : /bear|negative/i.test(String(row.sentiment || "")) ? -1 : 0
+    sentimentScores.push(score)
+    for (const word of [...(row.gossip_keywords || []), ...(row.finance_keywords || [])]) {
+      const key = String(word || "").trim().toLowerCase()
+      if (key) keywordCounts.set(key, (keywordCounts.get(key) || 0) + 1)
+    }
+  }
+
+  const avgSentiment = sentimentScores.length
+    ? sentimentScores.reduce((sum, value) => sum + value, 0) / sentimentScores.length
+    : 0
+  const platformText = Object.entries(platformCounts)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .map(([platform, count]) => `${platform} ${count}`)
+    .join(", ")
+  const topKeywords = Array.from(keywordCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([word]) => word)
+  const change = Number(screener?.change_pct ?? screener?.change ?? NaN)
+  const relVol = Number(screener?.relative_volume ?? screener?.rel_volume ?? screener?.relVol ?? NaN)
+  const lines = []
+
+  lines.push(`${cleanTicker}: ${socialRows.length} ticker-matched social posts found in the last 24h${platformText ? ` (${platformText})` : ""}.`)
+  lines.push(`Tone is ${socialSentimentLabel(avgSentiment)} with average sentiment ${avgSentiment.toFixed(2)}.`)
+  if (Number.isFinite(change)) lines.push(`Current screener move is ${change >= 0 ? "+" : ""}${change.toFixed(2)}%.`)
+  if (Number.isFinite(relVol)) lines.push(`Relative volume is ${relVol.toFixed(2)}x.`)
+  if (topKeywords.length) lines.push(`Repeated social themes: ${topKeywords.join(", ")}.`)
+  if (articles.length) lines.push(`Latest matched catalyst/headline: "${String(articles[0].title || articles[0].headline || "").slice(0, 140)}".`)
+  if (!socialRows.length && !articles.length) lines.push("No strong stored social or article support is matched yet, so confidence should stay low.")
+  if (context) lines.push(`Context requested: ${context}.`)
+
+  return { text: lines.join(" "), model: "local-social-rules", engine: "local" }
+}
+
+async function callGrokSocialAnalysis(ticker, context, prompt) {
+  const cleanTicker = String(ticker || "").toUpperCase().replace(/[^A-Z0-9.-]/g, "")
+  const systemMsg = `You are a concise financial social-sentiment analyst for ${cleanTicker}. Use only the provided context. Be factual, explain bull/bear tone, and do not invent posts or catalysts.`
+  const userMsg = prompt || `Analyze current social sentiment for ${cleanTicker}. Context: ${context || "No extra context."}`
+  const resp = await fetch(`${GROK_BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${GROK_API_KEY}` },
+    body: JSON.stringify({
+      model: GROK_MODEL,
+      messages: [
+        { role: "system", content: systemMsg },
+        { role: "user", content: userMsg },
+      ],
+      max_tokens: 220,
+      temperature: 0.25,
+    }),
+  })
+  if (!resp.ok) throw new Error(`Grok ${resp.status}: ${(await resp.text()).slice(0, 180)}`)
+  const data = await resp.json()
+  return { text: data.choices?.[0]?.message?.content || "", model: GROK_MODEL, engine: "grok" }
+}
+
+app.post("/api/grok/analyze", async (req, res) => {
+  const started = Date.now()
+  const ticker = normalizeTickerList([req.body?.ticker || req.query.ticker], 1, { ensurePrivate: false })[0] || ""
+  const context = String(req.body?.context || req.query.context || "")
+  const prompt = String(req.body?.prompt || "")
+  if (!ticker) return res.status(400).json({ ok: false, error: "ticker is required", ms: Date.now() - started })
+
+  try {
+    if (GROK_API_KEY) {
+      const result = await callGrokSocialAnalysis(ticker, context, prompt)
+      return res.json({ ok: true, ticker, analysis: result.text, model: result.model, engine: result.engine, ms: Date.now() - started })
+    }
+    const result = await buildLocalGrokSocialAnalysis(mongoose.connection.db, ticker, context)
+    return res.json({ ok: true, ticker, analysis: result.text, model: result.model, engine: result.engine, ms: Date.now() - started })
+  } catch (err) {
+    try {
+      const result = await buildLocalGrokSocialAnalysis(mongoose.connection.db, ticker, context)
+      return res.json({ ok: true, ticker, analysis: result.text, model: `${result.model} (api-fallback)`, engine: result.engine, ms: Date.now() - started })
+    } catch {
+      return res.status(500).json({ ok: false, ticker, error: String(err?.message || err), ms: Date.now() - started })
+    }
+  }
+})
+
+app.get("/api/grok/status", (_req, res) => {
+  res.json({
+    ok: true,
+    configured: Boolean(GROK_API_KEY),
+    engine: GROK_API_KEY ? "grok" : "local",
+    model: GROK_API_KEY ? GROK_MODEL : "local-social-rules",
+  })
 })
 
 app.get("/api/social/series/:ticker", async (req, res) => {
@@ -4581,18 +4732,28 @@ async function chartSocialSeries(db, ticker, windowMinutes, bucketMinutes, optio
     { $sort: { _id: 1 } },
   ]).toArray()
 
-  return addSessionScaledSocialFields(rows.map(row => {
+  if (!rows.length) return []
+
+  const bucketMap = new Map(rows.map(row => [Number(row._id || 0), row]))
+  const firstBucket = Math.floor((requestedStart || Number(rows[0]._id || sinceSec)) / bucketSec) * bucketSec
+  const fallbackLastBucket = Math.floor(Date.now() / (bucketSec * 1000)) * bucketSec
+  const lastBucket = Math.floor((requestedEnd || Math.max(Number(rows[rows.length - 1]._id || sinceSec), fallbackLastBucket)) / bucketSec) * bucketSec
+  const filled = []
+  for (let bucket = firstBucket; bucket <= lastBucket; bucket += bucketSec) {
+    const row = bucketMap.get(bucket) || { _id: bucket, message_count: 0, sentiment: 0, platforms: [] }
     const count = Number(row.message_count || 0)
-    return {
-      time: Number(row._id || 0),
-      bucket_sec: Number(row._id || 0),
-      session: marketSessionForSec(row._id),
+    filled.push({
+      time: Number(row._id || bucket),
+      bucket_sec: Number(row._id || bucket),
+      session: marketSessionForSec(row._id || bucket),
       message_count: count,
       message_density: Number((count / bucketMinutes).toFixed(3)),
-      sentiment: Number(Number(row.sentiment || 0).toFixed(3)),
+      sentiment: count > 0 ? Number(Number(row.sentiment || 0).toFixed(3)) : 0,
       platforms: row.platforms || [],
-    }
-  }), bucketMinutes)
+    })
+  }
+
+  return addSessionScaledSocialFields(filled, bucketMinutes)
 }
 
 // Full multi-timeframe selector → (Yahoo fetch range, base interval, resample-to
@@ -4856,13 +5017,100 @@ app.get("/api/chart/watchers", async (req, res) => {
 
 // GET /api/ticker/:ticker/enrich — the per-ticker enrichment panel below the
 // chart: the last-3-day news feed + a social/gossip summary. Pure DB reads.
+async function tickerSocialPlatformMetric(db, ticker, platform, windowHours = 72) {
+  const sinceSec = Math.floor(Date.now() / 1000) - Math.max(1, Number(windowHours || 72)) * 3600
+  const rows = await db.collection("socials").aggregate([
+    ...socialTimeStages(),
+    {
+      $match: {
+        _event_sec: { $gte: sinceSec },
+        _norm_platform: platform,
+        _ticker_candidates: ticker,
+      },
+    },
+    {
+      $addFields: {
+        _score: {
+          $switch: {
+            branches: [
+              { case: { $in: [{ $type: "$sentiment_score" }, ["int", "long", "double", "decimal"]] }, then: { $toDouble: "$sentiment_score" } },
+              { case: { $in: [{ $type: "$sentiment" }, ["int", "long", "double", "decimal"]] }, then: { $toDouble: "$sentiment" } },
+              { case: { $regexMatch: { input: { $toLower: { $toString: { $ifNull: ["$sentiment", ""] } } }, regex: "bull|positive" } }, then: 1 },
+              { case: { $regexMatch: { input: { $toLower: { $toString: { $ifNull: ["$sentiment", ""] } } }, regex: "bear|negative" } }, then: -1 },
+            ],
+            default: 0,
+          },
+        },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        count: { $sum: 1 },
+        score_sum: { $sum: "$_score" },
+        bull: { $sum: { $cond: [{ $gt: ["$_score", 0.1] }, 1, 0] } },
+        bear: { $sum: { $cond: [{ $lt: ["$_score", -0.1] }, 1, 0] } },
+        latest_sec: { $max: "$_event_sec" },
+      },
+    },
+  ]).toArray()
+  const row = rows[0]
+  if (!row || !Number(row.count || 0)) return null
+  const count = Number(row.count || 0)
+  return {
+    sentiment: Number((Number(row.score_sum || 0) / Math.max(1, count)).toFixed(2)),
+    density: count,
+    bull: Number(row.bull || 0),
+    bear: Number(row.bear || 0),
+    window_hours: Number(windowHours),
+    latest_at: Number(row.latest_sec || 0) || null,
+  }
+}
+
+async function tickerSocialRumor(db, ticker, windowHours = 72) {
+  const sinceSec = Math.floor(Date.now() / 1000) - Math.max(1, Number(windowHours || 72)) * 3600
+  const rows = await db.collection("socials").aggregate([
+    ...socialTimeStages(),
+    {
+      $match: {
+        _event_sec: { $gte: sinceSec },
+        _ticker_candidates: ticker,
+        $or: [
+          { gossip_score: { $gt: 0 } },
+          { gossip_keywords: { $exists: true, $ne: [] } },
+          { text: /rumor|buyout|takeover|leak|chatter|whisper/i },
+          { content: /rumor|buyout|takeover|leak|chatter|whisper/i },
+        ],
+      },
+    },
+    { $sort: { gossip_score: -1, _event_sec: -1 } },
+    { $limit: 1 },
+    {
+      $project: {
+        text: { $ifNull: ["$text", "$content"] },
+        direction: { $ifNull: ["$direction", "$sentiment"] },
+        time: "$_event_sec",
+        author: 1,
+      },
+    },
+  ]).toArray()
+  const row = rows[0]
+  if (!row?.text) return null
+  return {
+    text: String(row.text || "").slice(0, 500),
+    direction: row.direction || "rumor",
+    time: Number(row.time || 0) || null,
+    author: row.author || null,
+  }
+}
+
 app.get("/api/ticker/:ticker/enrich", async (req, res) => {
   const ticker = normalizeTickerList([req.params.ticker], 1, { ensurePrivate: false })[0] || ""
   const ENRICH_DAYS = 3
   const empty = {
     ticker, news_alert: false, news_alert_count: 0,
     news: { days: ENRICH_DAYS, articles: [], ai: null, sources: [], source_filter_active: false, note: "Last 3 days · FlashFeed structured news" },
-    social: { stocktwits: null, bluesky: { configured: false, metrics: null }, reddit: { configured: false, metrics: null }, rumor: null, future_sources: ["X"] },
+    social: { stocktwits: null, bluesky: { configured: true, metrics: null }, reddit: { configured: true, metrics: null }, grok: { configured: true, metrics: null }, rumor: null, future_sources: [] },
   }
   try {
     const db = mongoose.connection.db
@@ -4899,7 +5147,7 @@ app.get("/api/ticker/:ticker/enrich", async (req, res) => {
     })
     const sources = [...new Set(articles.map(a => a.source))].slice(0, 12)
 
-    // Lightweight social summary from the rolling social series (StockTwits).
+    // Lightweight social summary from the rolling social series.
     let stocktwits = null
     try {
       const rows = await chartSocialSeries(db, ticker, 72 * 60, 5)
@@ -4912,13 +5160,26 @@ app.get("/api/ticker/:ticker/enrich", async (req, res) => {
         if (msgs > 0) stocktwits = { sentiment: avg == null ? null : Number(avg.toFixed(2)), density: msgs, bull, bear, window_hours: 72 }
       }
     } catch (_) {}
+    const [blueskyMetrics, redditMetrics, grokMetrics, rumor] = await Promise.all([
+      tickerSocialPlatformMetric(db, ticker, "Bluesky", 72).catch(() => null),
+      tickerSocialPlatformMetric(db, ticker, "Reddit", 72).catch(() => null),
+      tickerSocialPlatformMetric(db, ticker, "Grok/X", 72).catch(() => null),
+      tickerSocialRumor(db, ticker, 72).catch(() => null),
+    ])
 
     res.json({
       ticker,
       news_alert: articles.length > 0,
       news_alert_count: articles.length,
       news: { days: ENRICH_DAYS, articles, ai: null, sources, source_filter_active: false, note: "Last 3 days · FlashFeed structured news" },
-      social: { stocktwits, bluesky: { configured: false, metrics: null }, reddit: { configured: false, metrics: null }, rumor: null, future_sources: ["X"] },
+      social: {
+        stocktwits,
+        bluesky: { configured: true, metrics: blueskyMetrics },
+        reddit: { configured: true, metrics: redditMetrics },
+        grok: { configured: true, metrics: grokMetrics },
+        rumor,
+        future_sources: [],
+      },
     })
   } catch (err) {
     console.error("GET /api/ticker/:ticker/enrich failed:", err.message)

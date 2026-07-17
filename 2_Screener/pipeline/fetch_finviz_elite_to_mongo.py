@@ -29,6 +29,11 @@ try:
 except Exception:
     import requests as http_requests
 
+try:
+    from bs4 import BeautifulSoup
+except Exception:
+    BeautifulSoup = None
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "1_News" / "pipeline"))
 try:
     from source_status import record_source_status
@@ -49,7 +54,10 @@ MAX_RETRIES = int(os.getenv("FINVIZ_MAX_RETRIES", "3"))
 
 TOKEN_EXPORT_URL = "https://elite.finviz.com/export"
 COOKIE_EXPORT_URL = "https://elite.finviz.com/export/screener"
+PUBLIC_SCREENER_URL = "https://finviz.com/screener.ashx"
 COLUMNS = "0,1,2,3,4,5,6,59,63,64,65,66,67"
+PUBLIC_FALLBACK_LIMIT = max(20, min(200, int(os.getenv("FINVIZ_PUBLIC_FALLBACK_LIMIT", "100"))))
+PUBLIC_FALLBACK_DROP_OLD = os.getenv("FINVIZ_PUBLIC_FALLBACK_DROP_OLD", "true").lower() not in {"0", "false", "no"}
 TIER_FILTERS = {
     "mega": "cap_mega,sh_curvol_o5000,sh_relvol_o1.5,ta_change_u",
     "large": "cap_large,sh_curvol_o5000,sh_relvol_o2,ta_change_u",
@@ -207,18 +215,149 @@ def _fetch_tier(tier: str, filter_text: str) -> tuple[str, list[dict], str | Non
     return tier, rows, None
 
 
+def _http_get(url: str):
+    try:
+        return http_requests.get(url, headers=HEADERS, impersonate="chrome124", timeout=TIMEOUT)
+    except TypeError:
+        return http_requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+
+
+def _public_finviz_rows(limit: int = PUBLIC_FALLBACK_LIMIT) -> tuple[list[dict], list[str]]:
+    if BeautifulSoup is None:
+        return [], ["BeautifulSoup unavailable for public FinViz fallback"]
+
+    rows: list[dict] = []
+    errors: list[str] = []
+    seen: set[str] = set()
+    now = datetime.now(timezone.utc)
+    now_ts = int(time.time())
+
+    for start in range(1, limit + 1, 20):
+        params = {
+            "v": "152",
+            "s": "ta_topgainers",
+            "ft": "4",
+            "o": "-change",
+        }
+        if start > 1:
+            params["r"] = str(start)
+        url = f"{PUBLIC_SCREENER_URL}?{urlencode(params)}"
+        try:
+            resp = _http_get(url)
+            if resp.status_code != 200:
+                errors.append(f"public top gainers http {resp.status_code}")
+                continue
+            soup = BeautifulSoup(resp.text or "", "html.parser")
+        except Exception as exc:
+            errors.append(f"public top gainers request failed: {exc}")
+            continue
+
+        page_count = 0
+        for link in soup.find_all("a", href=re.compile(r"stock\?t=", re.I)):
+            classes = set(link.get("class") or [])
+            if "tab-link" not in classes:
+                continue
+            ticker = str(link.get_text(strip=True) or "").upper()
+            if not re.fullmatch(r"[A-Z][A-Z0-9.-]{0,5}", ticker or "") or ticker in seen:
+                continue
+            tr = link.find_parent("tr")
+            cells = [td.get_text(" ", strip=True) for td in (tr.find_all("td") if tr else [])]
+            if len(cells) < 11 or not str(cells[0]).strip().isdigit():
+                continue
+            seen.add(ticker)
+            page_count += 1
+            change_pct = _num(cells[10])
+            price = _num(cells[9])
+            row = {
+                "ticker": ticker,
+                "company": cells[2],
+                "sector": cells[3],
+                "industry": cells[4],
+                "country": cells[5],
+                "market_cap": _num(cells[6]),
+                "market_cap_tier": "public_top_gainers",
+                "finviz_market_cap_tier": "public_top_gainers",
+                "pe_ratio": _num(cells[7]),
+                "volume": _int(cells[8]),
+                "price": round(price, 4) if price is not None else None,
+                "change_pct": round(change_pct, 4) if change_pct is not None else None,
+                "change_percent": round(change_pct, 4) if change_pct is not None else None,
+                "quote_status": "priced" if price is not None else "screened",
+                "quote_source": "finviz_elite_screener",
+                "quote_updated_at": now_ts,
+                "finviz_filter": "public_top_gainers",
+                "finviz_public_fallback": True,
+                "finviz_seen_at": now,
+                "source": "Finviz Public Top Gainers",
+                "screener_source": "Finviz Public",
+            }
+            rows.append({k: v for k, v in row.items() if v is not None})
+            if len(rows) >= limit:
+                break
+        if page_count == 0:
+            break
+        if len(rows) >= limit:
+            break
+
+    return rows, errors
+
+
+def _write_rows(screeners, rows: list[dict], previous: set[str], now: datetime, drop_old: bool) -> tuple[int, int]:
+    ops = [
+        UpdateOne(
+            {"ticker": row["ticker"]},
+            {"$set": row, "$setOnInsert": {"created_at": now}},
+            upsert=True,
+        )
+        for row in rows
+    ]
+    dropped = 0
+    current = {row["ticker"] for row in rows}
+    if drop_old:
+        for ticker in sorted(previous - current):
+            ops.append(UpdateOne(
+                {"ticker": ticker, "quote_source": "finviz_elite_screener"},
+                {"$set": {"finviz_status": "dropped", "finviz_seen_at": now, "quote_source": "finviz_elite_screener"}},
+                upsert=False,
+            ))
+            dropped += 1
+    updated = 0
+    if ops:
+        result = screeners.bulk_write(ops, ordered=False)
+        updated = int(result.modified_count + result.upserted_count)
+    return updated, dropped
+
+
 def main() -> None:
     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=MONGO_TIMEOUT_MS)
     db = client[DB_NAME]
 
+    screeners = db.screeners
+
     if not AUTH_TOKEN and not FINVIZ_COOKIE:
-        print("Finviz Elite import skipped — FINVIZ_AUTH_TOKEN/FINVIZ_COOKIE not set")
-        record_source_status(db, "Finviz Elite Screener", "api_key_required", detail="FINVIZ_AUTH_TOKEN or FINVIZ_COOKIE not set", source_type="numeric_screener")
-        print("Finviz Elite import complete — 0 rows, 0 updated, 0 dropped")
+        rows, errors = _public_finviz_rows(PUBLIC_FALLBACK_LIMIT)
+        previous = set(
+            doc["ticker"]
+            for doc in screeners.find(
+                {"quote_source": "finviz_elite_screener", "finviz_status": {"$ne": "dropped"}},
+                {"ticker": 1},
+            )
+            if doc.get("ticker")
+        )
+        for row in rows:
+            row["finviz_status"] = "same" if row["ticker"] in previous else "added"
+        updated, dropped = _write_rows(screeners, rows, previous, datetime.now(timezone.utc), PUBLIC_FALLBACK_DROP_OLD)
+        detail = "FINVIZ_AUTH_TOKEN/FINVIZ_COOKIE not set; used public top-gainers fallback"
+        if errors:
+            detail = f"{detail}; {'; '.join(errors[:3])}"
+        for error in errors[:8]:
+            print(f"Finviz public warning: {error}")
+        status = "working" if rows else "api_key_required"
+        record_source_status(db, "Finviz Elite Screener", status, detail=detail, count=len(rows), source_type="numeric_screener")
+        print(f"Finviz public fallback — {len(rows)} rows")
+        print(f"Finviz Elite import complete — {len(rows)} rows, {updated} updated, {dropped} dropped")
         client.close()
         return
-
-    screeners = db.screeners
 
     previous_by_tier = {
         tier: set(
