@@ -1,8 +1,18 @@
 #!/usr/bin/env node
 
-const path = require('path')
-const crypto = require('crypto')
-const mongoose = require(path.join(__dirname, '..', 'Infrastructure', 'server', 'node_modules', 'mongoose'))
+import path from 'node:path'
+import crypto from 'node:crypto'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const require = createRequire(import.meta.url)
+let mongoose
+try {
+  mongoose = require(path.join(__dirname, '..', 'Infrastructure', 'server', 'node_modules', 'mongoose'))
+} catch (_) {
+  mongoose = require('mongoose')
+}
 const THRESHOLD_FEATURE_POLICY_VERSION = 'density_corr_balanced_w90_candidate_v3'
 const ENTRY_CORRELATION_THRESHOLD = 0.3
 const MAX_PRE_SIGNAL_RETURN_60M_PCT = 5

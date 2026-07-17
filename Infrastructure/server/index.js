@@ -6925,6 +6925,7 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
       "--minObservations", process.env.THRESHOLD_FEATURE_MIN_OBSERVATIONS || "8",
       "--freshMinutes", process.env.THRESHOLD_FEATURE_FRESH_MINUTES || (fastMode ? "720" : "1440"),
       "--chartConcurrency", process.env.THRESHOLD_FEATURE_CHART_CONCURRENCY || (fastMode ? "4" : "6"),
+      "--liveCharts", process.env.THRESHOLD_FEATURE_LIVE_CHARTS || (fastMode ? "0" : "1"),
     ],
   })
   const predictionLabels = await labelMaturePredictionSignals(db)
@@ -7018,7 +7019,6 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
       schwabSignals.ok ? null : schwabSignals.error,
       unstructured.ok ? null : unstructured.error,
       social.ok ? null : social.error,
-      thresholdFeatures.ok ? null : thresholdFeatures.error,
     ].filter(Boolean),
   }
 }
@@ -7999,8 +7999,8 @@ app.delete('/api/settings/keywords/:keyword', async (req, res) => {
         db.collection(collection).countDocuments(query).catch(() => 0)
 
       const [latestArticle, latestScreener, latestSocial, latestDecision, articleCount, screenerCount, socialCount, decisionCount] = await Promise.all([
-        latestDoc('articles', { fetched_date: -1, publish_date: -1, createdAt: -1 }, { fetched_date: 1, publish_date: 1, createdAt: 1 }),
-        latestDoc('screeners', { quote_updated_at: -1, updated_at: -1, createdAt: -1 }, { quote_updated_at: 1, updated_at: 1, createdAt: 1 }),
+        latestDoc('articles', { feed_sort_time: -1, fetched_date: -1, publish_date: -1, createdAt: -1 }, { feed_sort_time: 1, fetched_date: 1, publish_date: 1, createdAt: 1 }),
+        latestDoc('screeners', { quote_updated_at: -1, finviz_seen_at: -1, tradingview_seen_at: -1, updated_at: -1, createdAt: -1 }, { quote_updated_at: 1, finviz_seen_at: 1, tradingview_seen_at: 1, updated_at: 1, createdAt: 1 }),
         latestDoc('socials', { fetched_at: -1, timestamp: -1, created_at: -1 }, { fetched_at: 1, timestamp: 1, created_at: 1 }),
         latestDoc('decision_map_points', { timestamp_sec: -1, created_at: -1 }, { timestamp_sec: 1, created_at: 1 }),
         countDocs('articles'),
@@ -8012,11 +8012,11 @@ app.delete('/api/settings/keywords/:keyword', async (req, res) => {
       const sources = {
         news: {
           count: articleCount,
-          age_seconds: ageSeconds(latestArticle?.fetched_date ?? latestArticle?.publish_date ?? latestArticle?.createdAt),
+          age_seconds: ageSeconds(latestArticle?.feed_sort_time ?? latestArticle?.fetched_date ?? latestArticle?.publish_date ?? latestArticle?.createdAt),
         },
         screener: {
           count: screenerCount,
-          age_seconds: ageSeconds(latestScreener?.quote_updated_at ?? latestScreener?.updated_at ?? latestScreener?.createdAt),
+          age_seconds: ageSeconds(latestScreener?.quote_updated_at ?? latestScreener?.finviz_seen_at ?? latestScreener?.tradingview_seen_at ?? latestScreener?.updated_at ?? latestScreener?.createdAt),
         },
         social: {
           count: socialCount,
