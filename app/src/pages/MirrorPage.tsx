@@ -74,6 +74,20 @@ function fixed(value: unknown, digits = 2): string {
   return n == null ? '--' : n.toFixed(digits)
 }
 
+function sentimentLabel(value: unknown): string {
+  if (value == null || value === '') return '--'
+  const raw = String(value).trim()
+  if (!raw) return '--'
+  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase()
+}
+
+function sentimentClass(value: unknown): string {
+  const raw = String(value || '').toLowerCase()
+  if (raw.includes('bull') || raw.includes('positive')) return 'border-emerald-400/35 bg-emerald-500/10 text-emerald-300'
+  if (raw.includes('bear') || raw.includes('negative')) return 'border-red-400/35 bg-red-500/10 text-red-300'
+  return 'border-slate-500/35 bg-slate-500/10 text-slate-300'
+}
+
 function whenLabel(value?: number | string | null): string {
   if (value == null || value === '') return ''
   const raw = typeof value === 'string' && Number.isNaN(Number(value)) ? Date.parse(value) / 1000 : Number(value)
@@ -541,7 +555,11 @@ function MirrorCard({ row, signal, recentDays, keyword, refreshNonce }: {
               <span className="font-mono text-neutral">{whenLabel(article.publish_date || article.detected_at || article.fetched_date) || '--'}</span>
               <span className="truncate text-sky-200">{article.source || 'Unknown source'}</span>
               <span className="min-w-0 truncate text-slate-100">{article.title || article.headline || 'Untitled article'}</span>
-              <span className="text-right capitalize text-neutral">{article.sentiment || article.article_kind || '--'}</span>
+              <span className="text-right">
+                <span className={clsx('inline-flex min-w-[72px] justify-center rounded border px-2 py-0.5 text-[11px] font-semibold', sentimentClass(article.sentiment || article.article_kind))}>
+                  {sentimentLabel(article.sentiment || article.article_kind)}
+                </span>
+              </span>
             </a>
           )) : (
             <div className="px-4 py-6 text-center text-xs text-neutral">
