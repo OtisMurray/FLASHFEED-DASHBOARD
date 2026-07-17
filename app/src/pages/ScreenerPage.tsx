@@ -5,7 +5,7 @@ import { ScreenerTable } from './ScreenerTable'
 import { ScreenerFilterPanel } from './ScreenerFilterPanel'
 import { SignalBar } from './SignalBar'
 import { IntradayChart } from './IntradayChart'
-import { ChartsGridPage } from './ChartsGridPage'
+import { MirrorPage } from './MirrorPage'
 import type { Article, ScreenerRow } from '@/lib/types'
 
 const fetcher = (url: string) => fetch(url).then(r => r.json())
@@ -574,7 +574,7 @@ export function ScreenerPage() {
       </div>
 
       {workspaceTab === 'mirror' ? (
-        <ChartsGridPage
+        <MirrorPage
           embedded
           socialWindow={socialWindow}
           onSocialWindowChange={setSocialWindow}
