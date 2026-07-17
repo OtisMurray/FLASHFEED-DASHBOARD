@@ -455,13 +455,42 @@ function displayPathVectors(row: DecisionMapRow, amplify: boolean) {
     y: box.max.y - box.min.y,
     z: box.max.z - box.min.z,
   }
-  const span = Math.max(spans.x, spans.y, spans.z, 0.001)
-  const latest = raw[raw.length - 1]
   const activeDimensions = [spans.x, spans.y, spans.z].filter(value => value > 0.08).length
-  const targetSpan = marketCapPathSpan(row) * (activeDimensions <= 1 ? 0.42 : activeDimensions === 2 ? 0.68 : 1)
-  const maxScale = activeDimensions <= 1 ? 3.2 : activeDimensions === 2 ? 8 : 18
-  const scale = clamp(targetSpan / span, 1, maxScale)
-  return raw.map(point => latest.clone().add(point.clone().sub(latest).multiplyScalar(scale)))
+  const targetSpan = marketCapPathSpan(row) * (activeDimensions <= 1 ? 0.55 : activeDimensions === 2 ? 0.82 : 1)
+  const center = box.getCenter(new THREE.Vector3())
+  const scaleForAxis = (span: number, targetShare: number, maxScale: number) => {
+    if (span <= 0.08) return 1
+    return clamp((targetSpan * targetShare) / span, 0.72, maxScale)
+  }
+  const axisScale = {
+    x: scaleForAxis(spans.x, activeDimensions <= 1 ? 0.44 : 0.72, 16),
+    y: scaleForAxis(spans.y, activeDimensions <= 1 ? 0.78 : 0.92, 12),
+    z: scaleForAxis(spans.z, activeDimensions <= 1 ? 0.44 : 0.72, 16),
+  }
+  // Visual-only time spread keeps repeated metric values from stacking into an unreadable column.
+  const chronologicalSpread = raw.length >= 6 ? targetSpan * 0.58 : 0
+  const arcSpread = raw.length >= 6 ? targetSpan * 0.18 : 0
+  return raw.map((point, index) => {
+    const progress = raw.length > 1 ? index / (raw.length - 1) : 1
+    const timeOffset = (progress - 0.5) * chronologicalSpread
+    const arcOffset = Math.sin(progress * Math.PI) * arcSpread
+    return new THREE.Vector3(
+      center.x + (point.x - center.x) * axisScale.x + timeOffset,
+      center.y + (point.y - center.y) * axisScale.y,
+      center.z + (point.z - center.z) * axisScale.z + arcOffset,
+    )
+  })
+}
+
+function pathFrame(row?: DecisionMapRow | null) {
+  if (!row) return { center: new THREE.Vector3(0, 0, 3), span: 16 }
+  const points = displayPathVectors(row, true)
+  if (points.length < 2) return { center: visualPointPosition(row, true), span: 8 }
+  const box = new THREE.Box3().setFromPoints(points)
+  const center = box.getCenter(new THREE.Vector3())
+  const size = box.getSize(new THREE.Vector3())
+  const span = Math.max(size.x, size.y, size.z, 4)
+  return { center, span }
 }
 
 function journeyMovementSpan(row: DecisionMapRow) {
@@ -715,6 +744,21 @@ function ThreeDecisionMap({
     let pointerDownX = 0
     let pointerDownY = 0
     let didDrag = false
+    let cameraTarget = new THREE.Vector3(0, 0, 3)
+    const findRowForTicker = (ticker?: string) => rows.find(row => row.ticker === ticker)
+    const frameTickerPath = (ticker?: string) => {
+      const row = findRowForTicker(ticker)
+      if (!row) {
+        cameraTarget = new THREE.Vector3(0, 0, 3)
+        stateRef.current.radius = 18
+        updateCamera()
+        return
+      }
+      const frame = pathFrame(row)
+      cameraTarget = frame.center
+      stateRef.current.radius = clamp(frame.span * 1.85 + 7.5, 10, 26)
+      updateCamera()
+    }
     const setClampedTooltip = (clientX: number, clientY: number, row: DecisionMapRow) => {
       const rect = renderer.domElement.getBoundingClientRect()
       const width = Math.min(430, Math.max(320, rect.width - 24))
@@ -838,10 +882,10 @@ function ThreeDecisionMap({
     const updateCamera = () => {
       const s = stateRef.current
       const radius = s.radius / Math.max(0.7, zoom)
-      camera.position.x = radius * Math.sin(s.phi) * Math.cos(s.theta)
-      camera.position.y = radius * Math.cos(s.phi)
-      camera.position.z = radius * Math.sin(s.phi) * Math.sin(s.theta)
-      camera.lookAt(0, 0, 3)
+      camera.position.x = cameraTarget.x + radius * Math.sin(s.phi) * Math.cos(s.theta)
+      camera.position.y = cameraTarget.y + radius * Math.cos(s.phi)
+      camera.position.z = cameraTarget.z + radius * Math.sin(s.phi) * Math.sin(s.theta)
+      camera.lookAt(cameraTarget)
     }
     const applySelectionStyle = () => {
       const currentSelectedTicker = selectedTickerRef.current
@@ -969,21 +1013,27 @@ function ThreeDecisionMap({
     stateRef.current.phi = 1.12
     stateRef.current.radius = 18
     resize()
-    updateCamera()
+    frameTickerPath(selectedTickerRef.current)
     trailApiRef.current = {
       show: (ticker: string) => {
         selectedTickerRef.current = ticker
         applySelectionStyle()
         const selectedMesh = meshes.find(mesh => mesh.userData.row?.ticker === ticker)
         if (selectedMesh) showTrail(selectedMesh.userData.row, selectedMesh)
+        frameTickerPath(ticker)
       },
       clear: () => {
         selectedTickerRef.current = ''
         clearTrail()
         applySelectionStyle()
+        frameTickerPath('')
       },
     }
     applySelectionStyle()
+    if (selectedTickerRef.current) {
+      const selectedMesh = meshes.find(mesh => mesh.userData.row?.ticker === selectedTickerRef.current)
+      if (selectedMesh) showTrail(selectedMesh.userData.row, selectedMesh)
+    }
     render()
 
     const observer = new ResizeObserver(resize)
