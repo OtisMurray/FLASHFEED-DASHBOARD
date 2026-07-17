@@ -11,7 +11,7 @@ export function RSIChart({ data }: Props) {
     if (!containerRef.current || data.length === 0) return
 
     let disposed = false
-    import('lightweight-charts').then(({ createChart, ColorType, LineSeries }) => {
+    import('lightweight-charts').then(({ createChart, ColorType }) => {
       if (disposed || !containerRef.current) return
 
       if (chartRef.current) { chartRef.current.remove(); chartRef.current = null }
@@ -26,13 +26,13 @@ export function RSIChart({ data }: Props) {
       })
       chartRef.current = chart
 
-      const series = chart.addSeries(LineSeries, { color: '#8b5cf6', lineWidth: 2 })
+      const series = chart.addLineSeries({ color: '#8b5cf6', lineWidth: 2 })
       series.setData(data as any)
 
       // Overbought/oversold lines
-      const ob = chart.addSeries(LineSeries, { color: 'rgba(239, 68, 68, 0.4)', lineWidth: 1, lineStyle: 2 })
+      const ob = chart.addLineSeries({ color: 'rgba(239, 68, 68, 0.4)', lineWidth: 1, lineStyle: 2 })
       ob.setData(data.map(d => ({ time: d.time, value: 70 })) as any)
-      const os = chart.addSeries(LineSeries, { color: 'rgba(16, 185, 129, 0.4)', lineWidth: 1, lineStyle: 2 })
+      const os = chart.addLineSeries({ color: 'rgba(16, 185, 129, 0.4)', lineWidth: 1, lineStyle: 2 })
       os.setData(data.map(d => ({ time: d.time, value: 30 })) as any)
 
       chart.timeScale().fitContent()

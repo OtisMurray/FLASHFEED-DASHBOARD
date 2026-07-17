@@ -5,11 +5,6 @@ import {
   CrosshairMode,
   LineStyle,
   createChart,
-  AreaSeries,
-  CandlestickSeries,
-  LineSeries,
-  HistogramSeries,
-  createSeriesMarkers,
 } from 'lightweight-charts'
 
 interface Candle { time: string | number; open: number; high: number; low: number; close: number; volume?: number }
@@ -251,7 +246,7 @@ export function CandlestickChart({
     const priceColor = chartStyle === 'line' ? '#22c7a4' : trendColor
 
     const priceSeries = chartStyle === 'candles'
-      ? chart.addSeries(CandlestickSeries, {
+      ? chart.addCandlestickSeries({
           upColor: '#10b981',
           downColor: '#ef4444',
           borderUpColor: '#10b981',
@@ -259,7 +254,7 @@ export function CandlestickChart({
           wickUpColor: '#10b981',
           wickDownColor: '#ef4444',
         })
-      : chart.addSeries(AreaSeries, {
+      : chart.addAreaSeries({
           lineColor: priceColor,
           topColor: 'rgba(34, 199, 164, 0.16)',
           bottomColor: 'rgba(17, 185, 129, 0)',
@@ -286,7 +281,7 @@ export function CandlestickChart({
           : 'rgba(239, 68, 68, 0.32)',
       }))
     if (volumeData.length) {
-      const volumeSeries = chart.addSeries(HistogramSeries, {
+      const volumeSeries = chart.addHistogramSeries({
         priceScaleId: 'volume',
         priceFormat: { type: 'volume' },
         priceLineVisible: false,
@@ -303,7 +298,7 @@ export function CandlestickChart({
       .filter(point => Number.isFinite(point.value))
 
     if (showBollinger && upper.length) {
-      chart.addSeries(LineSeries, {
+      chart.addLineSeries({
         color: 'rgba(139, 92, 246, 0.55)',
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
@@ -313,7 +308,7 @@ export function CandlestickChart({
     }
 
     if (showBollinger && lower.length) {
-      chart.addSeries(LineSeries, {
+      chart.addLineSeries({
         color: 'rgba(139, 92, 246, 0.55)',
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
@@ -326,7 +321,7 @@ export function CandlestickChart({
     const predictionData = normalizeSeries(predicted, point => ({ value: finiteNumber(point.value, NaN) }))
       .filter(point => Number.isFinite(point.value))
     if (showPrediction && predictionData.length) {
-      chart.addSeries(LineSeries, {
+      chart.addLineSeries({
         color: '#f59e0b',
         lineWidth: 2,
         lineStyle: LineStyle.Dashed,
@@ -347,7 +342,7 @@ export function CandlestickChart({
       }))
         .filter(point => Number.isFinite(point.value))
       if (densityData.length) {
-        chart.addSeries(LineSeries, {
+        chart.addLineSeries({
           color: '#FF9800',
           lineWidth: 2,
           priceLineVisible: false,
@@ -365,7 +360,7 @@ export function CandlestickChart({
       }))
         .filter(point => Number.isFinite(point.value))
       if (sentimentData.length) {
-        chart.addSeries(LineSeries, {
+        chart.addLineSeries({
           color: '#4CAF50',
           lineWidth: 2,
           priceLineVisible: false,
@@ -388,7 +383,7 @@ export function CandlestickChart({
         return { value: evidenceBandValue(percent, priceMin, priceMax) }
       }).filter(point => Number.isFinite(point.value))
       if (watcherData.length >= 2) {
-        chart.addSeries(LineSeries, {
+        chart.addLineSeries({
           color: '#60a5fa',
           lineWidth: 2,
           priceLineVisible: false,
@@ -417,7 +412,7 @@ export function CandlestickChart({
     ].sort((a, b) => Number(a.time) - Number(b.time))
     const chartMarkers = groupedMarkers(rawMarkers, candleData as Array<{ time: unknown }>)
     if (chartMarkers.length) {
-      createSeriesMarkers(priceSeries, chartMarkers)
+      priceSeries.setMarkers(chartMarkers as any)
     }
 
     chart.timeScale().fitContent()

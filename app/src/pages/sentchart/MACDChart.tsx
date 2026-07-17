@@ -17,7 +17,7 @@ export function MACDChart({ data }: Props) {
     if (!containerRef.current || !data || data.macd.length === 0) return
 
     let disposed = false
-    import('lightweight-charts').then(({ createChart, ColorType, LineSeries, HistogramSeries }) => {
+    import('lightweight-charts').then(({ createChart, ColorType }) => {
       if (disposed || !containerRef.current) return
 
       if (chartRef.current) { chartRef.current.remove(); chartRef.current = null }
@@ -33,15 +33,15 @@ export function MACDChart({ data }: Props) {
       chartRef.current = chart
 
       // MACD line
-      const macdSeries = chart.addSeries(LineSeries, { color: '#0ea5e9', lineWidth: 2 })
+      const macdSeries = chart.addLineSeries({ color: '#0ea5e9', lineWidth: 2 })
       macdSeries.setData(data.macd as any)
 
       // Signal line
-      const signalSeries = chart.addSeries(LineSeries, { color: '#f97316', lineWidth: 2 })
+      const signalSeries = chart.addLineSeries({ color: '#f97316', lineWidth: 2 })
       signalSeries.setData(data.signal as any)
 
       // Histogram
-      const histSeries = chart.addSeries(HistogramSeries, {
+      const histSeries = chart.addHistogramSeries({
         color: '#334155',
       })
       histSeries.setData(data.histogram.map(h => ({

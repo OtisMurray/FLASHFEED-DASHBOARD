@@ -29,7 +29,7 @@ export function CandlestickChart({ candles, bollinger, densityOverlay, sentiment
     if (!containerRef.current || candles.length === 0) return
 
     let disposed = false
-    import('lightweight-charts').then(({ createChart, ColorType, CrosshairMode, CandlestickSeries, LineSeries, createSeriesMarkers }) => {
+    import('lightweight-charts').then(({ createChart, ColorType, CrosshairMode }) => {
       if (disposed || !containerRef.current) return
 
       // Clear previous chart
@@ -56,7 +56,7 @@ export function CandlestickChart({ candles, bollinger, densityOverlay, sentiment
       })
       chartRef.current = chart
 
-      const candleSeries = chart.addSeries(CandlestickSeries, {
+      const candleSeries = chart.addCandlestickSeries({
         upColor: '#10b981',
         downColor: '#ef4444',
         borderUpColor: '#10b981',
@@ -68,14 +68,14 @@ export function CandlestickChart({ candles, bollinger, densityOverlay, sentiment
 
       // Bollinger bands
       if (bollinger) {
-        const upperSeries = chart.addSeries(LineSeries, {
+        const upperSeries = chart.addLineSeries({
           color: 'rgba(139, 92, 246, 0.5)',
           lineWidth: 1,
           lineStyle: 2,
         })
         upperSeries.setData(bollinger.upper as any)
 
-        const lowerSeries = chart.addSeries(LineSeries, {
+        const lowerSeries = chart.addLineSeries({
           color: 'rgba(139, 92, 246, 0.5)',
           lineWidth: 1,
           lineStyle: 2,
@@ -86,7 +86,7 @@ export function CandlestickChart({ candles, bollinger, densityOverlay, sentiment
       // Density overlay (msgs/min, smoothed) — orange, lower band, own scale so
       // its magnitude never distorts the price axis.
       if (densityOverlay && densityOverlay.length) {
-        const dens = chart.addSeries(LineSeries, {
+        const dens = chart.addLineSeries({
           color: '#FF9800', lineWidth: 2, priceScaleId: 'density',
           priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
         })
@@ -96,7 +96,7 @@ export function CandlestickChart({ candles, bollinger, densityOverlay, sentiment
 
       // Sentiment overlay (−1..+1, 15-min smoothed) — green, own scale.
       if (sentimentOverlay && sentimentOverlay.length) {
-        const sent = chart.addSeries(LineSeries, {
+        const sent = chart.addLineSeries({
           color: '#4CAF50', lineWidth: 2, priceScaleId: 'sentiment',
           priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
         })
@@ -104,8 +104,7 @@ export function CandlestickChart({ candles, bollinger, densityOverlay, sentiment
         chart.priceScale('sentiment').applyOptions({ scaleMargins: { top: 0.05, bottom: 0.72 } })
       }
 
-      // Strategy indicator — v5 series markers (createSeriesMarkers primitive;
-      // v4's series.setMarkers was removed). Entry = green up-arrow below the bar,
+      // Strategy indicator. Entry = green up-arrow below the bar,
       // exit = red down-arrow above the bar. Markers must be in ascending time.
       if (strategyMarkers && strategyMarkers.length) {
         const mk = [...strategyMarkers]
@@ -113,7 +112,7 @@ export function CandlestickChart({ candles, bollinger, densityOverlay, sentiment
           .map(m => m.type === 'entry'
             ? { time: m.time as any, position: 'belowBar' as const, color: '#10b981', shape: 'arrowUp' as const }
             : { time: m.time as any, position: 'aboveBar' as const, color: '#ef4444', shape: 'arrowDown' as const })
-        createSeriesMarkers(candleSeries, mk)
+        candleSeries.setMarkers(mk as any)
       }
 
       chart.timeScale().fitContent()
