@@ -100,6 +100,9 @@ services:
       MONGODB_DB: ${MONGODB_DB:-feedflash}
       MONGO_SERVER_SELECTION_TIMEOUT_MS: ${MONGO_SERVER_SELECTION_TIMEOUT_MS:-3000}
       REDIS_URL: redis://redis:6379/0
+      # Entry/exit screeners join Mongo quote rows with the chart-service's
+      # batch endpoints (/api/sentchart/corr/batch, /api/sentchart/positions/batch).
+      CHART_SERVICE_URL: http://chart-service:5050
       FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-${FINVIZ_TOKEN:-}}
       FINVIZ_TOKEN: ${FINVIZ_TOKEN:-${FINVIZ_AUTH_TOKEN:-}}
       FINVIZ_COOKIE: ${FINVIZ_COOKIE:-}
@@ -312,6 +315,37 @@ services:
         condition: service_healthy
     environment:
       NEWS_SOURCE_GUARD_INTERVAL_SEC: ${NEWS_SOURCE_GUARD_INTERVAL_SEC:-120}
+
+
+  # flashfeed sentchart chart-data service (chart-service). Candles (Finviz
+  # 1-min OHLC + RSI/MACD/Bollinger) + live density/sentiment overlays
+  # (StockTwits walk + its OWN Mongo store). Flask on :5050.
+  chart-service:
+    build:
+      context: .
+      dockerfile: chart-service/Dockerfile
+    container_name: feedflash-chart-service
+    restart: unless-stopped
+    ports:
+      - "5050:5050"
+    environment:
+      PORT: 5050
+      FINVIZ_TOKEN: ${FINVIZ_TOKEN:-}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      # Target this compose's mongo service (not localhost, which would fall
+      # back to in-memory). Use chart-service's OWN db/collection so it stays
+      # decoupled from feedflash's other Mongo usage.
+      MONGO_URI: ${MONGODB_URI:-mongodb://mongo:27017}
+      MONGO_DB: ${MONGO_DB:-flashfeed}
+      MONGO_COLL: ${MONGO_COLL:-social_history}
+      # TradingView login (owner's paid account) — real overnight 20:00-04:00
+      # prices via Blue Ocean on the 24-h chart. Optional: without them the
+      # chart falls back to the dashed prior-close carry overnight.
+      TV_USERNAME: ${TV_USERNAME:-}
+      TV_PASSWORD: ${TV_PASSWORD:-}
+    depends_on:
+      mongo:
+        condition: service_healthy
 
 
 volumes:

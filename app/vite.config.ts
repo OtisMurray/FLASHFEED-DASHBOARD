@@ -11,6 +11,8 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      // flashfeed chart-service (Flask). Dev :5055; compose targets chart-service:5050.
+      '/api/sentchart': 'http://localhost:5055',
       '/api': 'http://localhost:3001',
     },
   },
