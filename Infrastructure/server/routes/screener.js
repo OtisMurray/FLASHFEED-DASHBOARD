@@ -3643,6 +3643,26 @@ function positiveCurrentMover(row = {}) {
   return change != null && change > 0
 }
 
+function developingCandidateMovementOrCatalystOk(row = {}, riskFlags = [], blockedReasons = []) {
+  if (positiveCurrentMover(row)) return true
+  const level = String(row.prediction_readiness_level || row.prediction_readiness?.level || '').toLowerCase()
+  const reaction = row.catalyst_reaction_summary || row.prediction_readiness?.reaction || {}
+  const reactionState = String(reaction.first_reaction_state || '').toLowerCase()
+  const reactionLabel = String(reaction.label || '').toLowerCase()
+  const pendingOpen = row.pending_open_confirmation || {}
+  const freshTrigger = row.fresh_prediction_trigger || {}
+  const blocked = new Set([...(riskFlags || []), ...(blockedReasons || [])])
+  if (blocked.has('REJECTED_CATALYST_QUALITY') || blocked.has('PENDING_OPEN_WEAK_CATALYST_QUALITY')) return false
+  return Boolean(
+    pendingOpen.passes ||
+    freshTrigger.freshNewsCatalyst ||
+    level === 'fresh_catalyst_pending_open' ||
+    level === 'fresh_catalyst_candidate' ||
+    reactionState === 'pending_market_open' ||
+    reactionLabel.includes('pending')
+  )
+}
+
 function isActionablePredictionRow(row = {}) {
   const direction = String(row.predictedDirection || row.prediction_direction || row.prediction?.predictedDirection || '').toLowerCase()
   const predicted = nullableNumber(row.predictedReturnPct ?? row.predicted_return ?? row.prediction?.predictedReturn)
@@ -5391,6 +5411,9 @@ router.get('/', async (req, res) => {
           rank: index + 1,
         }))
       const activeSocialRows = peopleRows.filter(row => Number(row.message_count || 0) > 0 || Number(row.stocktwits_message_count || 0) > 0)
+      // If the fast people-only path is too sparse, continue into the full
+      // catalyst-aware pipeline so pending/unreacted news setups are not hidden.
+      if (peopleRows.length >= Math.min(5, requestedLimit)) {
       const db = mongoose.connection.db
       const [modelDoc, postmortemReport] = db
         ? await Promise.all([
@@ -5526,6 +5549,7 @@ router.get('/', async (req, res) => {
         excluded: ['fallback rows are not strict high conviction', 'OTC', 'crypto', 'unpriced/article-only rows', 'non-US exchanges'],
         max_abs_change_pct: MAX_SIGNAL_CHANGE_PCT,
       })
+      }
     }
 
     if (predictionView && mongoose.connection.db) {
@@ -5750,18 +5774,36 @@ router.get('/', async (req, res) => {
             const riskFlags = Array.isArray(row.risk_flags) ? row.risk_flags : []
             const blockedReasons = Array.isArray(row.prediction_blocked_reasons) ? row.prediction_blocked_reasons : []
             const score = Number(row.final_prediction_score ?? row.convictionScore ?? row.watchScore ?? row.watch_score ?? row.evidence_score ?? 0)
-            return score >= PREDICTION_DEVELOPING_CANDIDATE_MIN_SCORE &&
-              positiveCurrentMover(row) &&
+            const movementOrPendingCatalyst = developingCandidateMovementOrCatalystOk(row, riskFlags, blockedReasons)
+            const allowPendingCatalystWithoutPeople = movementOrPendingCatalyst && !positiveCurrentMover(row)
+            const change = nullableNumber(row.currentChangePct ?? row.change_pct)
+            const pendingCatalystScoreFloor = allowPendingCatalystWithoutPeople ? Math.max(35, PREDICTION_DEVELOPING_CANDIDATE_MIN_SCORE - 8) : PREDICTION_DEVELOPING_CANDIDATE_MIN_SCORE
+            const catalystQualityTier = String(row.catalyst_quality_tier || row.catalyst_quality?.tier || '').toLowerCase()
+            const strongPendingCatalyst = allowPendingCatalystWithoutPeople && (catalystQualityTier === 'strong' || row.pending_open_confirmation?.passes === true)
+            const notAlreadySellingOff = !allowPendingCatalystWithoutPeople || change == null || change >= -2
+            return (score >= pendingCatalystScoreFloor || strongPendingCatalyst) &&
+              notAlreadySellingOff &&
+              movementOrPendingCatalyst &&
               !catalystReactionExhausted(row) &&
               !riskFlags.includes('REJECTED_CATALYST_QUALITY') &&
               !riskFlags.includes('PENDING_OPEN_WEAK_CATALYST_QUALITY') &&
-              !riskFlags.includes('STALE_NEWS_WITHOUT_CURRENT_PEOPLE_ATTENTION') &&
-              !riskFlags.includes('NO_CURRENT_PEOPLE_OR_MESSAGE_ATTENTION') &&
-              !riskFlags.includes('STALE_NEWS_NEEDS_CURRENT_PEOPLE_ATTENTION') &&
+              (!riskFlags.includes('STALE_NEWS_WITHOUT_CURRENT_PEOPLE_ATTENTION') || allowPendingCatalystWithoutPeople) &&
+              (!riskFlags.includes('NO_CURRENT_PEOPLE_OR_MESSAGE_ATTENTION') || allowPendingCatalystWithoutPeople) &&
+              (!riskFlags.includes('STALE_NEWS_NEEDS_CURRENT_PEOPLE_ATTENTION') || allowPendingCatalystWithoutPeople) &&
               !blockedReasons.includes('PENDING_OPEN_WEAK_CATALYST_QUALITY') &&
               !blockedReasons.includes('PENDING_OPEN_UNRECOGNIZED_SOURCE') &&
-              !blockedReasons.includes('NO_CURRENT_PEOPLE_OR_MESSAGE_ATTENTION') &&
-              !blockedReasons.includes('STALE_NEWS_NEEDS_CURRENT_PEOPLE_ATTENTION')
+              (!blockedReasons.includes('NO_CURRENT_PEOPLE_OR_MESSAGE_ATTENTION') || allowPendingCatalystWithoutPeople) &&
+              (!blockedReasons.includes('STALE_NEWS_NEEDS_CURRENT_PEOPLE_ATTENTION') || allowPendingCatalystWithoutPeople)
+          })
+          .sort((a, b) => {
+            const positiveDiff = Number(positiveCurrentMover(b)) - Number(positiveCurrentMover(a))
+            if (positiveDiff !== 0) return positiveDiff
+            const displayDiff = predictionDisplayPriority(b) - predictionDisplayPriority(a)
+            if (displayDiff !== 0) return displayDiff
+            const scoreDiff = Number(b.final_prediction_score ?? b.convictionScore ?? b.watchScore ?? b.watch_score ?? b.evidence_score ?? 0) -
+              Number(a.final_prediction_score ?? a.convictionScore ?? a.watchScore ?? a.watch_score ?? a.evidence_score ?? 0)
+            if (scoreDiff !== 0) return scoreDiff
+            return Number(b.rel_volume || 0) - Number(a.rel_volume || 0)
           })
           .slice(0, candidatePoolTarget)
           .map((row, index) => ({
