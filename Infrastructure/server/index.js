@@ -64,6 +64,22 @@ const TRACKED_MARKETS = [
 const MAX_SIGNAL_CHANGE_PCT = Math.max(10, Number(process.env.MAX_SIGNAL_CHANGE_PCT || 300))
 const PRIVATE_TRACKED_TICKERS = new Set(['SPACEX'])
 const MIN_LIVE_MODEL_CONFIDENCE = Math.max(0, Math.min(1, Number(process.env.MIN_LIVE_MODEL_CONFIDENCE || 0.05)))
+const WATCHER_SNAPSHOT_ENABLED = !['0', 'false', 'no'].includes(String(process.env.WATCHER_SNAPSHOT_ENABLED || 'true').toLowerCase())
+const WATCHER_SNAPSHOT_INTERVAL_MS = Math.max(5 * 60_000, Number(process.env.WATCHER_SNAPSHOT_INTERVAL_MS || 10 * 60_000))
+const WATCHER_SNAPSHOT_MIN_TICKER_INTERVAL_SEC = Math.max(5 * 60, Number(process.env.WATCHER_SNAPSHOT_MIN_TICKER_INTERVAL_SEC || 20 * 60))
+const WATCHER_SNAPSHOT_BATCH_SIZE = Math.max(1, Math.min(75, Number(process.env.WATCHER_SNAPSHOT_BATCH_SIZE || 25)))
+const WATCHER_SNAPSHOT_REQUEST_DELAY_MS = Math.max(0, Number(process.env.WATCHER_SNAPSHOT_REQUEST_DELAY_MS || 650))
+const WATCHER_SNAPSHOT_TOP_MOVER_POOL = Math.max(WATCHER_SNAPSHOT_BATCH_SIZE, Math.min(250, Number(process.env.WATCHER_SNAPSHOT_TOP_MOVER_POOL || 100)))
+const watcherSnapshotStatus = {
+  enabled: WATCHER_SNAPSHOT_ENABLED,
+  running: false,
+  lastStartedAt: null,
+  lastFinishedAt: null,
+  lastError: null,
+  lastTickers: [],
+  lastCaptured: 0,
+  lastSkippedRecent: 0,
+}
 
 // ── Middleware ────────────────────────────────────────────
 const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174')
@@ -1985,6 +2001,32 @@ function mergeMoverContext(row, articleRow, socialRow) {
   }
 }
 
+async function loadLatestMoverWatcherSnapshots(db, tickers = []) {
+  if (!db || !Array.isArray(tickers) || !tickers.length) return new Map()
+  const nowSec = Math.floor(Date.now() / 1000)
+  const sinceSec = nowSec - 72 * 60 * 60
+  try {
+    const docs = await db.collection('stocktwits_watcher_snapshots')
+      .find({
+        ticker: { $in: tickers },
+        fetched_sec: { $gte: sinceSec },
+      }, {
+        projection: { _id: 0, ticker: 1, fetched_sec: 1, watcher_count: 1, source: 1 },
+      })
+      .sort({ fetched_sec: -1 })
+      .toArray()
+    const latest = new Map()
+    for (const doc of docs) {
+      const ticker = String(doc.ticker || '').toUpperCase()
+      if (!ticker || latest.has(ticker)) continue
+      latest.set(ticker, doc)
+    }
+    return latest
+  } catch (_) {
+    return new Map()
+  }
+}
+
 function isoFromSec(sec) {
   const value = Number(sec || 0)
   return Number.isFinite(value) && value > 0 ? new Date(value * 1000).toISOString() : null
@@ -3868,11 +3910,56 @@ app.get("/api/finviz/movers", async (req, res) => {
 
     const limit = Math.max(1, Math.min(100, Number(req.query.limit || 30)))
     const movers = await loadPositiveFinvizMoverRows(db, limit)
-    const articleMap = await loadArticleStatsForTickers(db, movers.map(row => row.ticker), Number(req.query.days || 2))
-    const socialMap = await loadSocialStatsForTickers(db, movers.map(row => row.ticker), Number(req.query.window_minutes || 1440))
-    const tickers = movers.map(row => mergeMoverContext(row, articleMap.get(row.ticker), socialMap.get(row.ticker)))
+    const [articleMap, socialMap, watcherMap, sourceStatus] = await Promise.all([
+      loadArticleStatsForTickers(db, movers.map(row => row.ticker), Number(req.query.days || 2)),
+      loadSocialStatsForTickers(db, movers.map(row => row.ticker), Number(req.query.window_minutes || 1440)),
+      loadLatestMoverWatcherSnapshots(db, movers.map(row => row.ticker)),
+      db.collection('source_status').findOne(
+        { source: 'Finviz Elite Screener' },
+        { projection: { _id: 0, source: 1, status: 1, detail: 1, count: 1, last_checked_at: 1, last_success_at: 1, source_type: 1 } },
+      ).catch(() => null),
+    ])
+    const tickers = movers.map(row => {
+      const merged = mergeMoverContext(row, articleMap.get(row.ticker), socialMap.get(row.ticker))
+      const watcher = watcherMap.get(String(row.ticker || '').toUpperCase())
+      if (!watcher || !Number.isFinite(Number(watcher.watcher_count))) {
+        return {
+          ...merged,
+          watcher_snapshot_age_seconds: null,
+          watcher_snapshot_source: null,
+          watcher_feature: {
+            status: 'missing_or_expired',
+            source: null,
+            snapshot_sec: null,
+            age_seconds: null,
+            missing_behavior: 'not used as a score or catalyst',
+          },
+        }
+      }
+      const snapshotSec = Number(watcher.fetched_sec || 0)
+      return {
+        ...merged,
+        stocktwits_watcher_count: Number(watcher.watcher_count),
+        watcher_snapshot_age_seconds: Math.max(0, Math.floor(Date.now() / 1000) - snapshotSec),
+        watcher_snapshot_source: watcher.source || 'stocktwits_watcher_snapshots',
+        watcher_feature: {
+          status: 'fresh',
+          source: watcher.source || 'stocktwits_watcher_snapshots',
+          snapshot_sec: snapshotSec,
+          age_seconds: Math.max(0, Math.floor(Date.now() / 1000) - snapshotSec),
+          definition: 'current StockTwits watchlist-count snapshot; not watcher growth',
+          missing_behavior: 'not used as a score or catalyst',
+        },
+      }
+    })
 
-    res.json({ ok: true, source: "Finviz Elite top movers", tickers, count: tickers.length })
+    res.json({
+      ok: true,
+      source: "Finviz Elite top movers",
+      finviz_status: sourceStatus || null,
+      tickers,
+      count: tickers.length,
+    })
   } catch (err) {
     res.status(500).json({ ok: false, tickers: [], error: String(err.message || err) })
   }
@@ -4695,6 +4782,135 @@ async function chartWatcherSeries(db, ticker, windowMinutes, options = {}) {
   }
 }
 
+function sleepMs(ms) {
+  return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms || 0))))
+}
+
+async function recordNodeSourceStatus(db, source, status, { detail = '', count = 0, sourceType = 'internal_monitor', metadata = {} } = {}) {
+  if (!db || !source) return
+  const now = new Date()
+  await db.collection('source_status').updateOne(
+    { source },
+    {
+      $set: {
+        source,
+        status,
+        detail: String(detail || '').slice(0, 500),
+        count: Number(count || 0),
+        source_type: sourceType,
+        last_checked_at: now,
+        ...(String(status || '').startsWith('working') ? { last_success_at: now } : {}),
+        metadata,
+      },
+      $inc: { checks: 1 },
+      $setOnInsert: { created_at: now },
+    },
+    { upsert: true },
+  ).catch(() => null)
+}
+
+async function watcherSnapshotCandidateTickers(db, limit = WATCHER_SNAPSHOT_BATCH_SIZE) {
+  const nowSec = Math.floor(Date.now() / 1000)
+  const recentCutoff = nowSec - WATCHER_SNAPSHOT_MIN_TICKER_INTERVAL_SEC
+  const poolLimit = Math.max(limit, WATCHER_SNAPSHOT_TOP_MOVER_POOL)
+  const rows = await db.collection('screeners').find({
+    quote_source: 'finviz_elite_screener',
+    finviz_status: { $ne: 'dropped' },
+    ticker: { $type: 'string' },
+    price: { $gt: 0 },
+    change_pct: { $gt: 0 },
+  }, {
+    projection: { _id: 0, ticker: 1, change_pct: 1, rel_volume: 1, volume: 1, finviz_seen_at: 1, quote_updated_at: 1 },
+  }).sort({ change_pct: -1, rel_volume: -1, volume: -1 }).limit(poolLimit).toArray().catch(() => [])
+
+  const tickers = Array.from(new Set(rows.map(row => String(row.ticker || '').toUpperCase()).filter(ticker => /^[A-Z][A-Z0-9.-]{0,7}$/.test(ticker)))).slice(0, poolLimit)
+  if (!tickers.length) return { tickers: [], skippedRecent: 0 }
+
+  const recentRows = await db.collection('stocktwits_watcher_snapshots').aggregate([
+    { $match: { ticker: { $in: tickers }, fetched_sec: { $gte: recentCutoff } } },
+    { $group: { _id: '$ticker', fetched_sec: { $max: '$fetched_sec' } } },
+  ]).toArray().catch(() => [])
+  const recent = new Set(recentRows.map(row => String(row._id || '').toUpperCase()))
+  const due = tickers.filter(ticker => !recent.has(ticker)).slice(0, limit)
+  return { tickers: due, skippedRecent: recent.size }
+}
+
+async function runWatcherSnapshotCycle(reason = 'scheduled') {
+  if (!WATCHER_SNAPSHOT_ENABLED) return watcherSnapshotStatus
+  if (watcherSnapshotStatus.running) return watcherSnapshotStatus
+  const db = mongoose.connection.db
+  if (!db) return watcherSnapshotStatus
+
+  watcherSnapshotStatus.running = true
+  watcherSnapshotStatus.lastStartedAt = new Date().toISOString()
+  watcherSnapshotStatus.lastError = null
+  let captured = 0
+  let candidates = []
+  let skippedRecent = 0
+  try {
+    const candidateResult = await watcherSnapshotCandidateTickers(db)
+    candidates = candidateResult.tickers
+    skippedRecent = candidateResult.skippedRecent
+    for (const ticker of candidates) {
+      try {
+        const fetched = await fetchStocktwitsWatcherCount(ticker)
+        if (fetched?.watcher_count != null) {
+          const nowSec = Math.floor(Date.now() / 1000)
+          await db.collection('stocktwits_watcher_snapshots').insertOne({
+            ...fetched,
+            fetched_at: new Date(nowSec * 1000),
+            fetched_sec: nowSec,
+            collector: 'server_active_mover_watcher_sampler_v1',
+            reason,
+          })
+          captured += 1
+        }
+      } catch (err) {
+        watcherSnapshotStatus.lastError = `${ticker}: ${String(err.message || err).slice(0, 120)}`
+      }
+      if (WATCHER_SNAPSHOT_REQUEST_DELAY_MS) await sleepMs(WATCHER_SNAPSHOT_REQUEST_DELAY_MS)
+    }
+    await recordNodeSourceStatus(db, 'StockTwits Watcher Snapshots', captured ? 'working' : 'ready_no_rows_yet', {
+      detail: captured
+        ? `Captured ${captured}/${candidates.length} active-mover watcher snapshots`
+        : `No due active-mover watcher snapshots; ${skippedRecent} tickers were recently sampled`,
+      count: captured,
+      sourceType: 'social_watchers',
+      metadata: {
+        reason,
+        batch_size: WATCHER_SNAPSHOT_BATCH_SIZE,
+        skipped_recent: skippedRecent,
+        tickers: candidates,
+      },
+    })
+  } catch (err) {
+    watcherSnapshotStatus.lastError = String(err.message || err)
+    await recordNodeSourceStatus(db, 'StockTwits Watcher Snapshots', 'error', {
+      detail: watcherSnapshotStatus.lastError,
+      count: captured,
+      sourceType: 'social_watchers',
+    })
+  } finally {
+    watcherSnapshotStatus.running = false
+    watcherSnapshotStatus.lastFinishedAt = new Date().toISOString()
+    watcherSnapshotStatus.lastTickers = candidates
+    watcherSnapshotStatus.lastCaptured = captured
+    watcherSnapshotStatus.lastSkippedRecent = skippedRecent
+  }
+  return watcherSnapshotStatus
+}
+
+function startWatcherSnapshotScheduler() {
+  if (!WATCHER_SNAPSHOT_ENABLED) {
+    console.log('  Watchers → snapshot scheduler disabled')
+    return
+  }
+  setTimeout(() => runWatcherSnapshotCycle('startup').catch(() => {}), 20_000).unref?.()
+  const timer = setInterval(() => runWatcherSnapshotCycle('scheduled').catch(() => {}), WATCHER_SNAPSHOT_INTERVAL_MS)
+  if (timer.unref) timer.unref()
+  console.log(`  Watchers → snapshot scheduler enabled (${Math.round(WATCHER_SNAPSHOT_INTERVAL_MS / 60000)} min, ${WATCHER_SNAPSHOT_BATCH_SIZE}/cycle)`)
+}
+
 async function chartSocialSeries(db, ticker, windowMinutes, bucketMinutes, options = {}) {
   const requestedStart = timestampSeconds(options.startSec || options.start_sec)
   const requestedEnd = timestampSeconds(options.endSec || options.end_sec)
@@ -5012,6 +5228,36 @@ app.get("/api/chart/watchers", async (req, res) => {
     })
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) })
+  }
+})
+
+app.get("/api/chart/watchers/status", async (_req, res) => {
+  try {
+    const db = mongoose.connection.db
+    const latest = db
+      ? await db.collection('stocktwits_watcher_snapshots')
+          .findOne({}, { sort: { fetched_sec: -1 }, projection: { _id: 0, ticker: 1, fetched_sec: 1, watcher_count: 1, collector: 1, source: 1 } })
+          .catch(() => null)
+      : null
+    res.json({
+      ok: true,
+      ...watcherSnapshotStatus,
+      interval_ms: WATCHER_SNAPSHOT_INTERVAL_MS,
+      min_ticker_interval_sec: WATCHER_SNAPSHOT_MIN_TICKER_INTERVAL_SEC,
+      batch_size: WATCHER_SNAPSHOT_BATCH_SIZE,
+      latest_snapshot: latest,
+    })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) })
+  }
+})
+
+app.post("/api/chart/watchers/run", async (_req, res) => {
+  try {
+    const status = await runWatcherSnapshotCycle('manual_api')
+    res.json({ ok: true, ...status })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) })
   }
 })
 
@@ -6559,12 +6805,16 @@ async function ensureRuntimeIndexes() {
     db.collection("prediction_signals").createIndex({ "labels.return_15m.label_source": 1, signal_sec: -1 }),
     db.collection("prediction_signals").createIndex({ "labels.return_60m.label_source": 1, signal_sec: -1 }),
     db.collection("prediction_models").createIndex({ model_id: 1, updated_at: -1 }),
+    db.collection("stocktwits_watcher_snapshots").createIndex({ ticker: 1, fetched_sec: -1 }),
+    db.collection("stocktwits_watcher_snapshots").createIndex({ fetched_sec: -1 }),
+    db.collection("source_status").createIndex({ source: 1 }, { unique: true }),
   ])
 }
 
 async function start() {
   await connectDB()
   await ensureRuntimeIndexes()
+  startWatcherSnapshotScheduler()
 
   // Shared guard so the heavy data-refresh cycle never runs twice at once
   // (double Run Now clicks, or Run Now firing while the auto-grabber is mid-cycle).
