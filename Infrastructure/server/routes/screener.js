@@ -5537,6 +5537,348 @@ function applySignalFilter(rows = [], signal = '', query = {}) {
   return rows
 }
 
+function auditIsoTimestamp(value) {
+  const sec = timestampSeconds(value)
+  return sec ? new Date(sec * 1000).toISOString() : null
+}
+
+function auditTickerValues(article = {}) {
+  const fields = [
+    ['ticker', article.ticker],
+    ['tickers', article.tickers],
+    ['matched_ticker', article.matched_ticker],
+    ['matched_tickers', article.matched_tickers],
+    ['matched_mover_tickers', article.matched_mover_tickers],
+    ['symbols', article.symbols],
+  ]
+  const values = []
+  for (const [field, raw] of fields) {
+    const entries = Array.isArray(raw) ? raw : String(raw || '').split(/[;,|\s]+/)
+    for (const entry of entries) {
+      const value = String(entry || '').replace(/^\$/, '').trim().toUpperCase()
+      if (value) values.push({ field, value })
+    }
+  }
+  return values
+}
+
+function auditArticleMatch(article = {}, row = {}) {
+  const ticker = String(row.ticker || '').toUpperCase()
+  const tickerValues = auditTickerValues(article)
+  const exactFields = tickerValues.filter(item => item.value === ticker).map(item => item.field)
+  const title = String(article.title || article.headline || article.summary || article.description || '')
+  const companyMatch = catalystMentionsTickerOrCompany(row, title)
+  const reasons = exactFields.map(field => `exact_${field}_match`)
+  if (!exactFields.length && companyMatch) reasons.push('company_name_in_headline_or_summary')
+  return {
+    matched: reasons.length > 0,
+    reasons,
+    ticker_fields: exactFields,
+    company_name_match: companyMatch,
+    match_confidence: exactFields.length ? 'direct' : companyMatch ? 'company_text' : 'none',
+  }
+}
+
+async function loadCatalystAuditArticles(db, row = {}, days = 7, selectedCatalysts = []) {
+  if (!db || !row.ticker) return []
+  const ticker = String(row.ticker).toUpperCase()
+  const companyTokens = companySignalTokens(row).filter(token => token.length >= 5).slice(0, 2)
+  const escapedTicker = ticker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const or = [
+    { ticker: { $regex: `(^|[,;|\\s])\\$?${escapedTicker}([,;|\\s]|$)`, $options: 'i' } },
+    { tickers: ticker },
+    { matched_ticker: ticker },
+    { matched_tickers: ticker },
+    { matched_mover_tickers: ticker },
+    { symbols: ticker },
+  ]
+  for (const token of companyTokens) {
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    or.push({ title: { $regex: escaped, $options: 'i' } })
+    or.push({ headline: { $regex: escaped, $options: 'i' } })
+  }
+  const cutoffSec = Math.floor(Date.now() / 1000) - Math.max(1, Number(days || 7)) * 86_400
+  const docs = await db.collection('articles').find({ $or: or }, {
+    projection: {
+      _id: 1,
+      source: 1,
+      publisher: 1,
+      collector: 1,
+      category: 1,
+      article_kind: 1,
+      event_type: 1,
+      title: 1,
+      headline: 1,
+      summary: 1,
+      description: 1,
+      url: 1,
+      ticker: 1,
+      tickers: 1,
+      matched_ticker: 1,
+      matched_tickers: 1,
+      matched_mover_tickers: 1,
+      symbols: 1,
+      sentiment: 1,
+      sentiment_score: 1,
+      ml_confidence: 1,
+      publish_date: 1,
+      published_at: 1,
+      detected_at: 1,
+      ingestion_time: 1,
+      ingested_at: 1,
+      fetched_date: 1,
+      createdAt: 1,
+      created_at: 1,
+      updated_at: 1,
+      updatedAt: 1,
+      duplicate_cluster_id: 1,
+      canonical_event_id: 1,
+    },
+  }).sort({ publish_date: -1, published_at: -1, detected_at: -1 }).limit(150).toArray().catch(() => [])
+
+  const selectedKeys = new Set((Array.isArray(selectedCatalysts) ? selectedCatalysts : []).map(item => [
+    String(item.url || ''),
+    String(item.title || ''),
+    String(item.event_sec || ''),
+  ].join('|')))
+  return docs.map(article => {
+    const publicationValue = article.publish_date ?? article.published_at
+    const ingestionValue = article.ingestion_time ?? article.ingested_at ?? article.detected_at ?? article.fetched_date ?? article.createdAt ?? article.created_at
+    const publicationSec = timestampSeconds(publicationValue)
+    const ingestionSec = timestampSeconds(ingestionValue)
+    const updateSec = timestampSeconds(article.updated_at ?? article.updatedAt)
+    if (publicationSec != null && publicationSec < cutoffSec) return null
+    const match = auditArticleMatch(article, row)
+    const title = String(article.title || article.headline || article.summary || article.description || '').trim()
+    const eventType = String(article.event_type || article.category || article.article_kind || '').trim().toLowerCase() || null
+    const selected = selectedKeys.has([String(article.url || ''), title, String(publicationSec || '')].join('|'))
+    return {
+      id: article.canonical_event_id || article._id || null,
+      canonical_event_id: article.canonical_event_id || null,
+      duplicate_cluster_id: article.duplicate_cluster_id || null,
+      source: article.source || article.publisher || article.collector || null,
+      collector: article.collector || null,
+      article_kind: article.article_kind || article.category || null,
+      event_type: eventType,
+      headline: title || null,
+      url: article.url || null,
+      publication_timestamp: auditIsoTimestamp(publicationSec),
+      ingestion_timestamp: auditIsoTimestamp(ingestionSec),
+      update_timestamp: auditIsoTimestamp(updateSec),
+      publication_sec: publicationSec,
+      ingestion_sec: ingestionSec,
+      age_minutes: publicationSec == null ? null : Number(Math.max(0, (Date.now() / 1000 - publicationSec) / 60).toFixed(1)),
+      market_session: marketSessionForSec(publicationSec),
+      sentiment: article.sentiment || null,
+      sentiment_score: nullableNumber(article.sentiment_score ?? article.ml_confidence),
+      match,
+      used_by_current_catalyst_aggregate: selected,
+    }
+  }).filter(Boolean)
+}
+
+function catalystAuditFeatureInputs(row = {}, validation = {}, threshold = {}, quality = {}, reaction = {}) {
+  const price = nullableNumber(row.price)
+  const volume = nullableNumber(row.volume)
+  const relVolume = nullableNumber(row.rel_volume)
+  return {
+    quote: {
+      price,
+      change_pct: nullableNumber(row.change_pct),
+      volume,
+      dollar_volume: price != null && volume != null ? Number((price * volume).toFixed(2)) : null,
+      relative_volume: relVolume,
+      quote_source: row.quote_source || null,
+      quote_timestamp: auditIsoTimestamp(row.quote_timestamp ?? row.quote_at ?? row.fetched_at ?? row.updated_at),
+      quote_age_seconds: nullableNumber(row.quote_age_seconds),
+      quote_freshness: row.quote_freshness || null,
+      market_cap: nullableNumber(row.market_cap),
+      market_cap_bucket: row.market_cap_bucket || row.market_cap_tier || null,
+    },
+    catalyst: {
+      article_count: nullableNumber(row.news_article_count) || 0,
+      session_article_count: nullableNumber(row.catalyst_window_article_count) || 0,
+      title: row.main_catalyst?.title || null,
+      category: quality.class || row.main_catalyst?.event_type || null,
+      source: quality.source || row.main_catalyst?.source || null,
+      event_timestamp: auditIsoTimestamp(row.main_catalyst?.event_sec ?? row.latest_publish_sec),
+      event_session: reaction.market_session || null,
+      recognized: Boolean(validation.recognizedNewsCatalyst),
+      direct_and_material: Boolean(validation.materialDirectCatalyst),
+      materiality_score: nullableNumber(quality.company_relative_materiality_score ?? quality.taxonomy?.materiality_score),
+      explosion_potential_score: nullableNumber(quality.explosion_potential_score ?? quality.taxonomy?.explosion_potential_score),
+    },
+    social: {
+      message_count: nullableNumber(row.message_count) || 0,
+      message_density: nullableNumber(row.social_message_density),
+      density_score: nullableNumber(row.message_density_score),
+      density_trend: row.message_density_trend || null,
+      sentiment: nullableNumber(row.social_message_sentiment ?? row.social_sentiment),
+      watcher_count: nullableNumber(row.stocktwits_watcher_count),
+      watcher_age_seconds: nullableNumber(row.watcher_snapshot_age_seconds),
+      watcher_source: row.watcher_snapshot_source || null,
+    },
+    threshold: {
+      tier: threshold.tier || null,
+      window_minutes: threshold.profile?.windowMinutes ?? threshold.windowMinutes ?? null,
+      correlation: threshold.correlation,
+      previous_correlation: threshold.previousCorrelation,
+      threshold_c: threshold.thresholdC,
+      pre_signal_return_60m_pct: threshold.preSignalReturn60mPct,
+      trailing_60m_messages: threshold.trailing60Messages,
+      setup_status: threshold.setupStatus,
+      setup_score: threshold.setupScore,
+      entry_passed: Boolean(threshold.passed),
+    },
+    reaction: {
+      state: reaction.first_reaction_state || reaction.reactionState || null,
+      label: reaction.label || null,
+      latest_return_pct: reaction.latest_return_pct ?? null,
+      runup_pct: reaction.runup_pct ?? null,
+      giveback_pct: reaction.giveback_from_high_pct ?? null,
+      market_had_chance_to_react: Boolean(reaction.market_had_chance_to_react),
+      actionable_spillover: Boolean(reaction.actionable_spillover),
+      exhaustion_risk: Boolean(reaction.exhaustion_risk),
+    },
+  }
+}
+
+// GET /api/screener/audit/:ticker — source-to-decision trace for one ticker.
+// This is intentionally uncached: it is an operator/audit view of current Mongo data.
+router.get('/audit/:ticker', async (req, res) => {
+  try {
+    const ticker = String(req.params.ticker || '').trim().toUpperCase()
+    if (!/^[A-Z][A-Z0-9.-]{0,5}$/.test(ticker) || NON_STOCK_TICKERS.has(ticker)) {
+      return res.status(400).json({ ok: false, error: 'invalid US stock ticker' })
+    }
+    const db = mongoose.connection.db
+    if (!db) return res.status(503).json({ ok: false, error: 'MongoDB is not connected' })
+    const days = Math.max(1, Math.min(14, Number(req.query.days || 7)))
+    const sessionContext = marketSessionContext()
+    const quoteDoc = await Screener.findOne({ ticker }).lean().catch(() => null)
+    if (!quoteDoc) return res.status(404).json({ ok: false, ticker, error: 'ticker not found in screener universe' })
+    const baseRow = normalizeScreenerRow(quoteDoc)
+    const [articleMap, socialMap, shortMap, watcherMap] = await Promise.all([
+      loadArticleStatsForTickers(db, [ticker], days, sessionContext),
+      loadAdaptiveSocialStatsForRows(db, [baseRow]),
+      loadShortInterestSnapshots(db, [ticker]),
+      loadStocktwitsWatcherSnapshots(db, [ticker]),
+    ])
+    const enriched = attachWatcherSqueezeEvidence(
+      attachShortInterestEvidence(
+        enrichScreenerRow(baseRow, articleMap.get(ticker), socialMap.get(ticker)),
+        shortMap.get(ticker),
+      ),
+      watcherMap.get(ticker),
+    )
+    const catalystText = enriched.main_catalyst?.title || enriched.catalyst_summary || ''
+    const setupStatus = enriched.threshold_setup_status || evaluatePredictionEntryThreshold(enriched).setupStatus
+    const context = {
+      catalystText,
+      news: Number(enriched.news_article_count || 0),
+      social: Number(enriched.message_count || 0),
+      sentiment: Number(enriched.avg_sentiment || 0),
+      change: nullableNumber(enriched.change_pct),
+      relVolume: nullableNumber(enriched.rel_volume),
+      catalystPower: nullableNumber(enriched.catalyst_power_score) || 0,
+      squeezeScore: nullableNumber(enriched.short_squeeze_score) || 0,
+      watcherCount: nullableNumber(enriched.stocktwits_watcher_count) || 0,
+      floatShort: nullableNumber(enriched.float_short),
+      setupStatus,
+    }
+    const threshold = evaluatePredictionEntryThreshold(enriched)
+    const validation = predictionEvidenceValidation(enriched, context)
+    const reactionState = predictionCatalystReactionState(enriched, threshold, validation, {
+      change: context.change,
+      setupStatus,
+      sessionContext,
+      priceReaction: enriched.catalyst_price_reaction || null,
+    })
+    const reaction = catalystReactionSummary(reactionState)
+    const quality = catalystQualityAssessment(enriched, validation, context)
+    const readiness = predictionReadinessState(enriched, validation, {
+      freshDensityCross: Boolean(threshold.passed),
+      freshNewsCatalyst: Boolean(validation.recognizedNewsCatalyst),
+      passesHighConviction: false,
+      passesRawPrediction: false,
+      payoffPasses: null,
+      blockedReasons: reaction.rejection ? [reaction.rejection] : [],
+    }, reactionState)
+    const tracedRow = {
+      ...enriched,
+      prediction_validation: validation,
+      catalyst_reaction_summary: reaction,
+      catalyst_quality: quality,
+      prediction_readiness: readiness,
+      prediction_readiness_level: readiness.level,
+    }
+    const scorecard = buildPredictionScorecard(tracedRow)
+    const classification = withPredictionSetupClassification(tracedRow)
+    const articles = await loadCatalystAuditArticles(db, enriched, days, enriched.catalysts)
+    const rejectionReasons = Array.from(new Set([
+      ...hardRejectionReasonsForRow(tracedRow),
+      ...(Array.isArray(readiness.blocked_reasons) ? readiness.blocked_reasons : []),
+      ...(validation.valid ? [] : ['PREDICTION_EVIDENCE_VALIDATION_FAILED']),
+    ].filter(Boolean)))
+    const status = hasPrimaryPredictionCatalyst(validation, tracedRow)
+      ? reaction.rejection ? 'rejected_priced_or_faded' : 'strict_catalyst_candidate'
+      : hasDevelopingCatalystEvidence(tracedRow)
+        ? 'developing_catalyst_candidate'
+        : 'watch_only_or_rejected'
+    return res.json({
+      ok: true,
+      ticker,
+      generated_at: new Date().toISOString(),
+      window_days: days,
+      session_context: sessionContext,
+      selection_status: status,
+      rejection_reasons: rejectionReasons,
+      trace: {
+        quote: {
+          ticker,
+          company: enriched.company || null,
+          exchange: enriched.exchange || null,
+          source: enriched.quote_source || null,
+          fetched_at: auditIsoTimestamp(enriched.fetched_at ?? enriched.updated_at),
+        },
+        articles,
+        features: catalystAuditFeatureInputs(enriched, validation, threshold, quality, reaction),
+        catalyst: {
+          main: enriched.main_catalyst || null,
+          taxonomy: quality.taxonomy || null,
+          quality,
+          validation,
+          reaction,
+        },
+        threshold,
+        readiness,
+        classification: {
+          catalyst_label: classification.catalyst_label || null,
+          catalyst_direction: classification.catalyst_direction || null,
+          setup_type: classification.setup_type || null,
+          discovery_tier: classification.discovery_tier || null,
+          reason: classification.reason_included || classification.catalystReason || null,
+        },
+        scorecard,
+        score_contributions: {
+          catalyst_quality: {
+            base_score: quality.taxonomy?.base_score ?? null,
+            materiality: quality.taxonomy?.materiality_score ?? null,
+            directness: quality.taxonomy?.directness_score ?? null,
+            source: quality.taxonomy?.source_score ?? quality.source_score ?? null,
+            simplicity: quality.taxonomy?.simplicity_score ?? null,
+            explosion_potential: quality.taxonomy?.explosion_potential_score ?? null,
+            hard_rejection_reason: quality.hard_rejection_reason || null,
+          },
+          prediction_scorecard: scorecard,
+        },
+      },
+    })
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err.message || err) })
+  }
+})
+
 // GET /api/screener
 router.get('/', async (req, res) => {
   try {
