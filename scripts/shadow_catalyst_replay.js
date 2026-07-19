@@ -22,20 +22,26 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(n) ? n : fallback
 }
 
-function eventSec(doc = {}) {
-  const value = doc.published_at || doc.publishedAt || doc.publish_time || doc.pubDate || doc.date || doc.created_at || doc.detected_at || doc.ingested_at
+function timestampSec(value) {
   if (value instanceof Date) return Math.floor(value.getTime() / 1000)
   if (typeof value === 'number') return value > 1e12 ? Math.floor(value / 1000) : Math.floor(value)
   const parsed = Date.parse(String(value || ''))
   return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0
 }
 
+function eventSec(doc = {}) {
+  return timestampSec(
+    doc.event_sec || doc.publish_sec || doc.publish_date || doc.published_at || doc.publishedAt ||
+    doc.publish_time || doc.pubDate || doc.date || doc.created_at || doc.detected_sec ||
+    doc.detected_at || doc.ingested_sec || doc.ingested_at,
+  )
+}
+
 function ingestSec(doc = {}) {
-  const value = doc.detected_at || doc.ingested_at || doc.created_at || doc.updated_at || doc.first_seen_at
-  if (value instanceof Date) return Math.floor(value.getTime() / 1000)
-  if (typeof value === 'number') return value > 1e12 ? Math.floor(value / 1000) : Math.floor(value)
-  const parsed = Date.parse(String(value || ''))
-  return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0
+  return timestampSec(
+    doc.ingested_sec || doc.detected_sec || doc.fetched_at || doc.fetched_date || doc.detected_at ||
+    doc.ingested_at || doc.created_at || doc.updated_at || doc.first_seen_at,
+  )
 }
 
 function iso(sec) {
@@ -331,9 +337,18 @@ function summarizeOutcomes(rows = []) {
 }
 
 function articleTickers(doc = {}) {
-  const raw = doc.tickers || doc.symbols || doc.related_tickers || doc.matched_tickers || doc.ticker || doc.symbol || ''
-  const list = Array.isArray(raw) ? raw : String(raw).split(/[,\s]+/)
-  return [...new Set(list.map(v => String(v || '').trim().toUpperCase()).filter(Boolean))]
+  const rawValues = [
+    doc.tickers,
+    doc.tickers_mentioned,
+    doc.symbols,
+    doc.related_tickers,
+    doc.matched_tickers,
+    doc.matched_mover_tickers,
+    doc.ticker,
+    doc.symbol,
+  ]
+  const list = rawValues.flatMap(raw => Array.isArray(raw) ? raw : String(raw || '').split(/[,;|\s]+/))
+  return [...new Set(list.map(v => String(v || '').replace(/^\$/, '').trim().toUpperCase()).filter(Boolean))]
 }
 
 function textOf(doc = {}) {
@@ -422,6 +437,10 @@ function classifyCatalyst(doc = {}, screener = {}) {
 
 async function articlesForTicker(db, ticker, sinceSec, asOfSec) {
   const re = new RegExp(`(^|[,\\s])${ticker}([,\\s]|$)`, 'i')
+  const sinceDate = new Date(sinceSec * 1000)
+  const asOfDate = new Date(asOfSec * 1000)
+  const numericRange = { $gte: sinceSec, $lte: asOfSec }
+  const dateRange = { $gte: sinceDate, $lte: asOfDate }
   const rows = await db.collection('articles').find({
     $and: [
       {
@@ -429,18 +448,35 @@ async function articlesForTicker(db, ticker, sinceSec, asOfSec) {
           { ticker },
           { symbol: ticker },
           { tickers: ticker },
+          { tickers_mentioned: ticker },
           { symbols: ticker },
           { related_tickers: ticker },
+          { matched_tickers: ticker },
+          { matched_mover_tickers: ticker },
           { ticker: re },
         ],
       },
+      {
+        $or: [
+          { event_sec: numericRange },
+          { publish_sec: numericRange },
+          { publish_date: numericRange },
+          { publish_date: dateRange },
+          { detected_sec: numericRange },
+          { ingested_sec: numericRange },
+          { fetched_date: numericRange },
+          { fetched_date: dateRange },
+          { created_at: dateRange },
+        ],
+      },
     ],
-  }).sort({ published_at: 1, detected_at: 1 }).limit(200).toArray()
+  }).limit(2000).toArray()
   return rows.filter(doc => {
     const pub = eventSec(doc)
     const ing = ingestSec(doc) || pub
-    return (pub || ing) >= sinceSec && (pub || ing) <= asOfSec && ing <= asOfSec
-  })
+    const availability = Math.max(pub || 0, ing || 0)
+    return availability >= sinceSec && availability <= asOfSec
+  }).sort((a, b) => Math.max(eventSec(a), ingestSec(a)) - Math.max(eventSec(b), ingestSec(b)))
 }
 
 async function latestSignal(db, ticker, sinceSec, asOfSec) {
@@ -455,14 +491,17 @@ async function latestSignal(db, ticker, sinceSec, asOfSec) {
 
 function summarizeArticle(doc, screener) {
   const pub = eventSec(doc)
-  const ing = ingestSec(doc)
+  const ing = ingestSec(doc) || pub
   const taxonomy = classifyCatalyst(doc, screener)
+  const availability = Math.max(pub || 0, ing || 0)
   return {
     title: doc.title || doc.headline || null,
     source: doc.source || doc.publisher || doc.feed || null,
     url: doc.url || doc.link || null,
     published_at: iso(pub),
     ingested_at: iso(ing),
+    availability_sec: availability || null,
+    available_at: iso(availability),
     ingestion_latency_min: pub && ing ? Number(((ing - pub) / 60).toFixed(1)) : null,
     tickers: articleTickers(doc),
     event_type: doc.event_type || doc.catalyst_category || doc.category || null,
@@ -473,7 +512,8 @@ function summarizeArticle(doc, screener) {
 }
 
 function capTier(screener = {}) {
-  const cap = toNumber(screener.market_cap ?? screener.marketCap, 0)
+  const rawCap = toNumber(screener.market_cap ?? screener.marketCap, 0)
+  const cap = rawCap > 0 && rawCap < 1_000_000 ? rawCap * 1_000_000 : rawCap
   if (cap >= 200_000_000_000) return 'Mega'
   if (cap >= 10_000_000_000) return 'Large'
   if (cap >= 2_000_000_000) return 'Mid'
@@ -500,10 +540,154 @@ function shadowDecision(best, screener = {}) {
   return 'would_reject_or_watch: insufficient_early_confirmation_for_catalyst'
 }
 
+function normalizedMoverRow(row = {}, snapshotSec = 0) {
+  const ticker = String(row.ticker || row.symbol || '').trim().toUpperCase()
+  const price = toNumber(row.price ?? row.close, 0)
+  const volume = toNumber(row.volume, 0)
+  const rawMarketCap = toNumber(row.market_cap ?? row.marketCap, 0)
+  return {
+    ticker,
+    company: row.company || row.name || null,
+    exchange: row.exchange || null,
+    price,
+    change_pct: toNumber(row.change_pct ?? row.change, 0),
+    premarket_change_pct: row.premarket_change_pct ?? null,
+    postmarket_change_pct: row.postmarket_change_pct ?? null,
+    rel_volume: row.rel_volume ?? row.relative_volume ?? null,
+    volume,
+    dollar_volume: price * volume,
+    market_cap: rawMarketCap > 0 && rawMarketCap < 1_000_000 ? rawMarketCap * 1_000_000 : rawMarketCap || null,
+    rank: row.rank ?? null,
+    snapshot_sec: Number(snapshotSec || row.snapshot_sec || 0),
+    snapshot_at: iso(Number(snapshotSec || row.snapshot_sec || 0)),
+  }
+}
+
+async function historicalMoverSnapshots(db, sinceSec, asOfSec) {
+  return db.collection('finviz_momentum_snapshots').find({
+    snapshot_sec: { $gte: sinceSec, $lte: asOfSec },
+    rows: { $type: 'array', $ne: [] },
+  }, {
+    projection: { _id: 0, snapshot_sec: 1, snapshot_at: 1, source: 1, rows: 1 },
+  }).sort({ snapshot_sec: 1 }).limit(6000).toArray()
+}
+
+function buildMoverHistories(snapshots = []) {
+  const histories = new Map()
+  for (const snapshot of snapshots) {
+    const snapshotSec = toNumber(snapshot.snapshot_sec, 0)
+    for (const raw of Array.isArray(snapshot.rows) ? snapshot.rows : []) {
+      const row = normalizedMoverRow(raw, snapshotSec)
+      if (!row.ticker || !row.snapshot_sec) continue
+      if (!histories.has(row.ticker)) histories.set(row.ticker, [])
+      histories.get(row.ticker).push(row)
+    }
+  }
+  for (const rows of histories.values()) rows.sort((a, b) => a.snapshot_sec - b.snapshot_sec)
+  return histories
+}
+
+function bestAvailableCatalyst(articles = [], cutoffSec = Infinity) {
+  return articles
+    .filter(article => Number(article.availability_sec || 0) > 0 && Number(article.availability_sec) <= cutoffSec)
+    .sort((a, b) => {
+      const aRejected = a.taxonomy?.rejection ? 1 : 0
+      const bRejected = b.taxonomy?.rejection ? 1 : 0
+      if (aRejected !== bRejected) return aRejected - bRejected
+      const scoreDiff = Number(b.taxonomy?.score || 0) - Number(a.taxonomy?.score || 0)
+      if (scoreDiff !== 0) return scoreDiff
+      return Number(b.availability_sec || 0) - Number(a.availability_sec || 0)
+    })[0] || null
+}
+
+function percentile(values = [], ratio = 0.5) {
+  const sorted = values.map(Number).filter(Number.isFinite).sort((a, b) => a - b)
+  if (!sorted.length) return null
+  const index = Math.max(0, Math.min(sorted.length - 1, Math.ceil(sorted.length * ratio) - 1))
+  return Number(sorted[index].toFixed(2))
+}
+
+function sourceLatencySummary(rows = []) {
+  const groups = new Map()
+  for (const row of rows) {
+    const article = row.best_catalyst || row.best_shadow_catalyst
+    if (!article?.source) continue
+    const key = String(article.source)
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(article)
+  }
+  return [...groups.entries()].map(([source, articles]) => {
+    const latencies = articles.map(article => Number(article.ingestion_latency_min)).filter(Number.isFinite)
+    return {
+      source,
+      articles: articles.length,
+      latency_samples: latencies.length,
+      median_ingestion_latency_min: percentile(latencies, 0.5),
+      p90_ingestion_latency_min: percentile(latencies, 0.9),
+      max_ingestion_latency_min: latencies.length ? Number(Math.max(...latencies).toFixed(2)) : null,
+      negative_latency_rows: latencies.filter(value => value < 0).length,
+    }
+  }).sort((a, b) => b.articles - a.articles || a.source.localeCompare(b.source))
+}
+
+function stateFromSignal(signal = {}, ticker = '') {
+  if (!signal) return null
+  const features = signal.features || {}
+  return {
+    ticker,
+    company: signal.company || null,
+    exchange: signal.exchange || null,
+    price: toNumber(signal.entry_price ?? features.price, 0),
+    change_pct: toNumber(features.change_pct, 0),
+    rel_volume: features.rel_volume ?? null,
+    volume: features.volume ?? null,
+    market_cap: features.market_cap ?? null,
+    social_message_count: features.social_count ?? null,
+    state_source: 'prediction_signal_feature_snapshot',
+    state_sec: toNumber(signal.signal_sec, 0),
+  }
+}
+
+function signalCaptureState(signal = null) {
+  if (!signal) return { pipeline: false, high_watch: false, recommendation: false }
+  const decision = String(signal.decision || signal.trade_watch?.decision || '').trim().toLowerCase()
+  const entryStatus = String(signal.entry_signal?.status || '').trim().toLowerCase()
+  return {
+    pipeline: true,
+    high_watch: decision.includes('high watch') || decision.includes('trade ready') || decision.includes('high conviction'),
+    recommendation: Boolean(
+      signal.entry_signal?.entry_ready === true ||
+      decision.includes('trade ready') ||
+      decision.includes('recommended') ||
+      decision.includes('high conviction') ||
+      entryStatus === 'entry_ready'
+    ),
+  }
+}
+
+function captureMetrics(rows = []) {
+  const predictable = rows.filter(row => row.group === 'predictable_catalyst_opportunity')
+  const pipelineCaptured = predictable.filter(row => row.pipeline_signal_before_major_move)
+  const highWatchCaptured = predictable.filter(row => row.high_watch_before_major_move)
+  const recommended = predictable.filter(row => row.recommendation_before_major_move)
+  const newlyCapturable = predictable.filter(row => !row.recommendation_before_major_move)
+  return {
+    legitimate_major_movers: rows.filter(row => row.group !== 'unpredictable_or_invalid_mover').length,
+    predictable_catalyst_opportunities: predictable.length,
+    pipeline_signals_before_major_move: pipelineCaptured.length,
+    high_watch_detections_before_major_move: highWatchCaptured.length,
+    recommendations_before_major_move: recommended.length,
+    newly_capturable_missed_movers: newlyCapturable.length,
+    pipeline_recall_of_predictable_movers: predictable.length ? Number((pipelineCaptured.length / predictable.length).toFixed(3)) : null,
+    recommendation_recall_of_predictable_movers: predictable.length ? Number((recommended.length / predictable.length).toFixed(3)) : null,
+    newly_capturable_tickers: newlyCapturable.map(row => row.ticker),
+  }
+}
+
 async function main() {
   const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI || argValue('mongo', 'mongodb://localhost:27017/feedflash')
-  const asOfSec = Math.floor(Date.parse(argValue('asOf', new Date().toISOString())) / 1000)
-  const sinceSec = Math.floor(Date.parse(argValue('since', new Date((asOfSec * 1000) - 36 * 3600 * 1000).toISOString())) / 1000)
+  const requestedAsOf = argValue('asOf', '')
+  const requestedSince = argValue('since', '')
   const tickers = argValue('tickers', 'ADUR,TAK,IPGP,CACI,WSE').split(',').map(v => v.trim().toUpperCase()).filter(Boolean)
   const minPrice = toNumber(argValue('minPrice', '0.5'), 0.5)
   const minVolume = toNumber(argValue('minVolume', '100000'), 100000)
@@ -516,12 +700,34 @@ async function main() {
   const hydrateRange = argValue('hydrateRange', '5d')
   const hydrateInterval = argValue('hydrateInterval', '1m')
   const staleOhlcMinutes = Math.max(1, toNumber(argValue('staleOhlcMinutes', '30'), 30))
+  const persistReport = ['1', 'true', 'yes'].includes(String(argValue('persist', '1')).toLowerCase())
+  const reportId = String(argValue('reportId', 'latest_catalyst_missed_mover_replay')).trim() || 'latest_catalyst_missed_mover_replay'
 
   await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 10000 })
   const db = mongoose.connection.db
+  const latestSnapshot = await db.collection('finviz_momentum_snapshots').findOne(
+    { snapshot_sec: { $type: 'number' }, rows: { $type: 'array', $ne: [] } },
+    { sort: { snapshot_sec: -1 }, projection: { _id: 0, snapshot_sec: 1, snapshot_at: 1 } },
+  )
+  const parsedAsOf = timestampSec(requestedAsOf)
+  const asOfSec = parsedAsOf || toNumber(latestSnapshot?.snapshot_sec, Math.floor(Date.now() / 1000))
+  const parsedSince = timestampSec(requestedSince)
+  const sinceSec = parsedSince || asOfSec - 36 * 3600
+  if (!asOfSec || sinceSec >= asOfSec) throw new Error('Replay requires a valid --asOf after --since')
 
-  const screenerRows = await db.collection('screeners').find({}).toArray()
-  const screenerByTicker = new Map(screenerRows.map(row => [String(row.ticker || row.symbol || '').toUpperCase(), row]))
+  const [snapshots, currentScreenerRows] = await Promise.all([
+    historicalMoverSnapshots(db, sinceSec, asOfSec),
+    db.collection('screeners').find({}, {
+      projection: {
+        ticker: 1, symbol: 1, company: 1, name: 1, exchange: 1, price: 1, close: 1,
+        change_pct: 1, change: 1, premarket_change_pct: 1, postmarket_change_pct: 1,
+        rel_volume: 1, relative_volume: 1, volume: 1, market_cap: 1, marketCap: 1,
+        quote_updated_at: 1, quote_updated_iso: 1,
+      },
+    }).toArray(),
+  ])
+  const moverHistories = buildMoverHistories(snapshots)
+  const currentScreenerByTicker = new Map(currentScreenerRows.map(row => [String(row.ticker || row.symbol || '').toUpperCase(), row]))
   const ohlcCache = new Map()
   const hydrateDiagnostics = {
     enabled: hydrateOhlc,
@@ -577,15 +783,27 @@ async function main() {
 
   const traces = []
   for (const ticker of tickers) {
-    const screener = screenerByTicker.get(ticker) || {}
-    const articles = await articlesForTicker(db, ticker, sinceSec, asOfSec)
+    const history = moverHistories.get(ticker) || []
+    const historicalState = history.at(-1) || null
     const signal = await latestSignal(db, ticker, sinceSec, asOfSec)
+    const signalState = stateFromSignal(signal, ticker)
+    const currentFallback = currentScreenerByTicker.get(ticker) || null
+    const screener = historicalState || signalState || currentFallback || {}
+    const stateSource = historicalState
+      ? 'historical_finviz_mover_snapshot'
+      : signalState
+        ? 'prediction_signal_feature_snapshot'
+        : currentFallback
+          ? 'current_screener_fallback_noncausal_context_only'
+          : 'missing'
+    const articles = await articlesForTicker(db, ticker, sinceSec, asOfSec)
     const summarized = articles.map(doc => summarizeArticle(doc, screener))
-    const best = summarized.slice().sort((a, b) => (b.taxonomy.score || 0) - (a.taxonomy.score || 0))[0] || null
+    const best = bestAvailableCatalyst(summarized, asOfSec)
     const candles = await candlesFor(ticker)
     const outcome = outcomeFromCandles(best, candles, { asOfSec, horizonMinutes })
     traces.push({
       ticker,
+      state_source: stateSource,
       screener: {
         company: screener.company || screener.name || null,
         exchange: screener.exchange || null,
@@ -613,55 +831,83 @@ async function main() {
     })
   }
 
-  const movers = screenerRows
-    .map(row => {
-      const ticker = String(row.ticker || row.symbol || '').toUpperCase()
-      const price = toNumber(row.price ?? row.close, 0)
-      const change = toNumber(row.change_pct ?? row.change, 0)
-      const volume = toNumber(row.volume, 0)
-      return {
+  const movers = [...moverHistories.entries()]
+    .map(([ticker, history]) => {
+      const peak = history.reduce((best, row) => Number(row.change_pct) > Number(best.change_pct) ? row : best, history[0])
+      const firstMajor = history.find(row => Number(row.change_pct) >= minMove) || null
+      const latest = history.at(-1) || peak
+      return firstMajor ? {
+        ...peak,
         ticker,
-        company: row.company || row.name || null,
-        price,
-        change_pct: change,
-        premarket_change_pct: row.premarket_change_pct ?? null,
-        postmarket_change_pct: row.postmarket_change_pct ?? null,
-        rel_volume: row.rel_volume ?? row.relative_volume ?? null,
-        volume,
-        dollar_volume: price * volume,
-        market_cap: row.market_cap ?? row.marketCap ?? null,
-        exchange: row.exchange || null,
-      }
+        change_pct: peak.change_pct,
+        peak_change_pct: peak.change_pct,
+        first_major_move_sec: firstMajor.snapshot_sec,
+        first_major_move_at: firstMajor.snapshot_at,
+        first_major_change_pct: firstMajor.change_pct,
+        first_major_state: firstMajor,
+        peak_move_sec: peak.snapshot_sec,
+        peak_move_at: peak.snapshot_at,
+        as_of_change_pct: latest.change_pct,
+        snapshots_observed: history.length,
+      } : null
     })
-    .filter(row => row.ticker && row.price >= minPrice && row.volume >= minVolume && row.dollar_volume >= minDollarVolume && row.change_pct >= minMove)
-    .sort((a, b) => b.change_pct - a.change_pct)
+    .filter(Boolean)
+    .filter(row => row.ticker && row.price >= minPrice && row.volume >= minVolume && row.dollar_volume >= minDollarVolume && row.peak_change_pct >= minMove)
+    .sort((a, b) => b.peak_change_pct - a.peak_change_pct)
     .slice(0, limit)
 
   const missed = []
   for (const mover of movers) {
-    const screener = screenerByTicker.get(mover.ticker) || {}
+    const screener = mover.first_major_state || mover
     const articles = await articlesForTicker(db, mover.ticker, sinceSec, asOfSec)
     const summarized = articles.map(doc => summarizeArticle(doc, screener))
-    const best = summarized.slice().sort((a, b) => (b.taxonomy.score || 0) - (a.taxonomy.score || 0))[0] || null
+    const bestBeforeMajorMove = bestAvailableCatalyst(summarized, mover.first_major_move_sec)
+    const best = bestBeforeMajorMove || bestAvailableCatalyst(summarized, asOfSec)
+    const signalBeforeMajorMove = await latestSignal(db, mover.ticker, sinceSec, mover.first_major_move_sec - 1)
     const candles = await candlesFor(mover.ticker)
     const outcome = outcomeFromCandles(best, candles, { asOfSec, horizonMinutes })
     let group = 'unpredictable_or_invalid_mover'
     let failure_stage = 'source_coverage_no_timely_direct_article'
-    const decision = shadowDecision(best, screener)
-    if (decision === 'would_keep_or_promote_for_confirmation') {
+    const decision = shadowDecision(bestBeforeMajorMove, screener)
+    const captureState = signalCaptureState(signalBeforeMajorMove)
+    if (bestBeforeMajorMove && decision === 'would_keep_or_promote_for_confirmation') {
       group = 'predictable_catalyst_opportunity'
-      failure_stage = 'ranking_or_classifier_missed_material_direct_catalyst'
+      failure_stage = captureState.recommendation
+        ? 'recommended_before_major_move'
+        : captureState.high_watch
+          ? 'high_watch_only_not_final_recommendation'
+          : captureState.pipeline
+            ? 'signal_pipeline_only_not_final_recommendation'
+            : 'candidate_generation_or_ranking_no_pre_move_signal'
     } else if (best) {
-      group = ['stale_recap', 'routine_news'].includes(best.taxonomy.rejection) ? 'late_or_partially_catchable_opportunity' : 'unpredictable_or_invalid_mover'
-      failure_stage = best.taxonomy.rejection || decision.replace(/^would_reject_or_watch:\s*/, '') || 'low_materiality_or_confirmation'
+      const catalystWasLate = !bestBeforeMajorMove && Number(best.availability_sec || 0) > mover.first_major_move_sec
+      group = catalystWasLate || ['stale_recap', 'routine_news'].includes(best.taxonomy.rejection)
+        ? 'late_or_partially_catchable_opportunity'
+        : 'unpredictable_or_invalid_mover'
+      failure_stage = catalystWasLate
+        ? 'catalyst_published_or_ingested_after_major_move_began'
+        : best.taxonomy.rejection || decision.replace(/^would_reject_or_watch:\s*/, '') || 'low_materiality_or_confirmation'
     }
     missed.push({
       ...mover,
       best_catalyst: best,
+      best_catalyst_before_major_move: bestBeforeMajorMove,
       outcome,
       group,
       failure_stage,
       articles_found: summarized.length,
+      articles_available_before_major_move: summarized.filter(article => Number(article.availability_sec || 0) <= mover.first_major_move_sec).length,
+      pipeline_signal_before_major_move: captureState.pipeline,
+      high_watch_before_major_move: captureState.high_watch,
+      recommendation_before_major_move: captureState.recommendation,
+      prediction_signal_before_major_move: signalBeforeMajorMove ? {
+        signal_sec: signalBeforeMajorMove.signal_sec || null,
+        signal_at: iso(signalBeforeMajorMove.signal_sec),
+        rank: signalBeforeMajorMove.rank ?? signalBeforeMajorMove.last_rank ?? null,
+        decision: signalBeforeMajorMove.decision || null,
+        source: signalBeforeMajorMove.source || null,
+      } : null,
+      shadow_decision_at_first_major_snapshot: decision,
     })
   }
 
@@ -671,14 +917,43 @@ async function main() {
     return acc
   }, {})
 
+  const capture = captureMetrics(missed)
+  const reportGeneratedAt = new Date()
+  const snapshotSecs = snapshots.map(snapshot => toNumber(snapshot.snapshot_sec, 0)).filter(Boolean)
+  const firstSnapshotSec = snapshotSecs.length ? Math.min(...snapshotSecs) : null
+  const lastSnapshotSec = snapshotSecs.length ? Math.max(...snapshotSecs) : null
+  const failureStageCounts = missed.reduce((acc, row) => {
+    const key = row.failure_stage || 'unknown'
+    acc[key] = (acc[key] || 0) + 1
+    return acc
+  }, {})
+
   const report = {
+    _id: reportId,
+    report_id: reportId,
+    generated_at: reportGeneratedAt,
     as_of: iso(asOfSec),
     since: iso(sinceSec),
     horizon_minutes: horizonMinutes,
-    mode: 'shadow_read_only_no_db_writes',
+    mode: 'causal_shadow_report_no_policy_promotion',
+    persisted: persistReport,
+    mover_snapshot: {
+      snapshots_loaded: snapshots.length,
+      tickers_observed: moverHistories.size,
+      first_snapshot_at: iso(firstSnapshotSec),
+      last_snapshot_at: iso(lastSnapshotSec),
+      latest_available_snapshot_at: iso(toNumber(latestSnapshot?.snapshot_sec, 0)),
+      latest_available_snapshot_age_hours: latestSnapshot?.snapshot_sec
+        ? Number(((Date.now() / 1000 - Number(latestSnapshot.snapshot_sec)) / 3600).toFixed(2))
+        : null,
+      defaulted_to_latest_available_snapshot: !parsedAsOf,
+    },
     five_ticker_trace: traces,
     top_mover_missed_opportunities: missed,
     grouped_counts: Object.fromEntries(Object.entries(grouped).map(([key, rows]) => [key, rows.length])),
+    capture_metrics: capture,
+    source_latency: sourceLatencySummary([...missed, ...traces]),
+    failure_stage_counts: failureStageCounts,
     validation: {
       all_top_movers: summarizeOutcomes(missed),
       predictable_catalyst_opportunities: summarizeOutcomes(grouped.predictable_catalyst_opportunity || []),
@@ -692,19 +967,40 @@ async function main() {
     },
     hydrate_ohlc: hydrateDiagnostics,
     validation_limits: [
-      'Uses stored Mongo articles, current screener rows, and prediction_signals only.',
-      'Does not use future articles beyond --asOf.',
+      'Top-mover selection uses timestamped finviz_momentum_snapshots; current screener rows are context-only fallbacks for the named trace tickers.',
+      'Article availability is max(publication time, ingestion time), and no article available after the historical decision timestamp can influence a decision.',
+      'Prediction capture is counted only when prediction_signals.signal_sec is at or before the first stored major-move snapshot.',
       'OHLC outcomes use only mongo ohlcv_bars available inside the replay window; missing symbols are reported as missing_ohlc, not fabricated.',
       'Signal time is max(publication time, ingestion time); entry is the next real stored OHLC bar after the signal.',
       'When --hydrateOhlc=1 is passed, the script fetches real Yahoo chart OHLC and persists it into Mongo before labeling; hydration is off by default.',
+      'This report is shadow analysis only and cannot promote or replace the active production prediction policy.',
     ],
+  }
+  if (persistReport) {
+    await db.collection('prediction_replay_reports').updateOne(
+      { _id: reportId },
+      { $set: report },
+      { upsert: true },
+    )
+    await db.collection('prediction_replay_reports').createIndex({ generated_at: -1 })
   }
   console.log(JSON.stringify(report, null, 2))
   await mongoose.disconnect()
 }
 
-main().catch(async err => {
-  console.error(err)
-  try { await mongoose.disconnect() } catch (_) {}
-  process.exit(1)
-})
+module.exports = {
+  bestAvailableCatalyst,
+  captureMetrics,
+  eventSec,
+  ingestSec,
+  signalCaptureState,
+  timestampSec,
+}
+
+if (require.main === module) {
+  main().catch(async err => {
+    console.error(err)
+    try { await mongoose.disconnect() } catch (_) {}
+    process.exit(1)
+  })
+}

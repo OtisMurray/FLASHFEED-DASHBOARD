@@ -6194,6 +6194,114 @@ app.get("/api/prediction/signals", async (req, res) => {
   }
 })
 
+const PREDICTION_REPLAY_REPORT_ID = "latest_catalyst_missed_mover_replay"
+let predictionReplayInFlight = null
+
+async function loadLatestPredictionReplay(db) {
+  return db.collection("prediction_replay_reports").findOne(
+    { _id: PREDICTION_REPLAY_REPORT_ID },
+    { projection: { _id: 0 } },
+  ).catch(() => null)
+}
+
+async function runPredictionReplayScript(args = []) {
+  const { execFile } = await import("node:child_process")
+  const sourcePath = path.resolve(process.cwd(), "scripts/shadow_catalyst_replay.js")
+  const scriptPath = "/tmp/flashfeed_shadow_catalyst_replay.cjs"
+  fs.copyFileSync(sourcePath, scriptPath)
+  const mongoUri = process.env.MONGODB_URI || process.env.MONGO_URI || "mongodb://mongo:27017/feedflash"
+  const started = Date.now()
+  return new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      [scriptPath, ...args],
+      {
+        cwd: process.cwd(),
+        timeout: 240000,
+        maxBuffer: 1024 * 1024 * 20,
+        env: {
+          ...process.env,
+          MONGODB_URI: mongoUri,
+          MONGO_URI: mongoUri,
+          MONGO_DB: "feedflash",
+          MONGODB_DB: "feedflash",
+          NODE_PATH: path.resolve(process.cwd(), "node_modules"),
+        },
+      },
+      (error, stdout, stderr) => resolve({
+        ok: !error,
+        stdout: String(stdout || ""),
+        stderr: String(stderr || ""),
+        error: error ? String(error.message || error) : "",
+        ms: Date.now() - started,
+      }),
+    )
+  })
+}
+
+app.get("/api/prediction/replay", async (_req, res) => {
+  try {
+    const db = mongoose.connection.db
+    if (!db) return res.status(503).json({ ok: false, error: "MongoDB is not connected" })
+    const report = await loadLatestPredictionReplay(db)
+    res.json({ ok: true, report })
+  } catch (err) {
+    console.error("GET /api/prediction/replay failed:", err)
+    res.status(500).json({ ok: false, error: String(err.message || err) })
+  }
+})
+
+app.post("/api/prediction/replay/refresh", async (req, res) => {
+  try {
+    const db = mongoose.connection.db
+    if (!db) return res.status(503).json({ ok: false, error: "MongoDB is not connected" })
+
+    const input = { ...(req.query || {}), ...(req.body || {}) }
+    const args = ["--persist", "1", "--reportId", PREDICTION_REPLAY_REPORT_ID]
+    const addDateArg = (name, value) => {
+      if (value && Number.isFinite(Date.parse(String(value)))) args.push(`--${name}`, new Date(String(value)).toISOString())
+    }
+    const addNumberArg = (name, value, min, max) => {
+      const number = Number(value)
+      if (Number.isFinite(number)) args.push(`--${name}`, String(Math.max(min, Math.min(max, number))))
+    }
+    addDateArg("asOf", input.as_of)
+    addDateArg("since", input.since)
+    addNumberArg("minMove", input.min_move, 1, 500)
+    addNumberArg("limit", input.limit, 1, 100)
+    addNumberArg("horizonMinutes", input.horizon_minutes, 5, 10_080)
+
+    const joinedExistingRun = Boolean(predictionReplayInFlight)
+    const activeRun = predictionReplayInFlight || runPredictionReplayScript(args)
+    predictionReplayInFlight = activeRun
+    let run
+    try {
+      run = await activeRun
+    } finally {
+      if (predictionReplayInFlight === activeRun) predictionReplayInFlight = null
+    }
+    if (!run.ok) {
+      return res.status(500).json({
+        ok: false,
+        error: run.error || "Missed-mover replay failed",
+        stderr: String(run.stderr || "").slice(-4000),
+        ms: run.ms,
+      })
+    }
+    const report = await loadLatestPredictionReplay(db)
+    res.json({
+      ok: true,
+      report,
+      ms: run.ms,
+      joined_existing_run: joinedExistingRun,
+      note: "Causal shadow replay refreshed from stored mover snapshots, article availability times, prediction signals, and real Mongo OHLC. Production policy was not changed.",
+    })
+  } catch (err) {
+    console.error("POST /api/prediction/replay/refresh failed:", err)
+    res.status(500).json({ ok: false, error: String(err.message || err) })
+  }
+})
+
 app.get("/api/prediction/audit", async (req, res) => {
   try {
     const db = mongoose.connection.db
@@ -6245,6 +6353,7 @@ app.get("/api/prediction/audit", async (req, res) => {
       pendingMatureCount,
       latestArchive,
       model,
+      missedMoverReplay,
     ] = await Promise.all([
       db.collection("prediction_signals").estimatedDocumentCount().catch(() => 0),
       db.collection("prediction_signals").countDocuments(incompleteWindowFilter).catch(() => 0),
@@ -6424,6 +6533,7 @@ app.get("/api/prediction/audit", async (req, res) => {
         .next()
         .catch(() => null),
       loadLatestPredictionModel(db),
+      loadLatestPredictionReplay(db),
     ])
 
     const metricRow = (row) => ({
@@ -6525,6 +6635,7 @@ app.get("/api/prediction/audit", async (req, res) => {
         source_backtest: PREDICTION_THRESHOLD_POLICY.candidateRule?.sourceBacktest,
         caveat: PREDICTION_THRESHOLD_POLICY.candidateRule?.backtestSummary?.caveat,
       },
+      missed_mover_replay: missedMoverReplay,
     })
   } catch (err) {
     console.error("GET /api/prediction/audit failed:", err)
