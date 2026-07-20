@@ -40,6 +40,75 @@ type AuditRow = {
   audit_quality?: { valid?: boolean; flags?: string[] }
 }
 
+type ReplayArticle = {
+  title?: string | null
+  source?: string | null
+  available_at?: string | null
+  ingestion_latency_min?: number | null
+  taxonomy?: { category?: string; score?: number; rejection?: string | null }
+}
+
+type ReplayRow = {
+  ticker: string
+  company?: string | null
+  peak_change_pct?: number
+  first_major_move_at?: string | null
+  first_major_change_pct?: number
+  group?: string
+  failure_stage?: string
+  pipeline_signal_before_major_move?: boolean
+  high_watch_before_major_move?: boolean
+  recommendation_before_major_move?: boolean
+  best_catalyst?: ReplayArticle | null
+  outcome?: {
+    status?: string
+    max_favorable_excursion_pct?: number | null
+    max_adverse_excursion_pct?: number | null
+  } | null
+}
+
+type ReplayReport = {
+  generated_at?: string
+  as_of?: string | null
+  since?: string | null
+  mode?: string
+  mover_snapshot?: {
+    snapshots_loaded?: number
+    tickers_observed?: number
+    first_snapshot_at?: string | null
+    last_snapshot_at?: string | null
+    latest_available_snapshot_age_hours?: number | null
+  }
+  capture_metrics?: {
+    legitimate_major_movers?: number
+    predictable_catalyst_opportunities?: number
+    pipeline_signals_before_major_move?: number
+    high_watch_detections_before_major_move?: number
+    recommendations_before_major_move?: number
+    newly_capturable_missed_movers?: number
+    pipeline_recall_of_predictable_movers?: number | null
+    recommendation_recall_of_predictable_movers?: number | null
+    newly_capturable_tickers?: string[]
+  }
+  grouped_counts?: Record<string, number>
+  failure_stage_counts?: Record<string, number>
+  source_latency?: Array<{
+    source: string
+    articles: number
+    median_ingestion_latency_min?: number | null
+    p90_ingestion_latency_min?: number | null
+  }>
+  top_mover_missed_opportunities?: ReplayRow[]
+  validation?: {
+    all_top_movers?: {
+      labeled?: number
+      precision_mfe_gt_2pct?: number | null
+      median_mfe_pct?: number | null
+      median_mae_pct?: number | null
+    }
+  }
+}
+
 type AuditData = {
   ok?: boolean
   generated_at?: string
@@ -57,6 +126,7 @@ type AuditData = {
   latest_prediction_archive?: Record<string, unknown>
   model?: Record<string, unknown>
   threshold_policy?: Record<string, unknown>
+  missed_mover_replay?: ReplayReport | null
   error?: string
 }
 
@@ -88,9 +158,9 @@ function timeLabel(value?: string | null) {
 
 function statusTone(value?: string) {
   const s = String(value || '').toLowerCase()
-  if (s.includes('complete') || s.includes('ready') || s.includes('high')) return 'text-emerald-300'
-  if (s.includes('pending') || s.includes('partial') || s.includes('medium')) return 'text-yellow-300'
-  if (s.includes('missing') || s.includes('rejected') || s.includes('low')) return 'text-red-300'
+  if (s.includes('complete') || s.includes('ready') || s.includes('high') || s.includes('predictable')) return 'text-emerald-300'
+  if (s.includes('pending') || s.includes('partial') || s.includes('medium') || s.includes('late')) return 'text-yellow-300'
+  if (s.includes('missing') || s.includes('rejected') || s.includes('low') || s.includes('invalid')) return 'text-red-300'
   return 'text-neutral'
 }
 
@@ -98,6 +168,7 @@ export function PredictionAuditPage() {
   const [days, setDays] = useState(7)
   const [horizon, setHorizon] = useState(60)
   const [refreshing, setRefreshing] = useState(false)
+  const [replaying, setReplaying] = useState(false)
   const [message, setMessage] = useState('')
   const { data, error, isLoading, mutate } = useSWR<AuditData>(`/api/prediction/audit?days=${days}&horizon_minutes=${horizon}&limit=160`, fetcher, {
     refreshInterval: 60_000,
@@ -121,9 +192,36 @@ export function PredictionAuditPage() {
     }
   }
 
+  const runMoverReplay = async () => {
+    if (replaying) return
+    setReplaying(true)
+    setMessage('')
+    try {
+      const res = await fetch('/api/prediction/replay/refresh', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ min_move: 10, limit: 25, horizon_minutes: 1440 }),
+      })
+      const json = await res.json()
+      if (!res.ok || json.ok === false) throw new Error(json.error || `Request failed ${res.status}`)
+      const capture = json.report?.capture_metrics || {}
+      setMessage(`Replay checked ${json.report?.top_mover_missed_opportunities?.length ?? 0} major movers; ${capture.predictable_catalyst_opportunities ?? 0} had timely qualifying catalysts and ${capture.newly_capturable_missed_movers ?? 0} did not reach a final recommendation before the first major-move snapshot. Production policy was unchanged.`)
+      mutate()
+    } catch (err) {
+      setMessage(String((err as Error).message || err))
+    } finally {
+      setReplaying(false)
+    }
+  }
+
   const rows = data?.rows || []
   const quality = data?.data_quality || {}
   const archive = data?.latest_prediction_archive || {}
+  const replay = data?.missed_mover_replay
+  const replayRows = replay?.top_mover_missed_opportunities || []
+  const capture = replay?.capture_metrics || {}
+  const snapshotAgeHours = Number(replay?.mover_snapshot?.latest_available_snapshot_age_hours)
+  const replayIsStale = Number.isFinite(snapshotAgeHours) && snapshotAgeHours > 24
 
   return (
     <div className="space-y-5">
@@ -146,6 +244,9 @@ export function PredictionAuditPage() {
           </select>
           <button onClick={runOutcomeCheck} className="rounded border border-accent/50 bg-accent/10 px-3 py-2 text-xs text-accent hover:bg-accent/20">
             {refreshing ? 'Checking...' : 'Run Outcome Check'}
+          </button>
+          <button onClick={runMoverReplay} className="rounded border border-border bg-surface px-3 py-2 text-xs text-white hover:border-accent/60">
+            {replaying ? 'Replaying...' : 'Run Mover Replay'}
           </button>
         </div>
       </div>
@@ -183,6 +284,93 @@ export function PredictionAuditPage() {
           <MetricList title="By Readiness" rows={data?.summary?.by_readiness || []} />
           <MetricList title="By Label Source" rows={data?.summary?.by_label_source || []} />
         </div>
+      </section>
+
+      <section className="rounded-lg border border-border bg-surface p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="font-semibold text-white">Missed-Mover Causal Replay</h2>
+            <p className="mt-1 text-xs text-neutral">Historical mover snapshots joined to articles only after both publication and ingestion, with pre-move prediction capture checked separately.</p>
+          </div>
+          <div className={clsx('text-right text-xs', replayIsStale ? 'text-yellow-300' : 'text-neutral')}>
+            <div>Replay as of {timeLabel(replay?.as_of)}</div>
+            <div>{replayIsStale ? `Historical snapshot is ${Math.round(snapshotAgeHours)}h old` : `${compact(replay?.mover_snapshot?.snapshots_loaded)} stored snapshots`}</div>
+          </div>
+        </div>
+
+        {replay ? (
+          <>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+              <Metric label="Major Movers" value={compact(replayRows.length)} />
+              <Metric label="Predictable" value={compact(capture.predictable_catalyst_opportunities)} />
+              <Metric label="Reached Pipeline" value={compact(capture.pipeline_signals_before_major_move)} />
+              <Metric label="Final Recommendations" value={compact(capture.recommendations_before_major_move)} />
+              <Metric label="Missed But Catchable" value={compact(capture.newly_capturable_missed_movers)} tone={Number(capture.newly_capturable_missed_movers || 0) ? 'text-yellow-300' : 'text-emerald-300'} />
+              <Metric label="Recommendation Recall" value={pct(capture.recommendation_recall_of_predictable_movers)} />
+              <Metric label="Labeled Outcomes" value={compact(replay.validation?.all_top_movers?.labeled)} detail={`MFE ${ret(replay.validation?.all_top_movers?.median_mfe_pct)} · MAE ${ret(replay.validation?.all_top_movers?.median_mae_pct)}`} />
+            </div>
+
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b border-border text-xs uppercase text-neutral">
+                  <tr>
+                    <th className="py-2 pr-4">Ticker</th>
+                    <th className="py-2 pr-4">Peak</th>
+                    <th className="py-2 pr-4">First Major Move</th>
+                    <th className="py-2 pr-4">Catalyst Evidence</th>
+                    <th className="py-2 pr-4">Classification</th>
+                    <th className="py-2 pr-4">Pipeline Result</th>
+                    <th className="py-2 pr-4">MFE / MAE</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {replayRows.slice(0, 25).map(row => {
+                    const catalyst = row.best_catalyst
+                    return (
+                      <tr key={`${row.ticker}-${row.first_major_move_at || ''}`} className="border-b border-border/60">
+                        <td className="py-2 pr-4">
+                          <div className="font-mono font-semibold text-accent">{row.ticker}</div>
+                          <div className="max-w-[160px] truncate text-[11px] text-neutral">{row.company || ''}</div>
+                        </td>
+                        <td className="py-2 pr-4 font-mono text-emerald-300">{ret(row.peak_change_pct)}</td>
+                        <td className="py-2 pr-4 text-xs text-neutral">
+                          <div>{timeLabel(row.first_major_move_at)}</div>
+                          <div className="font-mono">{ret(row.first_major_change_pct)}</div>
+                        </td>
+                        <td className="max-w-[360px] py-2 pr-4">
+                          <div className="truncate text-white" title={catalyst?.title || ''}>{catalyst?.title || 'No timely direct article'}</div>
+                          <div className="text-[11px] text-neutral">{[catalyst?.taxonomy?.category, catalyst?.source, timeLabel(catalyst?.available_at)].filter(Boolean).join(' · ')}</div>
+                        </td>
+                        <td className={clsx('py-2 pr-4 font-mono text-xs', statusTone(row.group))}>{String(row.group || 'unknown').replace(/_/g, ' ')}</td>
+                        <td className="max-w-[260px] py-2 pr-4 text-xs">
+                          <div className={row.recommendation_before_major_move ? 'text-emerald-300' : row.pipeline_signal_before_major_move ? 'text-yellow-300' : 'text-red-300'}>
+                            {row.recommendation_before_major_move ? 'Recommended before move' : row.high_watch_before_major_move ? 'High Watch only' : row.pipeline_signal_before_major_move ? 'Pipeline signal only' : 'No pre-move signal'}
+                          </div>
+                          <div className="truncate text-[11px] text-neutral" title={row.failure_stage || ''}>{String(row.failure_stage || 'unknown').replace(/_/g, ' ')}</div>
+                        </td>
+                        <td className="py-2 pr-4 font-mono text-xs text-neutral">
+                          {row.outcome?.status === 'labeled' ? `${ret(row.outcome.max_favorable_excursion_pct)} / ${ret(row.outcome.max_adverse_excursion_pct)}` : row.outcome?.status || '--'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-4 border-t border-border pt-3">
+              <div className="text-xs font-semibold uppercase text-neutral">Source Availability Latency</div>
+              <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-xs text-neutral">
+                {(replay.source_latency || []).slice(0, 8).map(source => (
+                  <span key={source.source}><span className="text-white">{source.source}</span> · {source.articles} events · median {source.median_ingestion_latency_min ?? '--'}m · p90 {source.p90_ingestion_latency_min ?? '--'}m</span>
+                ))}
+                {!replay.source_latency?.length && <span>No qualifying catalyst latency samples.</span>}
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="mt-4 border-t border-border pt-4 text-sm text-neutral">No stored causal replay yet. Run the mover replay to create one without changing production policy.</div>
+        )}
       </section>
 
       <section className="rounded-lg border border-border bg-surface p-4">

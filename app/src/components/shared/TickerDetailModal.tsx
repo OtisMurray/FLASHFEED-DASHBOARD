@@ -10,9 +10,14 @@ export function TickerDetailModal({ ticker, onClose }: { ticker: string; onClose
   const [showPrediction, setShowPrediction] = useState(true)
   const [range, setRange] = useState('1d')
   const [interval, setInterval] = useState('1m')
+  const [audit, setAudit] = useState<any>(null)
+  const [auditLoading, setAuditLoading] = useState(false)
+  const [auditError, setAuditError] = useState('')
 
   useEffect(() => {
     if (!ticker) return
+    setAudit(null)
+    setAuditError('')
     setLoading(true)
     fetch(`/api/charts/${ticker}?range=${range}&interval=${interval}&window_minutes=30&bucket_minutes=1`)
       .then(r => r.json())
@@ -20,12 +25,36 @@ export function TickerDetailModal({ ticker, onClose }: { ticker: string; onClose
       .catch(() => setLoading(false))
   }, [ticker, range, interval])
 
+  async function loadEvidenceTrace() {
+    setAuditLoading(true)
+    setAuditError('')
+    try {
+      const response = await fetch(`/api/screener/audit/${encodeURIComponent(ticker)}?days=7`)
+      const payload = await response.json()
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || 'Evidence trace unavailable')
+      setAudit(payload)
+    } catch (error) {
+      setAuditError(error instanceof Error ? error.message : 'Evidence trace unavailable')
+    } finally {
+      setAuditLoading(false)
+    }
+  }
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={onClose}>
       <div className="bg-surface border border-border rounded-lg p-4 max-w-4xl w-full max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="flex justify-between items-center mb-4">
+        <div className="flex justify-between items-center mb-4 gap-3">
           <h2 className="text-xl font-bold text-white">{ticker} — Chart</h2>
-          <button onClick={onClose} className="text-neutral hover:text-white text-2xl leading-none">✕</button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={loadEvidenceTrace}
+              disabled={auditLoading}
+              className="rounded border border-sky-500/40 px-2 py-1 text-xs text-sky-200 hover:bg-sky-500/10 disabled:opacity-50"
+            >
+              {auditLoading ? 'Loading evidence...' : 'Evidence trace'}
+            </button>
+            <button onClick={onClose} className="text-neutral hover:text-white text-2xl leading-none">✕</button>
+          </div>
         </div>
 
         {/* Chart controls */}
@@ -57,6 +86,38 @@ export function TickerDetailModal({ ticker, onClose }: { ticker: string; onClose
             <span className="text-xs text-neutral">Prediction</span>
           </label>
         </div>
+
+        {auditError && <div className="mb-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">{auditError}</div>}
+        {audit?.trace && (
+          <section className="mb-3 rounded border border-border bg-bg/60 p-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="font-semibold text-slate-100">Evidence trace</div>
+              <div className="text-sky-200">{String(audit.selection_status || '').replaceAll('_', ' ')}</div>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-neutral md:grid-cols-4">
+              <div>Catalyst: <span className="text-slate-200">{audit.trace.classification?.catalyst_label || 'None'}</span></div>
+              <div>Reaction: <span className="text-slate-200">{audit.trace.catalyst?.reaction?.label || 'Unavailable'}</span></div>
+              <div>Quality: <span className="text-slate-200">{audit.trace.catalyst?.quality?.score ?? '—'}/100</span></div>
+              <div>Articles: <span className="text-slate-200">{audit.trace.articles?.length ?? 0}</span></div>
+            </div>
+            {audit.rejection_reasons?.length > 0 && (
+              <div className="mt-2 text-red-200">Rejected or limited by: {audit.rejection_reasons.slice(0, 4).join(' · ')}</div>
+            )}
+            {audit.trace.catalyst?.main?.title && (
+              <div className="mt-2 text-slate-300">{audit.trace.catalyst.main.title}</div>
+            )}
+            {audit.trace.articles?.length > 0 && (
+              <div className="mt-2 max-h-32 space-y-1 overflow-y-auto border-t border-border pt-2">
+                {audit.trace.articles.slice(0, 5).map((article: any, index: number) => (
+                  <div key={`${article.id || article.url || 'article'}-${index}`} className="flex gap-2 text-neutral">
+                    <span className="shrink-0 text-slate-500">{article.publication_timestamp ? new Date(article.publication_timestamp).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'time unknown'}</span>
+                    <span className="truncate text-slate-300">{article.headline || 'Untitled article'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
 
         {/* Chart */}
         <div className="bg-bg border border-border rounded-lg overflow-hidden" style={{ height: 400 }}>

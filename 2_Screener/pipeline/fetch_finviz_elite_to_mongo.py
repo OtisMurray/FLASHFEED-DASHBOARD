@@ -47,7 +47,31 @@ MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/feedflash")
 DB_NAME = os.getenv("MONGODB_DB", os.getenv("MONGO_DB", "feedflash"))
 MONGO_TIMEOUT_MS = int(os.getenv("MONGO_SERVER_SELECTION_TIMEOUT_MS", "3000"))
 AUTH_TOKEN = os.getenv("FINVIZ_AUTH_TOKEN") or os.getenv("FINVIZ_TOKEN") or ""
-FINVIZ_COOKIE = os.getenv("FINVIZ_COOKIE") or os.getenv("FINVIZ_ELITE_COOKIE") or ""
+FINVIZ_COOKIE_FILE = os.getenv("FINVIZ_COOKIE_FILE") or os.getenv("FINVIZ_ELITE_COOKIE_FILE") or ""
+
+
+def _load_cookie_from_file() -> str:
+    candidates: list[Path] = []
+    if FINVIZ_COOKIE_FILE:
+        candidates.append(Path(FINVIZ_COOKIE_FILE).expanduser())
+    candidates.extend([
+        Path("config/finviz_cookie.txt"),
+        Path(".finviz_cookie"),
+        Path.home() / ".config" / "feedflash" / "finviz_cookie.txt",
+    ])
+    for candidate in candidates:
+        try:
+            if candidate.exists() and candidate.is_file():
+                text = candidate.read_text(encoding="utf-8").strip()
+                if text:
+                    return text
+        except Exception:
+            continue
+    return ""
+
+
+FINVIZ_COOKIE = os.getenv("FINVIZ_COOKIE") or os.getenv("FINVIZ_ELITE_COOKIE") or _load_cookie_from_file()
+FINVIZ_AUTH_MODE = "token" if AUTH_TOKEN else "cookie" if FINVIZ_COOKIE else "public_fallback"
 MAX_WORKERS = int(os.getenv("FINVIZ_MAX_WORKERS", "3"))
 TIMEOUT = int(os.getenv("FINVIZ_REQUEST_TIMEOUT", "25"))
 MAX_RETRIES = int(os.getenv("FINVIZ_MAX_RETRIES", "3"))
@@ -208,6 +232,8 @@ def _fetch_tier(tier: str, filter_text: str) -> tuple[str, list[dict], str | Non
             "quote_source": "finviz_elite_screener",
             "quote_updated_at": now_ts,
             "finviz_filter": filter_text,
+            "finviz_auth_mode": auth_mode,
+            "finviz_public_fallback": False,
             "finviz_seen_at": now,
             "source": "Finviz Elite",
         }
@@ -287,6 +313,7 @@ def _public_finviz_rows(limit: int = PUBLIC_FALLBACK_LIMIT) -> tuple[list[dict],
                 "quote_updated_at": now_ts,
                 "finviz_filter": "public_top_gainers",
                 "finviz_public_fallback": True,
+                "finviz_auth_mode": "public_fallback",
                 "finviz_seen_at": now,
                 "source": "Finviz Public Top Gainers",
                 "screener_source": "Finviz Public",
@@ -347,12 +374,12 @@ def main() -> None:
         for row in rows:
             row["finviz_status"] = "same" if row["ticker"] in previous else "added"
         updated, dropped = _write_rows(screeners, rows, previous, datetime.now(timezone.utc), PUBLIC_FALLBACK_DROP_OLD)
-        detail = "FINVIZ_AUTH_TOKEN/FINVIZ_COOKIE not set; used public top-gainers fallback"
+        detail = "FINVIZ_AUTH_TOKEN/FINVIZ_COOKIE not set; used public top-gainers fallback; no secret values printed"
         if errors:
             detail = f"{detail}; {'; '.join(errors[:3])}"
         for error in errors[:8]:
             print(f"Finviz public warning: {error}")
-        status = "working" if rows else "api_key_required"
+        status = "working_public" if rows else "api_key_required"
         record_source_status(db, "Finviz Elite Screener", status, detail=detail, count=len(rows), source_type="numeric_screener")
         print(f"Finviz public fallback — {len(rows)} rows")
         print(f"Finviz Elite import complete — {len(rows)} rows, {updated} updated, {dropped} dropped")
@@ -414,10 +441,39 @@ def main() -> None:
         result = screeners.bulk_write(ops, ordered=False)
         updated = int(result.modified_count + result.upserted_count)
 
+    auth_mode_label = FINVIZ_AUTH_MODE
+    if not all_rows:
+        fallback_rows, fallback_errors = _public_finviz_rows(PUBLIC_FALLBACK_LIMIT)
+        if fallback_rows:
+            previous = set(
+                doc["ticker"]
+                for doc in screeners.find(
+                    {"quote_source": "finviz_elite_screener", "finviz_status": {"$ne": "dropped"}},
+                    {"ticker": 1},
+                )
+                if doc.get("ticker")
+            )
+            for row in fallback_rows:
+                row["finviz_status"] = "same" if row["ticker"] in previous else "added"
+                row["finviz_auth_mode"] = "public_fallback_after_auth_failure"
+                row["finviz_auth_failed_at"] = now
+            fallback_updated, _ = _write_rows(screeners, fallback_rows, previous, now, False)
+            all_rows = fallback_rows
+            updated += fallback_updated
+            auth_mode_label = "public_fallback_after_auth_failure"
+            errors.extend(fallback_errors)
+            print(f"Finviz auth failed; public fallback preserved old full-universe rows and refreshed {len(fallback_rows)} top gainers")
+
     for error in errors[:8]:
         print(f"Finviz warning: {error}")
-    status = "working" if all_rows else "error"
-    detail = "; ".join(errors[:4]) if errors else ""
+    status = "working" if auth_mode_label in {"token", "cookie"} and all_rows else "working_public" if all_rows else "error"
+    detail_parts = [
+        f"auth_mode={auth_mode_label}",
+        "cookie_file_checked" if FINVIZ_COOKIE_FILE else "",
+        "public fallback did not drop old authenticated rows" if auth_mode_label == "public_fallback_after_auth_failure" else "",
+        "; ".join(errors[:4]) if errors else "",
+    ]
+    detail = "; ".join(part for part in detail_parts if part)
     record_source_status(db, "Finviz Elite Screener", status, detail=detail, count=len(all_rows), source_type="numeric_screener")
     print(f"Finviz Elite import complete — {len(all_rows)} rows, {updated} updated, {dropped} dropped")
     client.close()

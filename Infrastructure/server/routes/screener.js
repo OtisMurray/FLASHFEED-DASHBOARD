@@ -33,6 +33,7 @@ const PREDICTION_REQUIRE_UNAFFECTED_AFTER_HOURS_CATALYST = ['1', 'true', 'yes'].
 const PREDICTION_DEVELOPING_CANDIDATE_MIN_SCORE = Math.max(20, Number(process.env.PREDICTION_DEVELOPING_CANDIDATE_MIN_SCORE || 45))
 const PREDICTION_DEVELOPING_CANDIDATE_MAX_ROWS = Math.max(10, Math.min(250, Number(process.env.PREDICTION_DEVELOPING_CANDIDATE_MAX_ROWS || 100)))
 const PREDICTION_UNIVERSE_LIMIT = Math.max(3000, Math.min(20000, Number(process.env.PREDICTION_UNIVERSE_LIMIT || process.env.TRADINGVIEW_SCREENER_LIMIT || 10000)))
+const WATCHER_SNAPSHOT_MAX_AGE_SECONDS = Math.max(3600, Number(process.env.WATCHER_SNAPSHOT_MAX_AGE_SECONDS || 72 * 60 * 60))
 const PREDICTION_UNAFFECTED_MAX_GIVEBACK_PCT = Math.max(0, Number(process.env.PREDICTION_UNAFFECTED_MAX_GIVEBACK_PCT || 0.75))
 const PREDICTION_UNAFFECTED_MAX_RUNUP_PCT = Math.max(0.5, Number(process.env.PREDICTION_UNAFFECTED_MAX_RUNUP_PCT || 3))
 const PREDICTION_PENDING_OPEN_MIN_QUALITY = Math.max(45, Number(process.env.PREDICTION_PENDING_OPEN_MIN_QUALITY || 68))
@@ -1350,14 +1351,14 @@ function predictionDiscoveryTier(row = {}) {
 
 function withDiscoveryTier(row = {}) {
   const discovery = predictionDiscoveryTier(row)
-  return withPredictionScorecard({
+  return withPredictionSetupClassification(withPredictionScorecard({
     ...row,
     discovery_tier: discovery.tier,
     discovery_tier_label: discovery.label,
     discovery_tier_tone: discovery.tone,
     discovery_rank_order: discovery.rank_order,
     discovery_reason: discovery.reason,
-  })
+  }))
 }
 
 function catalystReactionExhausted(row = {}) {
@@ -1365,6 +1366,135 @@ function catalystReactionExhausted(row = {}) {
   const state = String(reaction.first_reaction_state || reaction.state || '').toLowerCase()
   return Boolean(reaction.exhaustion_risk) ||
     ['gave_back_from_high', 'spike_then_fade', 'already_priced_in_strong_reaction', 'negative_first_reaction', 'rejected_already_priced_or_faded'].includes(state)
+}
+
+function normalizedRiskFlags(row = {}) {
+  return Array.from(new Set([
+    ...(Array.isArray(row.risk_flags) ? row.risk_flags : []),
+    ...(Array.isArray(row.riskFlags) ? row.riskFlags : []),
+    ...(Array.isArray(row.prediction_blocked_reasons) ? row.prediction_blocked_reasons : []),
+  ].filter(Boolean).map(String)))
+}
+
+function hardRejectionReasonsForRow(row = {}) {
+  const flags = normalizedRiskFlags(row)
+  const reaction = row.catalyst_reaction_summary || row.prediction_readiness?.reaction || {}
+  const state = String(reaction.first_reaction_state || reaction.state || row.catalyst_reaction_state || '').toLowerCase()
+  const reasons = []
+  const add = (condition, reason) => { if (condition) reasons.push(reason) }
+  add(flags.some(flag => /ROUTINE|ROUNDUP|WEAK_CATALYST|REJECTED_CATALYST_QUALITY/i.test(flag)), 'routine_news')
+  add(flags.some(flag => /INDIRECT|UNRECOGNIZED_SOURCE|NO_PRIMARY_CATALYST/i.test(flag)), 'indirect_ticker_match')
+  add(flags.some(flag => /ALREADY_PRICED|RUN_ALREADY_DONE|EXTENDED_MOVE/i.test(flag)) || state.includes('already_priced'), 'already_priced')
+  add(flags.some(flag => /STALE_NEWS|STALE_RECAP/i.test(flag)), 'stale_recap')
+  add(flags.some(flag => /IMMATERIAL/i.test(flag)), 'immaterial_for_company_size')
+  add(flags.some(flag => /LOW_LIQUIDITY|LIQ_LOW|ABNORMAL_SPREAD/i.test(flag)), 'low_liquidity')
+  add(flags.some(flag => /DILUTION|OFFERING/i.test(flag)), 'dilution_risk')
+  add(flags.some(flag => /REVERSE_SPLIT/i.test(flag)), 'reverse_split_noise')
+  add(flags.some(flag => /LOW_OR_MISSING_SOCIAL|NO_SOCIAL|NEEDS_CONFIRM|NO_FRESH_DENSITY/i.test(flag)), 'insufficient_confirmation')
+  add(Boolean(reaction.exhaustion_risk) || ['gave_back_from_high', 'spike_then_fade', 'negative_first_reaction', 'rejected_already_priced_or_faded'].includes(state), 'already_priced')
+  return Array.from(new Set(reasons))
+}
+
+function predictionSetupClassification(row = {}) {
+  const validation = row.prediction_validation || {}
+  const readiness = row.prediction_readiness || {}
+  const reaction = row.catalyst_reaction_summary || readiness.reaction || {}
+  const riskFlags = normalizedRiskFlags(row)
+  const hardRejections = hardRejectionReasonsForRow(row)
+  const sourceCode = String(row.prediction_source_code || row.prediction_status || '').toLowerCase()
+  const catalystQuality = row.catalyst_quality || {}
+  const catalystTier = String(row.catalyst_quality_tier || catalystQuality.tier || '').toLowerCase()
+  const catalystClass = String(catalystQuality.class || row.main_catalyst?.event_type || row.catalyst_type || '').toLowerCase()
+  const hasNewsCatalyst = Boolean(validation.recognizedNewsCatalyst || row.main_catalyst || Number(row.catalyst_window_article_count || row.news_article_count || row.article_count || 0) > 0)
+  const hasDirectCatalyst = Boolean(validation.recognizedNewsCatalyst || validation.recognizedSqueezeCatalyst || validation.verifiedShortInterest)
+  const peopleAttention = row.people_attention || validation.peopleAttention || {}
+  const hasPeopleMomentum = Boolean(peopleAttention.active || sourceCode.includes('people_momentum') || Number(row.message_count || 0) > 0 || Number(row.stocktwits_watcher_count || 0) > 0)
+  const state = String(reaction.first_reaction_state || reaction.state || row.catalyst_reaction_state || '').toLowerCase()
+  const latest = nullableNumber(reaction.latest_return_pct ?? row.prediction_catalyst_reaction?.postCatalystLatestReturnPct)
+  const giveback = nullableNumber(reaction.giveback_from_high_pct ?? row.prediction_catalyst_reaction?.postCatalystGivebackPct)
+  const arrow = reaction.exhaustion_risk || state.includes('fade') || state.includes('negative') || (giveback != null && giveback > 20)
+    ? 'down'
+    : reaction.actionable_spillover || state.includes('building') || (latest != null && latest > 0)
+      ? 'up'
+      : 'neutral'
+
+  let type = 'active_but_unconfirmed'
+  let label = 'Active Watch'
+  let reason = 'active mover does not yet have enough independent evidence for a stricter setup'
+
+  if (hardRejections.includes('already_priced')) {
+    type = 'already_priced_or_faded'
+    label = 'Already Priced / Faded'
+    reason = reaction.reaction_reason || 'post-catalyst reaction or current extension suggests the move may already be priced in'
+  } else if (hardRejections.includes('routine_news') || catalystTier === 'reject') {
+    type = 'invalid_or_routine'
+    label = 'Routine / Invalid Catalyst'
+    reason = 'headline quality is routine, indirect, weak, or not material enough for a prediction'
+  } else if (hasDirectCatalyst && (reaction.actionable_spillover || String(row.prediction_readiness_level || '').includes('fresh_catalyst'))) {
+    type = 'fresh_direct_catalyst_unpriced'
+    label = 'Fresh Catalyst'
+    reason = reaction.reaction_reason || 'recognized catalyst appears fresh and not fully priced in'
+  } else if (hasDirectCatalyst && String(row.prediction_readiness_level || '').includes('waiting_for_density')) {
+    type = 'fresh_catalyst_waiting_density'
+    label = 'Fresh Catalyst · Wait Density'
+    reason = 'direct catalyst exists but message-density or payoff confirmation is still pending'
+  } else if (hasDirectCatalyst) {
+    type = 'confirmed_catalyst_monitor'
+    label = 'Confirmed Catalyst Monitor'
+    reason = validation.reason || 'recognized catalyst exists, but setup confirmation is incomplete'
+  } else if (hasPeopleMomentum && hasNewsCatalyst) {
+    type = 'people_momentum_with_news'
+    label = 'People Momentum + News'
+    reason = 'people/message attention is supporting a ticker with news context, but the primary catalyst is not strict enough yet'
+  } else if (hasPeopleMomentum) {
+    type = 'people_momentum_no_direct_catalyst'
+    label = 'People Momentum'
+    reason = 'traders are active, but no fresh direct catalyst has been validated'
+  }
+
+  return {
+    type,
+    label,
+    arrow,
+    reason,
+    direct_catalyst: hasDirectCatalyst,
+    people_momentum: hasPeopleMomentum,
+    reaction_state: state || null,
+    hard_rejection_reasons: hardRejections,
+    catalyst_class: catalystClass || null,
+    catalyst_quality_tier: catalystTier || null,
+  }
+}
+
+function withPredictionSetupClassification(row = {}) {
+  const setup = predictionSetupClassification(row)
+  const rawCatalystClass = String(row.main_catalyst?.catalyst_taxonomy || row.main_catalyst?.event_type || row.catalyst_type || '').toLowerCase()
+  const catalystLabels = {
+    merger_acquisition: 'Merger / Acquisition',
+    biotech_regulatory_or_trial: 'FDA / Clinical Catalyst',
+    contract_award: 'Contract / Award',
+    partnership_commercial: 'Partnership',
+    financing_runway: 'Financing / Runway',
+    earnings_guidance: 'Earnings / Guidance',
+    product_or_ip: 'Product / IP',
+    analyst_action: 'Analyst Action',
+    insider_activity: 'Insider Activity',
+    legal_regulatory: 'Legal / Regulatory',
+    ordinary_news: 'General News',
+    routine_news: 'Routine News',
+  }
+  const catalystLabel = catalystLabels[rawCatalystClass] || (rawCatalystClass && rawCatalystClass !== 'general_news' ? rawCatalystClass.replaceAll('_', ' ') : '') || null
+  return {
+    ...row,
+    setup_classification: setup,
+    setup_type: setup.type,
+    setup_label: setup.label,
+    setup_arrow: setup.arrow,
+    setup_reason: setup.reason,
+    hard_rejection_reasons: setup.hard_rejection_reasons,
+    catalyst_label: catalystLabel || (setup.direct_catalyst ? 'Catalyst' : setup.people_momentum ? 'People Momentum' : null),
+    catalyst_direction: row.catalyst_direction || setup.arrow,
+  }
 }
 
 function scorecardTone(score) {
@@ -2462,6 +2592,25 @@ function predictionEvidenceValidation(row = {}, context = {}) {
   }
 }
 
+// Social attention and watchers confirm a direct catalyst; they do not replace one.
+// This keeps the strict prediction tabs from turning an already-moving social name
+// into a catalyst prediction when no company-specific event was identified.
+function hasPrimaryPredictionCatalyst(validation = {}, row = {}) {
+  const verifiedSqueeze = Boolean(validation.recognizedSqueezeCatalyst && validation.verifiedShortInterest)
+  const directNews = Boolean(validation.recognizedNewsCatalyst && validation.materialDirectCatalyst)
+  return directNews || verifiedSqueeze
+}
+
+function hasDevelopingCatalystEvidence(row = {}) {
+  const validation = row.prediction_validation || {}
+  const directNews = Boolean(validation.recognizedNewsCatalyst && validation.materialDirectCatalyst)
+  const verifiedSqueeze = Boolean(validation.recognizedSqueezeCatalyst && validation.verifiedShortInterest)
+  return Boolean(
+    directNews ||
+    verifiedSqueeze,
+  )
+}
+
 function catalystRecencyWeight(eventSec, nowSec) {
   const ageHours = Math.max(0, (Number(nowSec || 0) - Number(eventSec || 0)) / 3600)
   if (ageHours <= 2) return 1.35
@@ -3454,7 +3603,7 @@ async function fetchYahooQuoteSnapshot(ticker) {
 
 async function loadSqueezeInterestRows(db, existingRows = [], sessionContext = marketSessionContext(), days = 3, windowOverride = null) {
   const existing = new Set(existingRows.map(row => String(row.ticker || '').toUpperCase()))
-  const sinceSec = Math.floor(Date.now() / 1000) - 7 * 86_400
+  const sinceSec = Math.floor(Date.now() / 1000) - WATCHER_SNAPSHOT_MAX_AGE_SECONDS
   const candidates = await db.collection('stocktwits_watcher_snapshots').aggregate([
     { $match: { watcher_count: { $gte: SQUEEZE_WATCHER_MIN }, fetched_sec: { $gte: sinceSec } } },
     { $sort: { fetched_sec: -1 } },
@@ -3476,12 +3625,13 @@ async function loadSqueezeInterestRows(db, existingRows = [], sessionContext = m
     loadShortInterestSnapshots(db, tickers),
   ])
   const quoteMap = new Map(quoteRows.map(row => [row.ticker, row.quote]).filter(([, quote]) => quote?.price != null))
-  const watcherMap = new Map(candidates.map(row => [String(row._id || '').toUpperCase(), Number(row.watcher_count || 0)]))
+  const watcherMap = new Map(candidates.map(row => [String(row._id || '').toUpperCase(), row]))
 
   return tickers.map(ticker => {
     const quote = quoteMap.get(ticker)
     if (!quote?.price) return null
-    const watcherCount = watcherMap.get(ticker) || 0
+    const watcherSnapshot = watcherMap.get(ticker) || null
+    const watcherCount = Number(watcherSnapshot?.watcher_count || 0)
     const socialRow = socialMap.get(ticker)
     const stocktwitsCount = Number(socialRow?.stocktwits_count || socialRow?.count || 0)
     const watcherScore = Math.min(45, Math.log1p(watcherCount) / Math.log1p(50_000) * 45)
@@ -3519,6 +3669,9 @@ async function loadSqueezeInterestRows(db, existingRows = [], sessionContext = m
       short_squeeze_reason: [base.short_squeeze_reason, `${watcherCount.toLocaleString()} Stocktwits watchers; ${stocktwitsCount} recent Stocktwits messages`].filter(Boolean).join('; '),
       squeeze_signal: shortSqueezeScore >= 70 ? 'high_social_squeeze_interest' : 'watcher_squeeze_interest',
       stocktwits_watcher_count: watcherCount,
+      watcher_snapshot_sec: nullableNumber(watcherSnapshot?.fetched_sec),
+      watcher_snapshot_age_seconds: watcherSnapshot?.fetched_sec == null ? null : Math.max(0, Math.floor(Date.now() / 1000) - Number(watcherSnapshot.fetched_sec)),
+      watcher_snapshot_source: watcherSnapshot?.source || 'stocktwits_watcher_snapshots',
       sources: ['StockTwits', 'Yahoo Chart Quote'],
     }, articleMap.get(ticker), socialRow, windowOverride)
   }).filter(Boolean)
@@ -3538,12 +3691,21 @@ async function loadShortInterestSnapshots(db, tickers = []) {
 async function loadStocktwitsWatcherSnapshots(db, tickers = []) {
   const wanted = Array.from(new Set(tickers.map(t => String(t || '').toUpperCase()).filter(Boolean)))
   if (!wanted.length) return new Map()
+  const cutoffSec = Math.floor(Date.now() / 1000) - WATCHER_SNAPSHOT_MAX_AGE_SECONDS
   const rows = await db.collection('stocktwits_watcher_snapshots').aggregate([
-    { $match: { ticker: { $in: wanted } } },
+    { $match: { ticker: { $in: wanted }, fetched_sec: { $gte: cutoffSec } } },
     { $sort: { fetched_sec: -1, fetched_at: -1 } },
     { $group: { _id: '$ticker', doc: { $first: '$$ROOT' } } },
   ]).toArray().catch(() => [])
-  return new Map(rows.map(row => [String(row._id || '').toUpperCase(), row.doc || {}]))
+  const nowSec = Math.floor(Date.now() / 1000)
+  return new Map(rows.map(row => {
+    const doc = row.doc || {}
+    const fetchedSec = nullableNumber(doc.fetched_sec)
+    return [String(row._id || '').toUpperCase(), {
+      ...doc,
+      watcher_snapshot_age_seconds: fetchedSec == null ? null : Math.max(0, nowSec - fetchedSec),
+    }]
+  }))
 }
 
 function attachShortInterestEvidence(row = {}, shortRow = null) {
@@ -3585,20 +3747,34 @@ function attachShortInterestEvidence(row = {}, shortRow = null) {
 }
 
 function attachWatcherSqueezeEvidence(row = {}, watcherRow = null) {
-  const watcherCount = nullableNumber(watcherRow?.watcher_count) ?? nullableNumber(row.stocktwits_watcher_count) ?? 0
+  const watcherAgeSeconds = nullableNumber(watcherRow?.watcher_snapshot_age_seconds ?? row.watcher_snapshot_age_seconds)
+  const fallbackWatcherCount = watcherAgeSeconds != null && watcherAgeSeconds <= WATCHER_SNAPSHOT_MAX_AGE_SECONDS
+    ? nullableNumber(row.stocktwits_watcher_count)
+    : null
+  const watcherCount = nullableNumber(watcherRow?.watcher_count) ?? fallbackWatcherCount ?? 0
   const socialCount = Number(row.message_count || 0)
   const stocktwitsCount = Number(row.stocktwits_message_count || 0)
   const relVolume = Number(row.rel_volume || 0)
   const change = Math.max(0, Number(row.change_pct || 0))
   const hasVerifiedShort = Boolean(row.float_or_short_interest_available || row.short_interest_pct != null || row.float_short != null)
-  if (!watcherCount && !stocktwitsCount && !socialCount) return row
+  const watcherFeature = {
+    definition: 'current StockTwits watchlist-count snapshot; not watcher growth',
+    source: watcherRow?.source || row.watcher_snapshot_source || 'stocktwits_watcher_snapshots',
+    snapshot_sec: nullableNumber(watcherRow?.fetched_sec ?? row.watcher_snapshot_sec),
+    age_seconds: watcherAgeSeconds,
+    status: watcherRow || (watcherAgeSeconds != null && watcherAgeSeconds <= WATCHER_SNAPSHOT_MAX_AGE_SECONDS) ? 'fresh' : 'missing_or_expired',
+    normalization: 'log1p capped before ranking',
+    max_rank_points: 8,
+    missing_behavior: 'not used as a score or catalyst',
+  }
+  if (!watcherCount && !stocktwitsCount && !socialCount) return { ...row, watcher_feature: watcherFeature }
 
   const watcherScore = Math.min(32, Math.log1p(watcherCount) / Math.log1p(50_000) * 32)
   const messageScore = Math.min(30, Math.log1p(Math.max(socialCount, stocktwitsCount)) / Math.log1p(120) * 30)
   const volumeScore = Math.min(22, Math.log1p(Math.max(0, relVolume)) * 6)
   const moveScore = Math.min(16, change * 0.45)
   const proxyScore = Number(Math.min(100, watcherScore + messageScore + volumeScore + moveScore).toFixed(1))
-  if (proxyScore <= 0) return row
+  if (proxyScore <= 0) return { ...row, watcher_feature: watcherFeature }
 
   const previousScore = Number(row.short_squeeze_score || 0)
   const score = Math.max(previousScore, proxyScore)
@@ -3613,6 +3789,8 @@ function attachWatcherSqueezeEvidence(row = {}, watcherRow = null) {
   return {
     ...row,
     stocktwits_watcher_count: watcherCount || row.stocktwits_watcher_count || null,
+    watcher_snapshot_age_seconds: watcherAgeSeconds,
+    watcher_feature: watcherFeature,
     short_squeeze_available: Boolean(row.short_squeeze_available || hasVerifiedShort || score >= 25),
     float_or_short_interest_available: Boolean(row.float_or_short_interest_available || hasVerifiedShort),
     squeeze_proxy_used: Boolean(row.squeeze_proxy_used || !hasVerifiedShort),
@@ -3636,6 +3814,44 @@ function predictionMissingFieldCounts(rows = []) {
     }
   }
   return counts
+}
+
+function predictionPipelineStageCounts({ configuredUniverseRows = 0, loadedRows = [], enteringRows = [], scoringRows = [], strictRows = [], candidateRows = [], finalRows = [], fallbackRows = [], realUpRows = [], realHighConvictionRows = [] } = {}) {
+  const uniqueTickers = rows => new Set(rows.map(row => String(row?.ticker || '').toUpperCase()).filter(Boolean)).size
+  const hasNews = row => Number(row?.news_article_count ?? row?.article_count ?? 0) > 0
+  const hasDirectCatalyst = row => Boolean(
+    row?.prediction_validation?.recognizedNewsCatalyst && row?.prediction_validation?.materialDirectCatalyst ||
+    row?.main_catalyst?.ticker_matched || row?.main_catalyst?.ticker_match || row?.main_catalyst?.matched_ticker,
+  )
+  const hasCatalyst = row => hasDirectCatalyst(row) || Boolean(row?.prediction_validation?.recognizedSqueezeCatalyst && row?.prediction_validation?.verifiedShortInterest)
+  const hasSocial = row => Number(row?.message_count ?? row?.stocktwits_message_count ?? 0) > 0
+  const hasWatcher = row => nullableNumber(row?.watcher_snapshot_age_seconds) != null && nullableNumber(row?.stocktwits_watcher_count) != null
+  const hasFreshQuote = row => {
+    const age = nullableNumber(row?.quote_age_minutes ?? row?.quote_freshness_minutes)
+    return row?.price != null && (age == null || age <= 45)
+  }
+  const validScore = row => Number.isFinite(Number(row?.final_prediction_score ?? row?.convictionScore ?? row?.watchScore ?? row?.watch_score))
+  return {
+    configured_universe_rows: Number(configuredUniverseRows || 0),
+    loaded_universe_rows: uniqueTickers(loadedRows),
+    fresh_quote_rows: loadedRows.filter(hasFreshQuote).length,
+    rows_with_news: loadedRows.filter(hasNews).length,
+    rows_with_direct_ticker_catalyst: loadedRows.filter(hasDirectCatalyst).length,
+    rows_with_validated_primary_catalyst: scoringRows.filter(hasCatalyst).length,
+    rows_with_social: loadedRows.filter(hasSocial).length,
+    rows_with_current_watchers: loadedRows.filter(hasWatcher).length,
+    entering_scoring: uniqueTickers(enteringRows),
+    valid_scored_rows: scoringRows.filter(validScore).length,
+    strict_up_candidates: uniqueTickers(realUpRows),
+    high_conviction_candidates: uniqueTickers(realHighConvictionRows),
+    developing_catalyst_candidates: uniqueTickers(candidateRows),
+    fallback_watch_rows: uniqueTickers(fallbackRows),
+    ranked_rows: uniqueTickers([...realUpRows, ...candidateRows]),
+    displayed_rows: uniqueTickers(finalRows),
+    top_five_displayed: Math.min(5, uniqueTickers(finalRows)),
+    rows_without_validated_primary_catalyst: Math.max(0, scoringRows.filter(row => !hasCatalyst(row)).length),
+    rejection_social_or_watcher_only: scoringRows.filter(row => !hasCatalyst(row) && (hasSocial(row) || hasWatcher(row))).length,
+  }
 }
 
 function positiveCurrentMover(row = {}) {
@@ -4433,7 +4649,7 @@ function buildPeopleMomentumDevelopingRows(rows = [], limit = 50) {
         peopleAttention.reasons.slice(0, 3).join(', '),
       ].filter(Boolean).join(' · ')
 
-      return {
+      return withPredictionSetupClassification({
         ...row,
         prediction_status: 'developing_people_momentum',
         prediction_pool_role: 'developing_people_momentum',
@@ -4511,7 +4727,7 @@ function buildPeopleMomentumDevelopingRows(rows = [], limit = 50) {
           developing_confidence: developingConfidence,
           note: 'Developing-only people momentum estimate; not a strict high-conviction prediction.',
         },
-      }
+      })
     })
     .filter(Boolean)
     .sort((a, b) => Number(b.final_prediction_score || 0) - Number(a.final_prediction_score || 0))
@@ -4576,7 +4792,7 @@ function buildEvidencePredictionRows(rows = [], limit = 50, meta = {}) {
         floatShort,
         setupStatus,
       })
-      if (!validation.valid) return null
+      if (!validation.valid || !hasPrimaryPredictionCatalyst(validation, row)) return null
       const catalystReaction = predictionCatalystReactionState(row, threshold, validation, { change, setupStatus, sessionContext })
       if (catalystReaction.rejection) return null
       const peopleAttention = validation.peopleAttention || predictionPeopleAttention(row, { social, sentiment, watcherCount })
@@ -5321,6 +5537,348 @@ function applySignalFilter(rows = [], signal = '', query = {}) {
   return rows
 }
 
+function auditIsoTimestamp(value) {
+  const sec = timestampSeconds(value)
+  return sec ? new Date(sec * 1000).toISOString() : null
+}
+
+function auditTickerValues(article = {}) {
+  const fields = [
+    ['ticker', article.ticker],
+    ['tickers', article.tickers],
+    ['matched_ticker', article.matched_ticker],
+    ['matched_tickers', article.matched_tickers],
+    ['matched_mover_tickers', article.matched_mover_tickers],
+    ['symbols', article.symbols],
+  ]
+  const values = []
+  for (const [field, raw] of fields) {
+    const entries = Array.isArray(raw) ? raw : String(raw || '').split(/[;,|\s]+/)
+    for (const entry of entries) {
+      const value = String(entry || '').replace(/^\$/, '').trim().toUpperCase()
+      if (value) values.push({ field, value })
+    }
+  }
+  return values
+}
+
+function auditArticleMatch(article = {}, row = {}) {
+  const ticker = String(row.ticker || '').toUpperCase()
+  const tickerValues = auditTickerValues(article)
+  const exactFields = tickerValues.filter(item => item.value === ticker).map(item => item.field)
+  const title = String(article.title || article.headline || article.summary || article.description || '')
+  const companyMatch = catalystMentionsTickerOrCompany(row, title)
+  const reasons = exactFields.map(field => `exact_${field}_match`)
+  if (!exactFields.length && companyMatch) reasons.push('company_name_in_headline_or_summary')
+  return {
+    matched: reasons.length > 0,
+    reasons,
+    ticker_fields: exactFields,
+    company_name_match: companyMatch,
+    match_confidence: exactFields.length ? 'direct' : companyMatch ? 'company_text' : 'none',
+  }
+}
+
+async function loadCatalystAuditArticles(db, row = {}, days = 7, selectedCatalysts = []) {
+  if (!db || !row.ticker) return []
+  const ticker = String(row.ticker).toUpperCase()
+  const companyTokens = companySignalTokens(row).filter(token => token.length >= 5).slice(0, 2)
+  const escapedTicker = ticker.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const or = [
+    { ticker: { $regex: `(^|[,;|\\s])\\$?${escapedTicker}([,;|\\s]|$)`, $options: 'i' } },
+    { tickers: ticker },
+    { matched_ticker: ticker },
+    { matched_tickers: ticker },
+    { matched_mover_tickers: ticker },
+    { symbols: ticker },
+  ]
+  for (const token of companyTokens) {
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    or.push({ title: { $regex: escaped, $options: 'i' } })
+    or.push({ headline: { $regex: escaped, $options: 'i' } })
+  }
+  const cutoffSec = Math.floor(Date.now() / 1000) - Math.max(1, Number(days || 7)) * 86_400
+  const docs = await db.collection('articles').find({ $or: or }, {
+    projection: {
+      _id: 1,
+      source: 1,
+      publisher: 1,
+      collector: 1,
+      category: 1,
+      article_kind: 1,
+      event_type: 1,
+      title: 1,
+      headline: 1,
+      summary: 1,
+      description: 1,
+      url: 1,
+      ticker: 1,
+      tickers: 1,
+      matched_ticker: 1,
+      matched_tickers: 1,
+      matched_mover_tickers: 1,
+      symbols: 1,
+      sentiment: 1,
+      sentiment_score: 1,
+      ml_confidence: 1,
+      publish_date: 1,
+      published_at: 1,
+      detected_at: 1,
+      ingestion_time: 1,
+      ingested_at: 1,
+      fetched_date: 1,
+      createdAt: 1,
+      created_at: 1,
+      updated_at: 1,
+      updatedAt: 1,
+      duplicate_cluster_id: 1,
+      canonical_event_id: 1,
+    },
+  }).sort({ publish_date: -1, published_at: -1, detected_at: -1 }).limit(150).toArray().catch(() => [])
+
+  const selectedKeys = new Set((Array.isArray(selectedCatalysts) ? selectedCatalysts : []).map(item => [
+    String(item.url || ''),
+    String(item.title || ''),
+    String(item.event_sec || ''),
+  ].join('|')))
+  return docs.map(article => {
+    const publicationValue = article.publish_date ?? article.published_at
+    const ingestionValue = article.ingestion_time ?? article.ingested_at ?? article.detected_at ?? article.fetched_date ?? article.createdAt ?? article.created_at
+    const publicationSec = timestampSeconds(publicationValue)
+    const ingestionSec = timestampSeconds(ingestionValue)
+    const updateSec = timestampSeconds(article.updated_at ?? article.updatedAt)
+    if (publicationSec != null && publicationSec < cutoffSec) return null
+    const match = auditArticleMatch(article, row)
+    const title = String(article.title || article.headline || article.summary || article.description || '').trim()
+    const eventType = String(article.event_type || article.category || article.article_kind || '').trim().toLowerCase() || null
+    const selected = selectedKeys.has([String(article.url || ''), title, String(publicationSec || '')].join('|'))
+    return {
+      id: article.canonical_event_id || article._id || null,
+      canonical_event_id: article.canonical_event_id || null,
+      duplicate_cluster_id: article.duplicate_cluster_id || null,
+      source: article.source || article.publisher || article.collector || null,
+      collector: article.collector || null,
+      article_kind: article.article_kind || article.category || null,
+      event_type: eventType,
+      headline: title || null,
+      url: article.url || null,
+      publication_timestamp: auditIsoTimestamp(publicationSec),
+      ingestion_timestamp: auditIsoTimestamp(ingestionSec),
+      update_timestamp: auditIsoTimestamp(updateSec),
+      publication_sec: publicationSec,
+      ingestion_sec: ingestionSec,
+      age_minutes: publicationSec == null ? null : Number(Math.max(0, (Date.now() / 1000 - publicationSec) / 60).toFixed(1)),
+      market_session: marketSessionForSec(publicationSec),
+      sentiment: article.sentiment || null,
+      sentiment_score: nullableNumber(article.sentiment_score ?? article.ml_confidence),
+      match,
+      used_by_current_catalyst_aggregate: selected,
+    }
+  }).filter(Boolean)
+}
+
+function catalystAuditFeatureInputs(row = {}, validation = {}, threshold = {}, quality = {}, reaction = {}) {
+  const price = nullableNumber(row.price)
+  const volume = nullableNumber(row.volume)
+  const relVolume = nullableNumber(row.rel_volume)
+  return {
+    quote: {
+      price,
+      change_pct: nullableNumber(row.change_pct),
+      volume,
+      dollar_volume: price != null && volume != null ? Number((price * volume).toFixed(2)) : null,
+      relative_volume: relVolume,
+      quote_source: row.quote_source || null,
+      quote_timestamp: auditIsoTimestamp(row.quote_timestamp ?? row.quote_at ?? row.fetched_at ?? row.updated_at),
+      quote_age_seconds: nullableNumber(row.quote_age_seconds),
+      quote_freshness: row.quote_freshness || null,
+      market_cap: nullableNumber(row.market_cap),
+      market_cap_bucket: row.market_cap_bucket || row.market_cap_tier || null,
+    },
+    catalyst: {
+      article_count: nullableNumber(row.news_article_count) || 0,
+      session_article_count: nullableNumber(row.catalyst_window_article_count) || 0,
+      title: row.main_catalyst?.title || null,
+      category: quality.class || row.main_catalyst?.event_type || null,
+      source: quality.source || row.main_catalyst?.source || null,
+      event_timestamp: auditIsoTimestamp(row.main_catalyst?.event_sec ?? row.latest_publish_sec),
+      event_session: reaction.market_session || null,
+      recognized: Boolean(validation.recognizedNewsCatalyst),
+      direct_and_material: Boolean(validation.materialDirectCatalyst),
+      materiality_score: nullableNumber(quality.company_relative_materiality_score ?? quality.taxonomy?.materiality_score),
+      explosion_potential_score: nullableNumber(quality.explosion_potential_score ?? quality.taxonomy?.explosion_potential_score),
+    },
+    social: {
+      message_count: nullableNumber(row.message_count) || 0,
+      message_density: nullableNumber(row.social_message_density),
+      density_score: nullableNumber(row.message_density_score),
+      density_trend: row.message_density_trend || null,
+      sentiment: nullableNumber(row.social_message_sentiment ?? row.social_sentiment),
+      watcher_count: nullableNumber(row.stocktwits_watcher_count),
+      watcher_age_seconds: nullableNumber(row.watcher_snapshot_age_seconds),
+      watcher_source: row.watcher_snapshot_source || null,
+    },
+    threshold: {
+      tier: threshold.tier || null,
+      window_minutes: threshold.profile?.windowMinutes ?? threshold.windowMinutes ?? null,
+      correlation: threshold.correlation,
+      previous_correlation: threshold.previousCorrelation,
+      threshold_c: threshold.thresholdC,
+      pre_signal_return_60m_pct: threshold.preSignalReturn60mPct,
+      trailing_60m_messages: threshold.trailing60Messages,
+      setup_status: threshold.setupStatus,
+      setup_score: threshold.setupScore,
+      entry_passed: Boolean(threshold.passed),
+    },
+    reaction: {
+      state: reaction.first_reaction_state || reaction.reactionState || null,
+      label: reaction.label || null,
+      latest_return_pct: reaction.latest_return_pct ?? null,
+      runup_pct: reaction.runup_pct ?? null,
+      giveback_pct: reaction.giveback_from_high_pct ?? null,
+      market_had_chance_to_react: Boolean(reaction.market_had_chance_to_react),
+      actionable_spillover: Boolean(reaction.actionable_spillover),
+      exhaustion_risk: Boolean(reaction.exhaustion_risk),
+    },
+  }
+}
+
+// GET /api/screener/audit/:ticker — source-to-decision trace for one ticker.
+// This is intentionally uncached: it is an operator/audit view of current Mongo data.
+router.get('/audit/:ticker', async (req, res) => {
+  try {
+    const ticker = String(req.params.ticker || '').trim().toUpperCase()
+    if (!/^[A-Z][A-Z0-9.-]{0,5}$/.test(ticker) || NON_STOCK_TICKERS.has(ticker)) {
+      return res.status(400).json({ ok: false, error: 'invalid US stock ticker' })
+    }
+    const db = mongoose.connection.db
+    if (!db) return res.status(503).json({ ok: false, error: 'MongoDB is not connected' })
+    const days = Math.max(1, Math.min(14, Number(req.query.days || 7)))
+    const sessionContext = marketSessionContext()
+    const quoteDoc = await Screener.findOne({ ticker }).lean().catch(() => null)
+    if (!quoteDoc) return res.status(404).json({ ok: false, ticker, error: 'ticker not found in screener universe' })
+    const baseRow = normalizeScreenerRow(quoteDoc)
+    const [articleMap, socialMap, shortMap, watcherMap] = await Promise.all([
+      loadArticleStatsForTickers(db, [ticker], days, sessionContext),
+      loadAdaptiveSocialStatsForRows(db, [baseRow]),
+      loadShortInterestSnapshots(db, [ticker]),
+      loadStocktwitsWatcherSnapshots(db, [ticker]),
+    ])
+    const enriched = attachWatcherSqueezeEvidence(
+      attachShortInterestEvidence(
+        enrichScreenerRow(baseRow, articleMap.get(ticker), socialMap.get(ticker)),
+        shortMap.get(ticker),
+      ),
+      watcherMap.get(ticker),
+    )
+    const catalystText = enriched.main_catalyst?.title || enriched.catalyst_summary || ''
+    const setupStatus = enriched.threshold_setup_status || evaluatePredictionEntryThreshold(enriched).setupStatus
+    const context = {
+      catalystText,
+      news: Number(enriched.news_article_count || 0),
+      social: Number(enriched.message_count || 0),
+      sentiment: Number(enriched.avg_sentiment || 0),
+      change: nullableNumber(enriched.change_pct),
+      relVolume: nullableNumber(enriched.rel_volume),
+      catalystPower: nullableNumber(enriched.catalyst_power_score) || 0,
+      squeezeScore: nullableNumber(enriched.short_squeeze_score) || 0,
+      watcherCount: nullableNumber(enriched.stocktwits_watcher_count) || 0,
+      floatShort: nullableNumber(enriched.float_short),
+      setupStatus,
+    }
+    const threshold = evaluatePredictionEntryThreshold(enriched)
+    const validation = predictionEvidenceValidation(enriched, context)
+    const reactionState = predictionCatalystReactionState(enriched, threshold, validation, {
+      change: context.change,
+      setupStatus,
+      sessionContext,
+      priceReaction: enriched.catalyst_price_reaction || null,
+    })
+    const reaction = catalystReactionSummary(reactionState)
+    const quality = catalystQualityAssessment(enriched, validation, context)
+    const readiness = predictionReadinessState(enriched, validation, {
+      freshDensityCross: Boolean(threshold.passed),
+      freshNewsCatalyst: Boolean(validation.recognizedNewsCatalyst),
+      passesHighConviction: false,
+      passesRawPrediction: false,
+      payoffPasses: null,
+      blockedReasons: reaction.rejection ? [reaction.rejection] : [],
+    }, reactionState)
+    const tracedRow = {
+      ...enriched,
+      prediction_validation: validation,
+      catalyst_reaction_summary: reaction,
+      catalyst_quality: quality,
+      prediction_readiness: readiness,
+      prediction_readiness_level: readiness.level,
+    }
+    const scorecard = buildPredictionScorecard(tracedRow)
+    const classification = withPredictionSetupClassification(tracedRow)
+    const articles = await loadCatalystAuditArticles(db, enriched, days, enriched.catalysts)
+    const rejectionReasons = Array.from(new Set([
+      ...hardRejectionReasonsForRow(tracedRow),
+      ...(Array.isArray(readiness.blocked_reasons) ? readiness.blocked_reasons : []),
+      ...(validation.valid ? [] : ['PREDICTION_EVIDENCE_VALIDATION_FAILED']),
+    ].filter(Boolean)))
+    const status = hasPrimaryPredictionCatalyst(validation, tracedRow)
+      ? reaction.rejection ? 'rejected_priced_or_faded' : 'strict_catalyst_candidate'
+      : hasDevelopingCatalystEvidence(tracedRow)
+        ? 'developing_catalyst_candidate'
+        : 'watch_only_or_rejected'
+    return res.json({
+      ok: true,
+      ticker,
+      generated_at: new Date().toISOString(),
+      window_days: days,
+      session_context: sessionContext,
+      selection_status: status,
+      rejection_reasons: rejectionReasons,
+      trace: {
+        quote: {
+          ticker,
+          company: enriched.company || null,
+          exchange: enriched.exchange || null,
+          source: enriched.quote_source || null,
+          fetched_at: auditIsoTimestamp(enriched.fetched_at ?? enriched.updated_at),
+        },
+        articles,
+        features: catalystAuditFeatureInputs(enriched, validation, threshold, quality, reaction),
+        catalyst: {
+          main: enriched.main_catalyst || null,
+          taxonomy: quality.taxonomy || null,
+          quality,
+          validation,
+          reaction,
+        },
+        threshold,
+        readiness,
+        classification: {
+          catalyst_label: classification.catalyst_label || null,
+          catalyst_direction: classification.catalyst_direction || null,
+          setup_type: classification.setup_type || null,
+          discovery_tier: classification.discovery_tier || null,
+          reason: classification.reason_included || classification.catalystReason || null,
+        },
+        scorecard,
+        score_contributions: {
+          catalyst_quality: {
+            base_score: quality.taxonomy?.base_score ?? null,
+            materiality: quality.taxonomy?.materiality_score ?? null,
+            directness: quality.taxonomy?.directness_score ?? null,
+            source: quality.taxonomy?.source_score ?? quality.source_score ?? null,
+            simplicity: quality.taxonomy?.simplicity_score ?? null,
+            explosion_potential: quality.taxonomy?.explosion_potential_score ?? null,
+            hard_rejection_reason: quality.hard_rejection_reason || null,
+          },
+          prediction_scorecard: scorecard,
+        },
+      },
+    })
+  } catch (err) {
+    return res.status(500).json({ ok: false, error: String(err.message || err) })
+  }
+})
+
 // GET /api/screener
 router.get('/', async (req, res) => {
   try {
@@ -5369,7 +5927,8 @@ router.get('/', async (req, res) => {
       !mirrorMode &&
       view === 'all' &&
       requestedLimit > 1000 &&
-      !hasEvidenceSensitiveFilter
+      !hasEvidenceSensitiveFilter &&
+      !['1', 'true', 'yes'].includes(String(req.query.enrich || '').toLowerCase())
     )
     
     let data = (await Screener.find(filter)
@@ -5402,7 +5961,7 @@ router.get('/', async (req, res) => {
       data = applySignalFilter(data, signal, req.query)
     }
 
-    const useFastDevelopingPeopleView = view === 'predicted_increases' && !['1', 'true', 'yes'].includes(String(req.query.fullPrediction || req.query.full_prediction || '').toLowerCase())
+    const useFastDevelopingPeopleView = view === 'predicted_increases' && ['1', 'true', 'yes'].includes(String(req.query.fastPeopleOnly || req.query.fast_people_only || '').toLowerCase())
     if (useFastDevelopingPeopleView) {
       const peopleRows = buildPeopleMomentumDevelopingRows(data, requestedLimit)
         .map((row, index) => suppressBroadRoundupMainCatalyst({
@@ -5630,6 +6189,7 @@ router.get('/', async (req, res) => {
 	            predicted > 0 &&
 	            positiveCurrentMover(row) &&
 	            validation.valid &&
+	            hasPrimaryPredictionCatalyst(validation, row) &&
 	            climberGate.passes &&
 	            !catalystReactionExhausted(row) &&
 	            freshTriggerState.passesRawPrediction &&
@@ -5717,6 +6277,7 @@ router.get('/', async (req, res) => {
             Number.isFinite(predicted) && predicted >= Number(req.query.minPredictedReturn || climberGate.highConvictionMinReturnPct || 4.5) &&
             isPositivePredictionRow(row) &&
 	            validation.valid &&
+	            hasPrimaryPredictionCatalyst(validation, row) &&
 	            climberGate.passes &&
 	            !catalystReactionExhausted(row) &&
 	            freshTriggerState.passesHighConviction &&
@@ -5775,6 +6336,7 @@ router.get('/', async (req, res) => {
             const blockedReasons = Array.isArray(row.prediction_blocked_reasons) ? row.prediction_blocked_reasons : []
             const score = Number(row.final_prediction_score ?? row.convictionScore ?? row.watchScore ?? row.watch_score ?? row.evidence_score ?? 0)
             const movementOrPendingCatalyst = developingCandidateMovementOrCatalystOk(row, riskFlags, blockedReasons)
+            const catalystEvidence = hasDevelopingCatalystEvidence(row)
             const allowPendingCatalystWithoutPeople = movementOrPendingCatalyst && !positiveCurrentMover(row)
             const change = nullableNumber(row.currentChangePct ?? row.change_pct)
             const pendingCatalystScoreFloor = allowPendingCatalystWithoutPeople ? Math.max(35, PREDICTION_DEVELOPING_CANDIDATE_MIN_SCORE - 8) : PREDICTION_DEVELOPING_CANDIDATE_MIN_SCORE
@@ -5784,6 +6346,7 @@ router.get('/', async (req, res) => {
             return (score >= pendingCatalystScoreFloor || strongPendingCatalyst) &&
               notAlreadySellingOff &&
               movementOrPendingCatalyst &&
+              catalystEvidence &&
               !catalystReactionExhausted(row) &&
               !riskFlags.includes('REJECTED_CATALYST_QUALITY') &&
               !riskFlags.includes('PENDING_OPEN_WEAK_CATALYST_QUALITY') &&
@@ -5858,8 +6421,19 @@ router.get('/', async (req, res) => {
             reason_included: `${row.reason_included || 'Top candidate'} · best available fallback; strict high-conviction gate did not pass`,
           }))
         : []
+      const rankedCandidateRows = view === 'predicted_increases'
+        ? [...baseDisplayRows.map(withDiscoveryTier), ...candidatePoolRows]
+          .sort((a, b) => {
+            const displayDiff = predictionDisplayPriority(b) - predictionDisplayPriority(a)
+            if (displayDiff !== 0) return displayDiff
+            return Number(b.final_prediction_score ?? b.convictionScore ?? b.watchScore ?? b.watch_score ?? 0) -
+              Number(a.final_prediction_score ?? a.convictionScore ?? a.watchScore ?? a.watch_score ?? 0)
+          })
+          .slice(0, requestedLimit)
+          .map((row, index) => ({ ...row, rank: index + 1 }))
+        : []
       let finalRows = view === 'predicted_increases'
-        ? [...baseDisplayRows.map(withDiscoveryTier), ...candidatePoolRows].slice(0, requestedLimit)
+        ? rankedCandidateRows
         : (strictRows.length ? strictRows.map(withDiscoveryTier) : (liveDisplayRows.length ? liveDisplayRows.map(withDiscoveryTier) : topBestCandidateRows))
       finalRows = finalRows.map(suppressBroadRoundupMainCatalyst)
       const finalTickers = new Set(finalRows.map(row => String(row.ticker || '').toUpperCase()).filter(Boolean))
@@ -5878,6 +6452,18 @@ router.get('/', async (req, res) => {
         for (const flag of flags) acc[flag] = (acc[flag] || 0) + 1
         return acc
       }, {})
+      const pipelineStageCounts = predictionPipelineStageCounts({
+        configuredUniverseRows: queryLimit,
+        loadedRows: data,
+        enteringRows: data,
+        scoringRows: predictionRows,
+        strictRows,
+        candidateRows: candidatePoolRows,
+        finalRows,
+        fallbackRows,
+        realUpRows,
+        realHighConvictionRows,
+      })
       const removedByFilterCounts = {
         no_up_direction: view === 'predicted_increases' ? Math.max(0, predictionRows.length - realUpRows.length) : 0,
         below_high_conviction_threshold: view === 'high_conviction_next_day' ? Math.max(0, predictionRows.length - realHighConvictionRows.length) : 0,
@@ -5952,6 +6538,9 @@ router.get('/', async (req, res) => {
         activeSetupRows: fallbackSetupCounts.active_setup_already_above_threshold || 0,
         nearThresholdRows: fallbackSetupCounts.near_threshold_setup || 0,
         finalRows: finalRows.length,
+        rankedCandidateRows: rankedCandidateRows.length,
+        topFiveTickers: finalRows.slice(0, 5).map(row => String(row.ticker || '').toUpperCase()).filter(Boolean),
+        pipelineStageCounts,
         modelMode: predictionSourceMode,
         calibratorMode: modelDoc?.status || 'calibrator_shadow_fallback',
         predictionCacheMode: 'mongo',
@@ -6014,6 +6603,9 @@ router.get('/', async (req, res) => {
           activeSetupRows: predictionDebug.activeSetupRows,
           nearThresholdRows: predictionDebug.nearThresholdRows,
           finalRows: finalRows.length,
+          rankedCandidateRows: predictionDebug.rankedCandidateRows,
+          topFiveTickers: predictionDebug.topFiveTickers,
+          pipelineStageCounts: predictionDebug.pipelineStageCounts,
           latestPredictionAt: predictionDebug.latestPredictionAt,
           predictionDate: predictionDebug.predictionDate,
           targetDate: predictionDebug.targetDate,
@@ -6098,6 +6690,7 @@ router.get('/', async (req, res) => {
     const filteredData = mirrorMode ? applyMirrorFilters(filterUniverse, req.query) : data
     const responseRows = (mirrorMode ? filteredData.slice(0, requestedLimit) : filteredData)
       .map(suppressBroadRoundupMainCatalyst)
+      .map(withPredictionSetupClassification)
     const summaryRows = mirrorMode ? filteredData : responseRows
     const activeSocialRows = summaryRows.filter(row => Number(row.message_count || 0) > 0)
     const totalSocialMessages = summaryRows.reduce((sum, row) => sum + Number(row.message_count || 0), 0)

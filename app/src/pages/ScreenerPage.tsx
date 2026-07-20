@@ -130,6 +130,7 @@ export function ScreenerPage() {
       view: viewMode === 'overview' ? 'all' : viewMode,
       orderBy,
       orderDir,
+      enrich: '1',
     })
     if (viewMode === 'predicted_increases' || viewMode === 'high_conviction_next_day') {
       params.set('horizon', '1d')
