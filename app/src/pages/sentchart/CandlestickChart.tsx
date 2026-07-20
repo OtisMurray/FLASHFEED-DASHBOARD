@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useRef } from 'react'
 
-interface Candle { time: string; open: number; high: number; low: number; close: number }
+interface Candle { time: string; open: number; high: number; low: number; close: number; volume?: number }
 interface BollingerData { upper: Array<{ time: string; value: number }>; lower: Array<{ time: string; value: number }> }
 interface LinePoint { time: number; value: number }
 // Strategy indicator marker: an entry (up-arrow) or exit (down-arrow) at a given
@@ -65,6 +65,27 @@ export function CandlestickChart({ candles, bollinger, densityOverlay, sentiment
         wickDownColor: '#ef4444',
       })
       candleSeries.setData(candles as any)
+
+      // Volume histogram — up/down-colored bars on their own bottom-anchored
+      // scale so magnitude never distorts the price axis. Colors match the
+      // candle up/down palette; semi-transparent so overlays remain readable.
+      const volumeData = candles
+        .filter(c => (c.volume ?? 0) > 0)
+        .map(c => ({
+          time: c.time as any,
+          value: c.volume ?? 0,
+          color: c.close >= c.open ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.32)',
+        }))
+      if (volumeData.length) {
+        const volumeSeries = chart.addHistogramSeries({
+          priceScaleId: 'volume',
+          priceFormat: { type: 'volume' },
+          priceLineVisible: false,
+          lastValueVisible: false,
+        })
+        volumeSeries.setData(volumeData as any)
+        chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } })
+      }
 
       // Bollinger bands
       if (bollinger) {
