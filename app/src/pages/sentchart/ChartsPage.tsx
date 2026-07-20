@@ -65,6 +65,8 @@ export function ChartsPage() {
   const [error, setError] = useState<string | null>(null)
   const [enrich, setEnrich] = useState<EnrichData | null>(null)
   const [enrichLoaded, setEnrichLoaded] = useState(false)  // distinguishes "loading" from "no enrichment endpoint"
+  // Recent prediction signals — market-wide feed backed by /api/prediction.
+  const [predictions, setPredictions] = useState<PredictionRow[] | null>(null)
 
   // Price-chart bar timeframe (client-side resample) + density/sentiment overlays.
   // All three recompute from already-fetched data — no server round-trip.
@@ -109,6 +111,18 @@ export function ChartsPage() {
       .catch(() => { if (!cancelled) { setEnrich(null); setEnrichLoaded(true) } })
     return () => { cancelled = true }
   }, [ticker])
+
+  // Recent prediction signals (market-wide) — backed by /api/prediction (Express).
+  // Global feed, ticker-independent, so fetched once on mount. Degrades to an
+  // empty (hidden) panel if the endpoint is unavailable.
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/prediction/signals')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled) setPredictions(Array.isArray(d?.rows) ? d.rows : []) })
+      .catch(() => { if (!cancelled) setPredictions([]) })
+    return () => { cancelled = true }
+  }, [])
 
   // Candlestick view fetches its own OHLC+indicators; research views are driven
   // by <ResearchChart> off the same ticker/window.
@@ -371,6 +385,7 @@ export function ChartsPage() {
 
           {/* Per-ticker enrichments below the chart: 3-day news + social/gossip */}
           <TickerEnrichPanels ticker={ticker} enrich={enrich} loaded={enrichLoaded} />
+          <PredictionSignals rows={predictions} />
         </>
       )}
     </div>
@@ -384,6 +399,53 @@ function ChartCard({ title, height, children }: { title: string; height: number;
         <span className="text-xs text-neutral font-medium uppercase tracking-wide">{title}</span>
       </div>
       <div style={{ height }}>{children}</div>
+    </div>
+  )
+}
+
+// ── Recent Prediction Signals panel ───────────────────────────────────────────
+// Market-wide model signals from /api/prediction/signals (Express backend). Ported
+// from Otis's ChartsPage prediction panel, restyled to this page's panel tokens.
+interface PredictionRow {
+  ticker: string
+  company?: string
+  decision?: string
+  created_at?: string
+  entry_price?: number
+  baseline_signal?: { direction?: string; confidence?: number } | null
+  features?: { change_pct?: number } | null
+}
+
+function fmtSignalTime(iso?: string): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? '' : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function PredictionSignals({ rows }: { rows: PredictionRow[] | null }) {
+  if (!rows || !rows.length) return null
+  return (
+    <div className="bg-surface border border-border rounded-lg overflow-hidden mt-3">
+      <div className="px-3 py-2 border-b border-border flex items-center gap-2">
+        <span className="text-xs text-neutral font-medium uppercase">Recent Prediction Signals</span>
+        <span className="text-[10px] text-neutral">market-wide · latest {Math.min(rows.length, 8)}</span>
+      </div>
+      <div className="divide-y divide-border/60">
+        {rows.slice(0, 8).map((r, i) => {
+          const chg = r.features?.change_pct
+          const conf = r.baseline_signal?.confidence
+          return (
+            <div key={`${r.ticker}-${i}`} className="grid grid-cols-[120px_60px_1fr_84px] gap-2 px-3 py-2 text-xs items-center">
+              <span className="font-mono text-neutral truncate">{fmtSignalTime(r.created_at)}</span>
+              <span className="font-mono text-white font-semibold">{r.ticker}</span>
+              <span className="text-slate-200 truncate">{r.decision || r.baseline_signal?.direction || 'signal'}{r.company ? ` · ${r.company}` : ''}</span>
+              <span className={clsx('font-mono text-right', chg != null && chg > 0 ? 'text-emerald-400' : chg != null && chg < 0 ? 'text-orange-400' : 'text-neutral')}>
+                {chg == null ? (conf != null ? `${(conf * 100).toFixed(0)}%` : '—') : `${chg > 0 ? '+' : ''}${Number(chg).toFixed(1)}%`}
+              </span>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
