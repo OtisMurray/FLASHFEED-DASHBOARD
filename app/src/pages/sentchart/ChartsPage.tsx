@@ -8,7 +8,7 @@ import { MACDChart } from './MACDChart'
 import { ResearchChart, type ResearchMode } from './ResearchChart'
 import { TickerEnrichPanels, type EnrichData } from './TickerEnrichPanels'
 import { resampleCandles, bollingerFromCandles, rsiFromCandles, macdFromCandles, overlaySeries, bucketStart, ROLL_WINDOW_DEFAULT, type SocialSeries } from './chartAgg'
-import type { StrategyMarker } from './CandlestickChart'
+import type { StrategyMarker, NewsMarker } from './CandlestickChart'
 
 // Price-chart bar timeframes. The backend serves ONLY 1-minute extended-hours
 // intraday bars (one session) — no daily/weekly — so the options stop at 1h and
@@ -208,6 +208,26 @@ export function ChartsPage() {
     }
   }, [data, tf, social, showDensity, showSentiment])
 
+  // News-on-candle markers — reuse the already-fetched enrich News feed. A dot
+  // above the bar at each article's publish time, colored by sentiment, snapped
+  // to the active timeframe grid. Only articles whose publish time falls within
+  // the charted session are shown. NOTE: enrich News is a last-3-days window, so
+  // these stay empty until fresh same-session news lands — expected, not a bug.
+  const newsMarkers = useMemo<NewsMarker[] | undefined>(() => {
+    const arts = enrich?.news?.articles
+    const candles = priceView.candles as Array<{ time: number }>
+    if (!arts?.length || !candles.length) return undefined
+    const first = candles[0].time
+    const last = candles[candles.length - 1].time
+    const out: NewsMarker[] = []
+    for (const a of arts) {
+      const ts = a.published_at
+      if (!ts || ts < first || ts > last) continue
+      out.push({ time: bucketStart(ts, tf), sentiment: a.sentiment ?? null, headline: a.headline })
+    }
+    return out.length ? out : undefined
+  }, [enrich, priceView, tf])
+
   return (
     <div>
       {/* Toolbar */}
@@ -331,7 +351,7 @@ export function ChartsPage() {
                 <ChartCard title="Candlestick + Bollinger Bands (20,2)" height={300}>
                   <CandlestickChart candles={priceView.candles as any} bollinger={priceView.bollinger as any}
                     densityOverlay={priceView.density} sentimentOverlay={priceView.sentiment}
-                    strategyMarkers={strategyMarkers} />
+                    strategyMarkers={strategyMarkers} newsMarkers={newsMarkers} />
                 </ChartCard>
                 <ChartCard title="RSI (14)" height={130}>
                   <RSIChart data={(priceView.rsi ?? []) as any} />
