@@ -333,6 +333,11 @@ services:
     environment:
       PORT: 5050
       FINVIZ_TOKEN: ${FINVIZ_TOKEN:-}
+      # Self-healing Finviz Elite auth: the service logs in with these and uses
+      # the session cookie (which overrides the rotating export token), re-logging
+      # in automatically on a 401. Set these instead of chasing FINVIZ_TOKEN.
+      FINVIZ_LOGIN: ${FINVIZ_LOGIN:-}
+      FINVIZ_PASSWORD: ${FINVIZ_PASSWORD:-}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       # Target this compose's mongo service (not localhost, which would fall
       # back to in-memory). Use chart-service's OWN db/collection so it stays

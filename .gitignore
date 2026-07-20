@@ -13,6 +13,13 @@ node_modules/
 *.p12
 *.pfx
 
+# chart-service runtime dir — persisted Finviz Elite session cookie + lock.
+# Never commit: the cookie is a live authenticated session.
+var/
+**/var/
+.finviz_cookies.json
+.finviz_refresh.lock
+
 # Local IDE/editor state
 .idea/
 .vscode/
