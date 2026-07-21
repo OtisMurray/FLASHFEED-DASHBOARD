@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, Link } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { CandlestickChart } from './CandlestickChart'
 import { RSIChart } from './RSIChart'
@@ -284,6 +284,13 @@ export function ChartsPage() {
         {data?.date && view === 'candles' && (
           <span className="text-xs text-neutral">{data.date} · {data.n} bars</span>
         )}
+        <Link
+          to="/charts-grid"
+          title="Multi-ticker chart wall — top movers"
+          className="ml-auto flex items-center gap-1.5 rounded border border-border px-3 py-2 text-xs text-neutral hover:border-accent hover:text-white transition-colors"
+        >
+          <span aria-hidden>▦</span> Grid
+        </Link>
       </div>
 
       {/* View selector */}
