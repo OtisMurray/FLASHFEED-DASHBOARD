@@ -36,7 +36,7 @@ function fmtCompact(n: number | undefined | null): string {
 }
 
 export function EntryScreenerPage() {
-  const [threshold, setThreshold] = useState(0.5)
+  const [threshold, setThreshold] = useState(0.1)
   const [orderBy, setOrderBy] = useState<string>('entry_score')
   const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('desc')
 
@@ -97,6 +97,9 @@ export function EntryScreenerPage() {
           <span className="text-xs text-neutral whitespace-nowrap">
             {passing} of {rows.length} pass
           </span>
+        </div>
+        <div className="text-[10px] text-slate-400 mt-2 italic">
+          Default 0.1 is the sweep-optimal value from the professor sweep analysis; provisional, pending validation against the corrected backtest.
         </div>
         <div className="text-[10px] text-slate-500 mt-2">
           Rolling Pearson correlation of price vs per-minute StockTwits message density (same math as the

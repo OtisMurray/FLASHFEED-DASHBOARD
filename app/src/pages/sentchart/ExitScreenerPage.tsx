@@ -28,7 +28,7 @@ const COLUMNS: Array<{ key: string; label: string }> = [
 ]
 
 export function ExitScreenerPage() {
-  const [stopPct, setStopPct] = useState(10)
+  const [stopPct, setStopPct] = useState(5)
   const [orderBy, setOrderBy] = useState<string>('distance_to_stop_pct')
   const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('asc')
 
@@ -94,6 +94,9 @@ export function ExitScreenerPage() {
           <span className="text-xs text-neutral whitespace-nowrap">
             {nearStop} within {NEAR_STOP_PCT}% of stop
           </span>
+        </div>
+        <div className="text-[10px] text-slate-400 mt-2 italic">
+          Default 5% is the sweep-optimal value from the professor sweep analysis; provisional, pending validation against the corrected backtest.
         </div>
         <div className="text-[10px] text-slate-500 mt-2">
           Positions are simulated by the Charts strategy (rolling-corr entry at {data?.threshold ?? 0.1}, trailing
