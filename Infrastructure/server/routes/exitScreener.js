@@ -57,7 +57,7 @@ async function fetchPositionsBatch(tickers, stopPct, threshold) {
 
 router.get('/', async (req, res) => {
   try {
-    const stopPct = clamp(req.query.stopPct ?? 10, 5, 30)
+    const stopPct = clamp(req.query.stopPct ?? 5, 5, 30)
     const threshold = clamp(req.query.threshold ?? DEFAULT_ENTRY_THRESHOLD, 0.01, 1)
     const limit = Math.round(clamp(req.query.limit ?? DEFAULT_LIMIT, 1, MAX_LIMIT))
 
