@@ -13,6 +13,7 @@ const ChartsPage = lazy(() => import('./pages/sentchart/ChartsPage').then(m => (
 const ChartsGridPage = lazy(() => import('./pages/ChartsGridPage').then(m => ({ default: m.ChartsGridPage })))
 const EntryScreenerPage = lazy(() => import('./pages/sentchart/EntryScreenerPage').then(m => ({ default: m.EntryScreenerPage })))
 const ExitScreenerPage = lazy(() => import('./pages/sentchart/ExitScreenerPage').then(m => ({ default: m.ExitScreenerPage })))
+const V11ScreenerPage = lazy(() => import('./pages/sentchart/V11ScreenerPage').then(m => ({ default: m.V11ScreenerPage })))
 const MirrorPage = lazy(() => import('./pages/MirrorPage').then(m => ({ default: m.MirrorPage })))
 const MomentumPage = lazy(() => import('./pages/MomentumPage').then(m => ({ default: m.MomentumPage })))
 const CorrelationPage = lazy(() => import('./pages/CorrelationPage').then(m => ({ default: m.CorrelationPage })))
@@ -45,6 +46,7 @@ export default function App() {
             <Route path="/charts"      element={<ChartsPage />} />
             <Route path="/entry-screener" element={<EntryScreenerPage />} />
             <Route path="/exit-screener"  element={<ExitScreenerPage />} />
+            <Route path="/v11-screener"   element={<V11ScreenerPage />} />
             <Route path="/charts-grid" element={<ChartsGridPage />} />
             <Route path="/window-mirror" element={<Navigate to="/screener" replace />} />
             <Route path="/momentum"    element={<MomentumPage />} />

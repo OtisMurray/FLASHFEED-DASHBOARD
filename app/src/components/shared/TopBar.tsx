@@ -23,6 +23,7 @@ const NAV = [
   { href: '/exit-screener', label: 'Exit Screener' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
+  { href: '/v11-screener', label: 'v11 Profile (test)' },
   { href: '/prediction-audit', label: 'Prediction Audit' },
   { href: '/system-health', label: 'System Health' },
   { href: '/settings', label: 'Settings' },
