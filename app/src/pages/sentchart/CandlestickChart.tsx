@@ -1,12 +1,16 @@
 'use client'
 import { useEffect, useRef } from 'react'
 
-interface Candle { time: string; open: number; high: number; low: number; close: number }
+interface Candle { time: string; open: number; high: number; low: number; close: number; volume?: number }
 interface BollingerData { upper: Array<{ time: string; value: number }>; lower: Array<{ time: string; value: number }> }
 interface LinePoint { time: number; value: number }
 // Strategy indicator marker: an entry (up-arrow) or exit (down-arrow) at a given
 // candle time. `price` is informational; the arrow rides above/below the bar.
 export interface StrategyMarker { time: number; type: 'entry' | 'exit'; price: number }
+
+// News event marker: a dot above the bar at an article's publish time, colored
+// by sentiment. Sourced from the enrich News feed (last-3-days window).
+export interface NewsMarker { time: number; sentiment?: 'bullish' | 'bearish' | 'neutral' | null; headline?: string }
 
 interface Props {
   candles: Candle[]
@@ -19,9 +23,12 @@ interface Props {
   // Strategy entry/exit arrows (lightweight-charts v5 series markers). Undefined
   // = indicator off. Up-arrow (green) at entries, down-arrow (red) at exits.
   strategyMarkers?: StrategyMarker[]
+  // News event dots (above the bar), merged into the SAME setMarkers call as the
+  // strategy arrows — see the merge note below.
+  newsMarkers?: NewsMarker[]
 }
 
-export function CandlestickChart({ candles, bollinger, densityOverlay, sentimentOverlay, strategyMarkers }: Props) {
+export function CandlestickChart({ candles, bollinger, densityOverlay, sentimentOverlay, strategyMarkers, newsMarkers }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<any>(null)
 
@@ -66,6 +73,27 @@ export function CandlestickChart({ candles, bollinger, densityOverlay, sentiment
       })
       candleSeries.setData(candles as any)
 
+      // Volume histogram — up/down-colored bars on their own bottom-anchored
+      // scale so magnitude never distorts the price axis. Colors match the
+      // candle up/down palette; semi-transparent so overlays remain readable.
+      const volumeData = candles
+        .filter(c => (c.volume ?? 0) > 0)
+        .map(c => ({
+          time: c.time as any,
+          value: c.volume ?? 0,
+          color: c.close >= c.open ? 'rgba(16, 185, 129, 0.35)' : 'rgba(239, 68, 68, 0.32)',
+        }))
+      if (volumeData.length) {
+        const volumeSeries = chart.addHistogramSeries({
+          priceScaleId: 'volume',
+          priceFormat: { type: 'volume' },
+          priceLineVisible: false,
+          lastValueVisible: false,
+        })
+        volumeSeries.setData(volumeData as any)
+        chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } })
+      }
+
       // Bollinger bands
       if (bollinger) {
         const upperSeries = chart.addLineSeries({
@@ -104,16 +132,22 @@ export function CandlestickChart({ candles, bollinger, densityOverlay, sentiment
         chart.priceScale('sentiment').applyOptions({ scaleMargins: { top: 0.05, bottom: 0.72 } })
       }
 
-      // Strategy indicator. Entry = green up-arrow below the bar,
-      // exit = red down-arrow above the bar. Markers must be in ascending time.
-      if (strategyMarkers && strategyMarkers.length) {
-        const mk = [...strategyMarkers]
-          .sort((a, b) => a.time - b.time)
-          .map(m => m.type === 'entry'
-            ? { time: m.time as any, position: 'belowBar' as const, color: '#10b981', shape: 'arrowUp' as const }
-            : { time: m.time as any, position: 'aboveBar' as const, color: '#ef4444', shape: 'arrowDown' as const })
-        candleSeries.setMarkers(mk as any)
-      }
+      // Strategy entry/exit arrows and news event dots share ONE candle series,
+      // so they MUST be merged into a SINGLE setMarkers() call — calling
+      // setMarkers twice would make the second set replace the first, not add to
+      // it. Build one combined, time-sorted array.
+      const stratMk = (strategyMarkers ?? []).map(m => m.type === 'entry'
+        ? { time: m.time as any, position: 'belowBar' as const, color: '#10b981', shape: 'arrowUp' as const }
+        : { time: m.time as any, position: 'aboveBar' as const, color: '#ef4444', shape: 'arrowDown' as const })
+      const newsMk = (newsMarkers ?? []).map(n => ({
+        time: n.time as any,
+        position: 'aboveBar' as const,
+        color: n.sentiment === 'bullish' ? '#10b981'
+             : n.sentiment === 'bearish' ? '#ef4444' : '#94a3b8',
+        shape: 'circle' as const,
+      }))
+      const allMarkers = [...stratMk, ...newsMk].sort((a, b) => (a.time as number) - (b.time as number))
+      if (allMarkers.length) candleSeries.setMarkers(allMarkers as any)
 
       chart.timeScale().fitContent()
 
@@ -135,7 +169,7 @@ export function CandlestickChart({ candles, bollinger, densityOverlay, sentiment
         chartRef.current = null
       }
     }
-  }, [candles, bollinger, densityOverlay, sentimentOverlay, strategyMarkers])
+  }, [candles, bollinger, densityOverlay, sentimentOverlay, strategyMarkers, newsMarkers])
 
   return <div ref={containerRef} className="w-full h-full" />
 }

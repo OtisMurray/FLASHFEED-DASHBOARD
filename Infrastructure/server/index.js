@@ -13,6 +13,7 @@ import articlesRouter    from './routes/articles.js'
 import screenerRouter    from './routes/screener.js'
 import entryScreenerRouter from './routes/entryScreener.js'
 import exitScreenerRouter from './routes/exitScreener.js'
+import v11ScreenerRouter from './routes/v11Screener.js'
 import socialRouter      from './routes/social.js'
 import correlationRouter from './routes/correlation.js'
 import settingsRouter    from './routes/settings.js'
@@ -3254,6 +3255,7 @@ app.use('/api/articles',    articlesRouter)
 app.use('/api/screener',    screenerRouter)
 app.use('/api/entry-screener', entryScreenerRouter)
 app.use('/api/exit-screener', exitScreenerRouter)
+app.use('/api/v11-screener', v11ScreenerRouter)
 
 app.get("/api/momentum/trending", async (req, res) => {
   try {

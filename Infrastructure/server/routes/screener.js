@@ -1700,8 +1700,19 @@ function predictionThresholdProfile(row = {}) {
   }
 }
 
-function evaluatePredictionEntryThreshold(row = {}) {
-  const threshold = predictionThresholdProfile(row)
+// `profileOverride`, when supplied, replaces the row's tier-derived profile with
+// a caller-provided one (same shape: thresholdC, windowMinutes, maxPreSignalReturn60mPct,
+// minTrailing60Messages, exit params). Used by the experimental v11 screener to run
+// its own fixed profile through the exact same cross / pre-move / message gate logic.
+function evaluatePredictionEntryThreshold(row = {}, profileOverride = null) {
+  const threshold = profileOverride
+    ? {
+        policyVersion: profileOverride.policyVersion || 'profile_override',
+        tier: predictionMarketCapTier(row),
+        profile: clonePlain(profileOverride),
+        override: true,
+      }
+    : predictionThresholdProfile(row)
   const profile = threshold.profile
   const rawCorr = row.price_density_correlation ?? row.priceDensityCorrelation
   const rawPrevCorr = row.previous_price_density_correlation ?? row.prevPriceDensityCorrelation
@@ -6775,6 +6786,12 @@ router.post('/upsert', async (req, res) => {
 // Shared with routes/entryScreener.js and routes/exitScreener.js so the entry/
 // exit screeners screen the exact same clean listed-US universe and social-
 // activity stats as /api/screener.
-export { normalizeScreenerRow, isCleanListedUsRow, loadAdaptiveSocialStatsForRows }
+export {
+  normalizeScreenerRow,
+  isCleanListedUsRow,
+  loadAdaptiveSocialStatsForRows,
+  evaluatePredictionEntryThreshold,
+  predictionMarketCapTier,
+}
 
 export default router

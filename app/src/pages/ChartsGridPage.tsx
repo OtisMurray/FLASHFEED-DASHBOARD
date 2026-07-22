@@ -3,7 +3,7 @@ import useSWR from 'swr'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { clsx } from 'clsx'
-import { CandlestickChart } from './CandlestickChart'
+import { CandlestickChart } from './sentchart/CandlestickChart'
 import type { ScreenerRow } from '@/lib/types'
 
 const fetcher = (url: string) => fetch(url, { cache: 'no-store' }).then(r => r.json())
@@ -440,10 +440,6 @@ function ChartGridCard({ row, signal, recentDays, keyword, refreshNonce }: {
           <CandlestickChart
             candles={candles as any}
             bollinger={chart?.bollinger as any}
-            chartStyle="candles"
-            showBollinger
-            showMarkers={false}
-            minHeight={0}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-xs text-neutral">No candle data</div>

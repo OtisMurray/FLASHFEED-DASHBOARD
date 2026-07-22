@@ -510,3 +510,79 @@ export interface EntryScreenerRow {
   corr_status?:            string
   corr_date?:              string | null
 }
+
+// v11 Screener (EXPERIMENTAL) — postmortem replay of one fixed backtest profile
+// over the catalyst-enriched set. Rows from /api/v11-screener.
+export interface V11EvidenceGate {
+  required:        boolean
+  ok:              boolean
+  status:          string
+  shortSupport?:   boolean
+  catalystSupport?: boolean
+  socialSupport?:  boolean
+}
+export interface V11ScreenerRow {
+  ticker:        string
+  company?:      string
+  tier?:         string
+  market_cap?:   number | null
+  session_date?: string | null
+  catalyst_reason?: string
+  status:        'entered' | 'no_entry' | 'insufficient_bars' | 'missing_session_date' | 'bad_session_date' | 'error' | string
+  evidence?:     V11EvidenceGate
+  entry?: {
+    price?:                number | null
+    signal_sec?:           number | null
+    entry_sec?:            number | null
+    corr?:                 number | null
+    prev_corr?:            number | null
+    pre_return_60m_pct?:   number | null
+    active_move_pct?:      number | null
+    trailing_60m_messages?: number | null
+    gate_status?:          string
+    gate_reason?:          string
+  }
+  legs?: {
+    partial?: { target_pct?: number; fraction?: number; filled?: boolean; price?: number | null; exit_sec?: number | null; pnl_pct?: number | null }
+    runner?:  { price?: number | null; exit_sec?: number | null; exit_reason?: string | null; pnl_pct?: number | null }
+  }
+  outcome?: {
+    realized_return_pct?: number | null
+    won?:                 boolean | null
+    exit_reason?:         string | null
+    peak_return_pct?:     number | null
+  }
+  reject?: { reason?: string } | null
+  note?:   string
+  bars?:   number
+}
+
+export interface V11Profile {
+  label:                    string
+  windowMinutes:            number
+  thresholdC:               number
+  maxPreSignalReturn60mPct: number
+  minTrailing60Messages:    number
+  activeMoveMinPct:         number
+  activeMoveMaxPct:         number
+  partialProfitTargetPct:   number
+  partialExitFraction:      number
+  profitGivebackPct:        number
+  profitGivebackActivationPct: number
+  protectiveStopPct:        number
+  exitPlan:                 string
+}
+
+export interface V11ScreenerResponse {
+  ok:                boolean
+  profile:           V11Profile
+  universe:          string
+  mode:              string
+  experimental:      boolean
+  disclaimer?:       string
+  candidates_scanned?: number
+  count:             number
+  entered:           number
+  rows:              V11ScreenerRow[]
+  note?:             string
+}

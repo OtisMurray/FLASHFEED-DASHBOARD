@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, Link } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { CandlestickChart } from './CandlestickChart'
 import { RSIChart } from './RSIChart'
@@ -8,7 +8,7 @@ import { MACDChart } from './MACDChart'
 import { ResearchChart, type ResearchMode } from './ResearchChart'
 import { TickerEnrichPanels, type EnrichData } from './TickerEnrichPanels'
 import { resampleCandles, bollingerFromCandles, rsiFromCandles, macdFromCandles, overlaySeries, bucketStart, ROLL_WINDOW_DEFAULT, type SocialSeries } from './chartAgg'
-import type { StrategyMarker } from './CandlestickChart'
+import type { StrategyMarker, NewsMarker } from './CandlestickChart'
 
 // Price-chart bar timeframes. The backend serves ONLY 1-minute extended-hours
 // intraday bars (one session) — no daily/weekly — so the options stop at 1h and
@@ -65,6 +65,8 @@ export function ChartsPage() {
   const [error, setError] = useState<string | null>(null)
   const [enrich, setEnrich] = useState<EnrichData | null>(null)
   const [enrichLoaded, setEnrichLoaded] = useState(false)  // distinguishes "loading" from "no enrichment endpoint"
+  // Recent prediction signals — market-wide feed backed by /api/prediction.
+  const [predictions, setPredictions] = useState<PredictionRow[] | null>(null)
 
   // Price-chart bar timeframe (client-side resample) + density/sentiment overlays.
   // All three recompute from already-fetched data — no server round-trip.
@@ -109,6 +111,18 @@ export function ChartsPage() {
       .catch(() => { if (!cancelled) { setEnrich(null); setEnrichLoaded(true) } })
     return () => { cancelled = true }
   }, [ticker])
+
+  // Recent prediction signals (market-wide) — backed by /api/prediction (Express).
+  // Global feed, ticker-independent, so fetched once on mount. Degrades to an
+  // empty (hidden) panel if the endpoint is unavailable.
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/prediction/signals')
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled) setPredictions(Array.isArray(d?.rows) ? d.rows : []) })
+      .catch(() => { if (!cancelled) setPredictions([]) })
+    return () => { cancelled = true }
+  }, [])
 
   // Candlestick view fetches its own OHLC+indicators; research views are driven
   // by <ResearchChart> off the same ticker/window.
@@ -208,6 +222,26 @@ export function ChartsPage() {
     }
   }, [data, tf, social, showDensity, showSentiment])
 
+  // News-on-candle markers — reuse the already-fetched enrich News feed. A dot
+  // above the bar at each article's publish time, colored by sentiment, snapped
+  // to the active timeframe grid. Only articles whose publish time falls within
+  // the charted session are shown. NOTE: enrich News is a last-3-days window, so
+  // these stay empty until fresh same-session news lands — expected, not a bug.
+  const newsMarkers = useMemo<NewsMarker[] | undefined>(() => {
+    const arts = enrich?.news?.articles
+    const candles = priceView.candles as Array<{ time: number }>
+    if (!arts?.length || !candles.length) return undefined
+    const first = candles[0].time
+    const last = candles[candles.length - 1].time
+    const out: NewsMarker[] = []
+    for (const a of arts) {
+      const ts = a.published_at
+      if (!ts || ts < first || ts > last) continue
+      out.push({ time: bucketStart(ts, tf), sentiment: a.sentiment ?? null, headline: a.headline })
+    }
+    return out.length ? out : undefined
+  }, [enrich, priceView, tf])
+
   return (
     <div>
       {/* Toolbar */}
@@ -250,6 +284,13 @@ export function ChartsPage() {
         {data?.date && view === 'candles' && (
           <span className="text-xs text-neutral">{data.date} · {data.n} bars</span>
         )}
+        <Link
+          to="/charts-grid"
+          title="Multi-ticker chart wall — top movers"
+          className="ml-auto flex items-center gap-1.5 rounded border border-border px-3 py-2 text-xs text-neutral hover:border-accent hover:text-white transition-colors"
+        >
+          <span aria-hidden>▦</span> Grid
+        </Link>
       </div>
 
       {/* View selector */}
@@ -331,7 +372,7 @@ export function ChartsPage() {
                 <ChartCard title="Candlestick + Bollinger Bands (20,2)" height={300}>
                   <CandlestickChart candles={priceView.candles as any} bollinger={priceView.bollinger as any}
                     densityOverlay={priceView.density} sentimentOverlay={priceView.sentiment}
-                    strategyMarkers={strategyMarkers} />
+                    strategyMarkers={strategyMarkers} newsMarkers={newsMarkers} />
                 </ChartCard>
                 <ChartCard title="RSI (14)" height={130}>
                   <RSIChart data={(priceView.rsi ?? []) as any} />
@@ -351,6 +392,7 @@ export function ChartsPage() {
 
           {/* Per-ticker enrichments below the chart: 3-day news + social/gossip */}
           <TickerEnrichPanels ticker={ticker} enrich={enrich} loaded={enrichLoaded} />
+          <PredictionSignals rows={predictions} />
         </>
       )}
     </div>
@@ -364,6 +406,53 @@ function ChartCard({ title, height, children }: { title: string; height: number;
         <span className="text-xs text-neutral font-medium uppercase tracking-wide">{title}</span>
       </div>
       <div style={{ height }}>{children}</div>
+    </div>
+  )
+}
+
+// ── Recent Prediction Signals panel ───────────────────────────────────────────
+// Market-wide model signals from /api/prediction/signals (Express backend). Ported
+// from Otis's ChartsPage prediction panel, restyled to this page's panel tokens.
+interface PredictionRow {
+  ticker: string
+  company?: string
+  decision?: string
+  created_at?: string
+  entry_price?: number
+  baseline_signal?: { direction?: string; confidence?: number } | null
+  features?: { change_pct?: number } | null
+}
+
+function fmtSignalTime(iso?: string): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? '' : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function PredictionSignals({ rows }: { rows: PredictionRow[] | null }) {
+  if (!rows || !rows.length) return null
+  return (
+    <div className="bg-surface border border-border rounded-lg overflow-hidden mt-3">
+      <div className="px-3 py-2 border-b border-border flex items-center gap-2">
+        <span className="text-xs text-neutral font-medium uppercase">Recent Prediction Signals</span>
+        <span className="text-[10px] text-neutral">market-wide · latest {Math.min(rows.length, 8)}</span>
+      </div>
+      <div className="divide-y divide-border/60">
+        {rows.slice(0, 8).map((r, i) => {
+          const chg = r.features?.change_pct
+          const conf = r.baseline_signal?.confidence
+          return (
+            <div key={`${r.ticker}-${i}`} className="grid grid-cols-[120px_60px_1fr_84px] gap-2 px-3 py-2 text-xs items-center">
+              <span className="font-mono text-neutral truncate">{fmtSignalTime(r.created_at)}</span>
+              <span className="font-mono text-white font-semibold">{r.ticker}</span>
+              <span className="text-slate-200 truncate">{r.decision || r.baseline_signal?.direction || 'signal'}{r.company ? ` · ${r.company}` : ''}</span>
+              <span className={clsx('font-mono text-right', chg != null && chg > 0 ? 'text-emerald-400' : chg != null && chg < 0 ? 'text-orange-400' : 'text-neutral')}>
+                {chg == null ? (conf != null ? `${(conf * 100).toFixed(0)}%` : '—') : `${chg > 0 ? '+' : ''}${Number(chg).toFixed(1)}%`}
+              </span>
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
