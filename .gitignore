@@ -13,6 +13,12 @@ node_modules/
 *.p12
 *.pfx
 
+# Finviz authenticated session state. This is a live cookie, never source data.
+var/
+**/var/
+.finviz_cookies.json
+.finviz_refresh.lock
+
 # Local IDE/editor state
 .idea/
 .vscode/
@@ -85,6 +91,8 @@ temp/
 **/.chart_cache_*/
 
 # Database/runtime dumps
+/data/
+data/
 *.db
 *.sqlite
 *.sqlite3

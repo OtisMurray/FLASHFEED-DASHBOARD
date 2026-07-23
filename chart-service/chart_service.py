@@ -76,35 +76,25 @@ _load_dotenv()
 
 
 def get_finviz_token() -> str:
-    """Finviz Elite token. Canonical name is FINVIZ_TOKEN (our convention); we
-    also accept Ryan's legacy FINVIZ_AUTH_TOKEN as a fallback so an existing
-    .env keeps working. Fail-loud if neither is set (no baked-in fallback)."""
+    """Return the optional legacy rotating Finviz export token."""
     tok = os.environ.get("FINVIZ_TOKEN") or os.environ.get("FINVIZ_AUTH_TOKEN")
-    if not tok or not tok.strip():
-        raise RuntimeError(
-            "FINVIZ_TOKEN is not set. Add it to chart-service/.env "
-            "(copy .env.example). There is no baked-in fallback."
-        )
-    return tok.strip()
+    return tok.strip() if tok and tok.strip() else ""
 
 
 def has_finviz_token() -> bool:
     return bool(os.environ.get("FINVIZ_TOKEN") or os.environ.get("FINVIZ_AUTH_TOKEN"))
 
 
-# ── auto-auth: Finviz Elite login cookie (shared with sentiment-scout) ────────
+# ── auto-auth: self-contained Finviz Elite login cookie ──────────────────────
 # The Elite export token is dynamic and eventually 401s. Rather than chase the
 # rotating token (Finviz no longer exposes it), we authenticate with a stored
 # login *cookie*, which overrides the token on the same export endpoints. The
-# login + cookie store lives in sentiment-scout/finviz_auth.py (it holds the
-# encrypted Finviz credentials); we import it by path so both services share one
-# session. If it can't be imported (e.g. deployed alone), we fall back to the
-# token-in-URL and simply surface the auth error as before.
-_SS_DIR = os.path.normpath(os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "..", "sentiment-scout"))
+# login + cookie store is vendored beside this service, so a standalone
+# deployment can refresh itself from FINVIZ_LOGIN / FINVIZ_PASSWORD.
+_MOD_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
-    if _SS_DIR not in sys.path:
-        sys.path.insert(0, _SS_DIR)
+    if _MOD_DIR not in sys.path:
+        sys.path.insert(0, _MOD_DIR)
     import finviz_auth as _finviz_auth
 except Exception:
     _finviz_auth = None
@@ -164,10 +154,12 @@ def _fetch_intraday_bars(ticker: str, date_str: str):
     except ValueError:
         fdate = date_str
     def build_url():
-        return (
+        url = (
             f"https://elite.finviz.com/quote_export"
-            f"?t={ticker}&p=i1&s={fdate}&e={fdate}&auth={get_finviz_token()}"
+            f"?t={ticker}&p=i1&s={fdate}&e={fdate}"
         )
+        token = get_finviz_token()
+        return f"{url}&auth={token}" if token else url
     url = build_url()
     try:
         session = cffi_requests.Session()
@@ -777,6 +769,8 @@ except ImportError:
 def api_health():
     return jsonify({"ok": True, "service": "chart-service", "phase": 2,
                     "finviz_token_configured": has_finviz_token(),
+                    "finviz_auto_auth": bool(_finviz_auth and _finviz_auth.have_login()),
+                    "finviz_session_cached": bool(_finviz_auth and _finviz_auth.have_fresh_cookies()),
                     "social_snapshot_present": os.path.exists(SOCIAL_DB_PATH),
                     "social_mode": "live StockTwits walk + Mongo store, SQLite seed fallback (phase 2b)",
                     "mongo_available": social_store.collection() is not None})

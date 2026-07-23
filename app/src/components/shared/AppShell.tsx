@@ -33,7 +33,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       >
         <div className="flex flex-col flex-1 min-w-0">
           <TopBar />
-          <main className="flex-1 overflow-auto p-4 md:p-5">{children}</main>
+          <main className="flex-1 min-h-0 overflow-auto p-4 md:p-5">{children}</main>
         </div>
       </div>
     </ToastProvider>

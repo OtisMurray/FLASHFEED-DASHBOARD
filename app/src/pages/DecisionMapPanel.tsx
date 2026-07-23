@@ -16,6 +16,11 @@ type DecisionMapRow = {
   marketCap?: number
   rawMarketCap?: number
   marketCapBucket?: string
+  sharesFloat?: number | null
+  rawSharesFloat?: number | null
+  floatBucket?: string
+  floatShort?: number | null
+  floatPercent?: number | null
   marketCapRelVolumeTarget?: number
   marketCapRelativeVolumeScore?: number
   dollarVolumeTarget?: number
@@ -121,6 +126,21 @@ const VOLUME_TIMEFRAMES = [
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value))
+}
+
+function finiteMapCoordinate(value: unknown) {
+  return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+}
+
+function uniquePlottableRows(rows: DecisionMapRow[]) {
+  const seen = new Set<string>()
+  return rows.filter(row => {
+    const ticker = String(row.ticker || '').trim().toUpperCase()
+    if (!ticker || seen.has(ticker)) return false
+    if (!finiteMapCoordinate(row.combinedSentiment) || !finiteMapCoordinate(row.priceChangePct) || !finiteMapCoordinate(row.relativeVolume)) return false
+    seen.add(ticker)
+    return true
+  })
 }
 
 function compact(n: number | null | undefined) {
@@ -835,7 +855,7 @@ function ThreeDecisionMap({
         trailGroup.add(arrow)
       }
     }
-    rows.slice(0, 140).forEach((row, index) => {
+    rows.forEach((row, index) => {
       const currentSelectedTicker = selectedTickerRef.current
       const isSelected = Boolean(currentSelectedTicker && row.ticker === currentSelectedTicker)
       const material = new THREE.MeshStandardMaterial({
@@ -1064,7 +1084,17 @@ function ThreeDecisionMap({
   }, [rows, resetKey, zoom, onSelectTicker])
 
   return (
-    <div ref={hostRef} className="relative h-[560px] min-h-[420px] overflow-hidden rounded bg-bg border border-border">
+    <div
+      ref={hostRef}
+      data-testid="decision-map-canvas"
+      data-plotted-points={rows.length}
+      data-unique-tickers={new Set(rows.map(row => row.ticker)).size}
+      data-tickers={rows.map(row => row.ticker).join(',')}
+      aria-label={rows.length === 1
+        ? `3D Decision Map for ${rows[0].ticker} with 1 ticker point`
+        : `3D Decision Map with ${rows.length} ticker points`}
+      className="relative h-[560px] min-h-[420px] overflow-hidden rounded bg-bg border border-border"
+    >
       <div className="pointer-events-none absolute left-3 top-3 z-20 rounded border border-border bg-surface/90 px-2 py-1 text-[11px] text-neutral">
         {isLoading ? 'Loading real screener rows...' : `${rows.length} active screener-first rows`}
       </div>
@@ -1116,11 +1146,15 @@ function ThreeDecisionMap({
                   <MetricCell label="Rel Vol" value={numberLabel(row.relativeVolume, 2, 'x')} />
                   <MetricCell label="Raw Vol" value={compact(row.currentVolume)} />
                   <MetricCell label="$ Vol" value={money(row.currentDollarVolume)} />
+                  <MetricCell label="Float" value={compact(row.sharesFloat)} />
+                  <MetricCell label="Float bucket" value={row.floatBucket || '--'} />
+                  <MetricCell label="Short float" value={row.floatShort == null ? '--' : `${Number(row.floatShort).toFixed(2)}%`} />
                 </div>
 
                 <TooltipSection title="Ranking">
                   <DetailRow label="State" value={`${row.quadrant} · ${labelForQuadrant(row.quadrant)}`} />
                   <DetailRow label="Activity" value={`${numberLabel(row.activityScore, 0)} / 100`} />
+                  <DetailRow label="Float" value={`${compact(row.sharesFloat)} shares · ${row.floatBucket || 'unknown float'}`} />
                   <DetailRow label="Target" value={`${numberLabel(row.relativeVolume, 2, 'x')} vs ${numberLabel(row.marketCapRelVolumeTarget, 1, 'x')} RelVol · ${money(row.currentDollarVolume)} vs ${money(row.dollarVolumeTarget)}`} />
                   <DetailRow label="Why ranked" value={(row.reasons || []).slice(0, 3).join(' · ') || 'Screener-first rank from price, volume, sentiment, and catalyst evidence.'} />
                 </TooltipSection>
@@ -1190,53 +1224,81 @@ type DecisionMapPanelProps = {
   focusTicker?: string
   single?: boolean
   embedded?: boolean
+  rollingWindowMinutes?: number
 }
 
-export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single = false, embedded = false }: DecisionMapPanelProps = {}) {
+export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single = false, embedded = false, rollingWindowMinutes }: DecisionMapPanelProps = {}) {
   const [urlParams] = useSearchParams()
+  const requestedSingleTickerMode = ['1', 'true', 'yes'].includes(String(urlParams.get('single') || '').toLowerCase())
   const focusTicker = useMemo(() => {
     const forced = String(forcedFocusTicker || '').toUpperCase().replace(/^\$/, '')
     if (/^[A-Z][A-Z0-9.-]{0,7}$/.test(forced)) return forced
-    const raw = String(urlParams.get('focusTicker') || urlParams.get('ticker') || urlParams.get('search') || '').toUpperCase().replace(/^\$/, '')
+    const raw = String(
+      urlParams.get('focusTicker') ||
+      (requestedSingleTickerMode ? urlParams.get('ticker') || urlParams.get('search') : '') ||
+      '',
+    ).toUpperCase().replace(/^\$/, '')
     return /^[A-Z][A-Z0-9.-]{0,7}$/.test(raw) ? raw : ''
-  }, [urlParams, forcedFocusTicker])
-  const singleTickerMode = (single || ['1', 'true', 'yes'].includes(String(urlParams.get('single') || '').toLowerCase())) && Boolean(focusTicker)
+  }, [urlParams, forcedFocusTicker, requestedSingleTickerMode])
+  const singleTickerMode = (single || requestedSingleTickerMode) && Boolean(focusTicker)
   const [minRelVolume, setMinRelVolume] = useState(1)
   const [minAbsChange, setMinAbsChange] = useState(0.5)
   const [minSentiment, setMinSentiment] = useState(0.12)
-  const [windowHours, setWindowHours] = useState(4)
+  const controlledWindowHours = Number.isFinite(Number(rollingWindowMinutes)) && Number(rollingWindowMinutes) > 0
+    ? Number(rollingWindowMinutes) / 60
+    : null
+  const [windowHours, setWindowHours] = useState(controlledWindowHours ?? 4)
   const [volumeTimeframe, setVolumeTimeframe] = useState('5m')
   const [universe, setUniverse] = useState('active_finviz')
   const [session, setSession] = useState('auto')
   const [marketCapBucket, setMarketCapBucket] = useState('all')
+  const [floatBucket, setFloatBucket] = useState('all')
   const [relVolumeBucket, setRelVolumeBucket] = useState('all')
   const [sortKey, setSortKey] = useState<SortKey>('convictionScore')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [zoom, setZoom] = useState(1)
   const [resetKey, setResetKey] = useState(0)
   const [selectedTicker, setSelectedTicker] = useState(focusTicker)
+  const [tickerQuery, setTickerQuery] = useState('')
+  const [searchedTicker, setSearchedTicker] = useState('')
   const [isPlayingJourney, setIsPlayingJourney] = useState(false)
   const [playbackProgress, setPlaybackProgress] = useState<number | null>(null)
-  const [isRefreshing, setIsRefreshing] = useState(false)
   const [blankRefreshKey, setBlankRefreshKey] = useState('')
 
+  const requestTicker = focusTicker || searchedTicker
+  const tickerSearchMode = !singleTickerMode && Boolean(searchedTicker)
+  const singleTickerRequest = singleTickerMode || tickerSearchMode
+
   useEffect(() => {
-    if (focusTicker) setSelectedTicker(focusTicker)
-  }, [focusTicker])
+    if (requestTicker) {
+      setSelectedTicker(requestTicker)
+      return
+    }
+    if (!singleTickerRequest) {
+      setSelectedTicker('')
+      setPlaybackProgress(null)
+      setIsPlayingJourney(false)
+    }
+  }, [requestTicker, singleTickerRequest])
+
+  useEffect(() => {
+    if (controlledWindowHours != null) setWindowHours(controlledWindowHours)
+  }, [controlledWindowHours])
 
   const params = useMemo(() => {
     const next = new URLSearchParams({
       universe,
       path_points: '120',
       session,
-      limit: singleTickerMode ? '1' : '180',
-      min_rel_volume: String(singleTickerMode ? 0 : relVolumeBucket === 'all' ? minRelVolume : 0),
-      min_abs_change: String(singleTickerMode ? 0 : minAbsChange),
-      positive_sentiment: String(singleTickerMode ? -1 : minSentiment),
-      negative_sentiment: String(singleTickerMode ? 1 : -minSentiment),
-      price_threshold: String(singleTickerMode ? 0 : minAbsChange),
-      market_cap_bucket: singleTickerMode ? 'all' : marketCapBucket,
-      rel_volume_bucket: singleTickerMode ? 'all' : relVolumeBucket,
+      limit: singleTickerRequest ? '1' : '30',
+      min_rel_volume: String(singleTickerRequest ? 0 : relVolumeBucket === 'all' ? minRelVolume : 0),
+      min_abs_change: String(singleTickerRequest ? 0 : minAbsChange),
+      positive_sentiment: String(singleTickerRequest ? -1 : minSentiment),
+      negative_sentiment: String(singleTickerRequest ? 1 : -minSentiment),
+      price_threshold: String(singleTickerRequest ? 0 : minAbsChange),
+      market_cap_bucket: singleTickerRequest ? 'all' : marketCapBucket,
+      float_bucket: singleTickerRequest ? 'all' : floatBucket,
+      rel_volume_bucket: singleTickerRequest ? 'all' : relVolumeBucket,
       rolling_window_hours: String(windowHours),
       news_window_hours: String(windowHours),
       social_window_hours: String(windowHours),
@@ -1247,25 +1309,25 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
       sortBy: sortKey,
       orderDir: sortDir,
     })
-    if (singleTickerMode && focusTicker) {
-      next.set('search', focusTicker)
-      next.set('ticker', focusTicker)
-      next.set('focusTicker', focusTicker)
+    if (singleTickerRequest && requestTicker) {
+      next.set('search', requestTicker)
+      next.set('ticker', requestTicker)
+      next.set('focusTicker', requestTicker)
       next.set('single', '1')
-      next.set('cache_scope', `single-${focusTicker}`)
+      next.set('cache_scope', `single-${requestTicker}`)
     }
     return next
-  }, [minRelVolume, minAbsChange, minSentiment, windowHours, volumeTimeframe, universe, session, marketCapBucket, relVolumeBucket, sortKey, sortDir, focusTicker, singleTickerMode])
+  }, [minRelVolume, minAbsChange, minSentiment, windowHours, volumeTimeframe, universe, session, marketCapBucket, floatBucket, relVolumeBucket, sortKey, sortDir, requestTicker, singleTickerRequest])
 
   const decisionMapKey = `/api/decision-map?${params.toString()}`
-  const { data, isLoading, mutate } = useSWR(decisionMapKey, fetcher, { refreshInterval: 60_000 })
-  const { data: health } = useSWR('/api/decision-map/health', fetcher, { refreshInterval: 60_000 })
+  const { data, isLoading, mutate } = useSWR(decisionMapKey, fetcher, { refreshInterval: 60_000, keepPreviousData: false })
   const rawRows: DecisionMapRow[] = data?.rows ?? []
   const rows: DecisionMapRow[] = useMemo(() => {
-    if (!singleTickerMode || !focusTicker) return rawRows
-    return rawRows.filter(row => String(row.ticker || '').toUpperCase() === focusTicker)
-  }, [rawRows, singleTickerMode, focusTicker])
-  const singleTickerMismatch = singleTickerMode && focusTicker && rawRows.length > 0 && rows.length === 0
+    if (!singleTickerRequest || !requestTicker) return rawRows
+    return rawRows.filter(row => String(row.ticker || '').toUpperCase() === requestTicker)
+  }, [rawRows, requestTicker, singleTickerRequest])
+  const plottedRows = useMemo(() => uniquePlottableRows(rows), [rows])
+  const singleTickerMismatch = singleTickerRequest && requestTicker && rawRows.length > 0 && rows.length === 0
   const selectedRow = useMemo(
     () => rows.find(row => row.ticker === selectedTicker) || null,
     [rows, selectedTicker],
@@ -1349,24 +1411,8 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
     setIsPlayingJourney(true)
   }
 
-  const refreshDecisionMap = async () => {
-    if (isRefreshing) return
-    setIsRefreshing(true)
-    try {
-      const freshParams = new URLSearchParams(params)
-      freshParams.set('fresh', '1')
-      const rebuilt = await fetcher(`/api/decision-map?${freshParams.toString()}`)
-      await mutate(rebuilt, { revalidate: false })
-      if (selectedTicker && !rebuilt?.rows?.some((row: DecisionMapRow) => row.ticker === selectedTicker)) {
-        resetJourney()
-      }
-    } finally {
-      setIsRefreshing(false)
-    }
-  }
-
   useEffect(() => {
-    if (singleTickerMode || isLoading || isRefreshing || blankRefreshKey === decisionMapKey) return
+    if (singleTickerRequest || isLoading || blankRefreshKey === decisionMapKey) return
     if (!data?.ok || !Array.isArray(data.rows) || data.rows.length > 0) return
     setBlankRefreshKey(decisionMapKey)
     const freshParams = new URLSearchParams(params)
@@ -1374,7 +1420,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
     fetcher(`/api/decision-map?${freshParams.toString()}`)
       .then(rebuilt => mutate(rebuilt, { revalidate: false }))
       .catch(() => {})
-  }, [blankRefreshKey, data, decisionMapKey, isLoading, isRefreshing, mutate, params, singleTickerMode])
+  }, [blankRefreshKey, data, decisionMapKey, isLoading, mutate, params, singleTickerRequest])
 
   const sortedRows = useMemo(() => {
     const copy = [...rows]
@@ -1394,6 +1440,26 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
       setSortDir(key === 'ticker' ? 'asc' : 'desc')
     }
   }
+  const submitTickerSearch = () => {
+    const normalized = tickerQuery.toUpperCase().replace(/^\$/, '').trim()
+    if (!/^[A-Z][A-Z0-9.-]{0,7}$/.test(normalized)) return
+    setTickerQuery(normalized)
+    setSearchedTicker(normalized)
+    setSelectedTicker(normalized)
+    setPlaybackProgress(null)
+    setIsPlayingJourney(false)
+    setResetKey(value => value + 1)
+  }
+  const clearTickerSearch = () => {
+    setTickerQuery('')
+    setSearchedTicker('')
+    setSelectedTicker('')
+    setPlaybackProgress(null)
+    setIsPlayingJourney(false)
+    setZoom(1)
+    setResetKey(value => value + 1)
+  }
+  const validTickerQuery = /^[A-Z][A-Z0-9.-]{0,7}$/.test(tickerQuery.toUpperCase().replace(/^\$/, '').trim())
   const playbackFrame = selectedVisualPath.length
     ? Math.min(selectedVisualPath.length, Math.floor(playbackProgress ?? selectedVisualPath.length - 1) + 1)
     : 0
@@ -1469,7 +1535,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
           <div className="p-3">
             <ThreeDecisionMap
               key={singleTickerMode ? `single-${focusTicker}-${data?.cacheSignature || data?.generatedAt || rows[0]?.ticker || 'loading'}` : `multi-${resetKey}-${data?.cacheSignature || rows.length}`}
-              rows={rows}
+              rows={plottedRows}
               zoom={zoom}
               resetKey={resetKey}
               isLoading={isLoading}
@@ -1485,46 +1551,6 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
 
   return (
     <div className="space-y-3">
-      <div className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="font-semibold">Screener-first active universe</div>
-          <button
-            type="button"
-            onClick={refreshDecisionMap}
-            disabled={isRefreshing || isLoading}
-            className="rounded border border-cyan-400/50 bg-cyan-500/10 px-3 py-1 text-[11px] font-medium text-cyan-100 hover:bg-cyan-500/20 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {isRefreshing ? 'Rebuilding...' : 'Rebuild hot cache'}
-          </button>
-        </div>
-        <div className="mt-1 opacity-80">
-          Rows start from current numerical screener activity, then attach structured news, social sentiment, catalysts, and rolling volume inside the selected rolling window. No fake rows are generated.
-        </div>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          <StatusPill className={data?.cacheHit ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-100' : 'border-sky-400/40 bg-sky-500/10 text-sky-100'}>
-            {data?.cacheHit ? 'Redis hit' : data?.cacheMode || 'loading'}
-          </StatusPill>
-          <StatusPill className={data?.redisAvailable ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-100' : 'border-amber-400/40 bg-amber-500/10 text-amber-100'}>
-            Redis {data?.redisAvailable ? 'available' : 'unavailable'}
-          </StatusPill>
-          <StatusPill className="border-slate-600 bg-slate-900/70 text-slate-300">{data?.store || 'store pending'}</StatusPill>
-          <StatusPill className="border-slate-600 bg-slate-900/70 text-slate-300">{data?.count ?? rows.length} rows</StatusPill>
-          <StatusPill className="border-sky-400/40 bg-sky-500/10 text-sky-100">window {data?.rollingWindowUsed || windowLabel(windowHours)}</StatusPill>
-          <StatusPill className="border-cyan-400/40 bg-cyan-500/10 text-cyan-100">3D volume {data?.volumeTimeframe || volumeTimeframe}</StatusPill>
-          <StatusPill className="border-slate-600 bg-slate-900/70 text-slate-300">paths {pathPointSummary.min}/{pathPointSummary.median}/{pathPointSummary.max}</StatusPill>
-        </div>
-        <div className="mt-1 text-[11px] text-cyan-200/80">
-          Built {data?.builtAt ? new Date(data.builtAt).toLocaleTimeString() : '--'} · Map refresh: 60s · session: {data?.session || session} · evidence {data?.newsWindowUsed || windowLabel(windowHours)} / {data?.socialWindowUsed || windowLabel(windowHours)} · path {data?.pathWindowUsed || windowLabel(windowHours)} · 3D volume {data?.volumeTimeframe || volumeTimeframe} · FinViz age: {ageLabel(data?.freshness?.finviz?.ageSeconds)}
-          {data?.freshness?.finviz?.isStale ? ' · stale stored mover context' : ' · fresh active mover context'}
-        </div>
-        <div className={clsx('mt-1 text-[11px]', health?.ok === false ? 'text-amber-200' : 'text-emerald-200/90')}>
-          Health: {health?.status || 'checking'} · expected refresh {health?.expected_ui_refresh_seconds || 60}s
-          {health?.redis?.latest_age_seconds != null ? ` · Redis age ${ageLabel(health.redis.latest_age_seconds)}` : ''}
-          {health?.mongo?.storage_db ? ` · DB ${health.mongo.storage_db}` : ''}
-          {health?.warnings?.length ? ` · ${health.warnings.slice(0, 2).join(', ')}` : ''}
-        </div>
-      </div>
-
       <section className="bg-surface border border-border rounded-lg overflow-hidden">
         <div className="px-3 py-2 border-b border-border flex flex-wrap items-center justify-between gap-2">
           <div>
@@ -1548,6 +1574,47 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
             <StatusPill className="border-cyan-400/40 bg-cyan-500/10 text-cyan-100">partial {pathPointSummary.quality['Partial journey'] || 0}</StatusPill>
             <StatusPill className="border-amber-400/40 bg-amber-500/10 text-amber-100">snapshot/static {(pathPointSummary.quality['Snapshot only'] || 0) + (pathPointSummary.quality['Static: low movement'] || 0) + (pathPointSummary.quality['Static: missing path data'] || 0)}</StatusPill>
           </div>
+        </div>
+        <div className="border-b border-border bg-bg/40 px-3 py-2">
+          <form
+            className="flex flex-wrap items-end gap-2"
+            onSubmit={event => {
+              event.preventDefault()
+              submitTickerSearch()
+            }}
+          >
+            <label className="block min-w-[180px] flex-1 sm:max-w-xs">
+              <span className="mb-1 block text-[10px] uppercase text-neutral">Ticker journey</span>
+              <input
+                type="search"
+                value={tickerQuery}
+                maxLength={8}
+                autoComplete="off"
+                placeholder="Ticker"
+                onChange={event => setTickerQuery(event.target.value.toUpperCase().replace(/[^A-Z0-9.-]/g, ''))}
+                className="w-full rounded border border-border bg-bg px-2 py-1.5 font-mono text-xs text-white placeholder:text-slate-600 focus:border-sky-400 focus:outline-none"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={!validTickerQuery || tickerQuery === searchedTicker}
+              className="rounded border border-sky-500/50 bg-sky-500/10 px-3 py-1.5 text-xs text-sky-100 hover:bg-sky-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Search
+            </button>
+            {searchedTicker && (
+              <button
+                type="button"
+                onClick={clearTickerSearch}
+                className="rounded border border-border bg-bg px-3 py-1.5 text-xs text-slate-200 hover:text-white"
+              >
+                Clear
+              </button>
+            )}
+            <StatusPill className="border-slate-600 bg-slate-900/70 text-slate-300">
+              {searchedTicker ? `${searchedTicker} journey` : 'Top 30 candidates'}
+            </StatusPill>
+          </form>
         </div>
         <div className="border-b border-border bg-bg/40 px-3 py-2 flex flex-wrap items-center justify-between gap-2">
           <div className="text-xs text-slate-300">
@@ -1634,6 +1701,17 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
                 <option value="nano">Nano cap</option>
               </select>
             </Control>
+            <Control label="Float" value={floatBucket === 'all' ? 'All floats' : floatBucket.replace('_', ' ')}>
+              <select value={floatBucket} onChange={e => setFloatBucket(e.target.value)} className="w-full bg-bg border border-border rounded px-2 py-1 text-xs text-slate-200">
+                <option value="all">All floats</option>
+                <option value="ultra_low">Ultra-low (&lt;10M)</option>
+                <option value="low">Low (10-25M)</option>
+                <option value="mid">Mid (25-50M)</option>
+                <option value="high">High (50-100M)</option>
+                <option value="very_high">Very high (100M+)</option>
+                <option value="unknown">Unknown float</option>
+              </select>
+            </Control>
             <Control label="Relative volume" value={relVolumeBucket === 'all' ? `${minRelVolume.toFixed(1)}x min` : relVolumeBucket}>
               <select value={relVolumeBucket} onChange={e => setRelVolumeBucket(e.target.value)} className="w-full bg-bg border border-border rounded px-2 py-1 text-xs text-slate-200">
                 <option value="all">All, use min slider</option>
@@ -1699,7 +1777,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
 
           <div className="p-3">
             <ThreeDecisionMap
-              rows={rows}
+              rows={plottedRows}
               zoom={zoom}
               resetKey={resetKey}
               isLoading={isLoading}
@@ -1709,7 +1787,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
             />
             {singleTickerMismatch && (
               <div className="mt-2 rounded border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                Loaded Decision Map cache did not match {focusTicker}; waiting for the ticker-specific payload.
+                Loaded Decision Map cache did not match {requestTicker}; waiting for the ticker-specific payload.
               </div>
             )}
           </div>
@@ -1735,6 +1813,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
                   ['activeSession', 'Session'],
                   ['priceChangePct', 'Chg%'],
                   ['relativeVolume', 'Rel Vol'],
+                  ['floatBucket', 'Float'],
                   ['marketCapRelativeVolumeScore', 'Cap RelVol'],
                   ['liquidityScore', 'Liquidity'],
                   ['currentDollarVolume', '$ Vol'],
@@ -1768,12 +1847,17 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
 	                  </td>
                   <td className="px-3 py-2">
                     <div className="font-mono text-slate-200">{row.activeSession || '--'}</div>
-                    <div className="text-[10px] text-neutral">{row.marketCapBucket || '--'} · ${compact(row.marketCap)}</div>
+                    <div className="text-[10px] text-neutral">{row.marketCapBucket || '--'} · ${compact(row.marketCap)} · float {compact(row.sharesFloat)}</div>
                   </td>
 	                  <td className={clsx('px-3 py-2 font-mono', row.priceChangePct >= 0 ? 'text-emerald-400' : 'text-red-400')}>
 	                    {row.priceChangePct >= 0 ? '+' : ''}{row.priceChangePct.toFixed(2)}%
 	                  </td>
 	                  <td className="px-3 py-2 font-mono text-slate-200">{row.relativeVolume.toFixed(2)}x</td>
+                  <td className="px-3 py-2">
+                    <div className="font-mono text-slate-200">{compact(row.sharesFloat)}</div>
+                    <div className="text-[10px] text-sky-300">{row.floatBucket || 'Unknown float'}</div>
+                    <div className="text-[10px] text-neutral">short {row.floatShort == null ? '--' : `${Number(row.floatShort).toFixed(2)}%`}</div>
+                  </td>
                   <td className="px-3 py-2">
                     <div className="font-mono text-slate-200">{Number(row.marketCapRelativeVolumeScore || 0).toFixed(0)}/100</div>
                     <div className="text-[10px] text-sky-300">{row.relativeVolumeBucket || 'bucket'}</div>
@@ -1812,7 +1896,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
               ))}
               {!sortedRows.length && (
                 <tr>
-	                  <td colSpan={13} className="px-3 py-10 text-center text-neutral">
+	                  <td colSpan={14} className="px-3 py-10 text-center text-neutral">
                     No real screener-first rows match the current thresholds.
                   </td>
                 </tr>

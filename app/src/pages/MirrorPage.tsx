@@ -5,6 +5,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { clsx } from 'clsx'
 import { CandlestickChart } from './CandlestickChart'
 import { DecisionMapPanel } from './DecisionMapPanel'
+import { overlaySeries, type SocialSeries } from '@/lib/chartAgg'
 import type { ScreenerRow } from '@/lib/types'
 
 const fetcher = (url: string) => fetch(url, { cache: 'no-store' }).then(r => r.json())
@@ -13,6 +14,9 @@ const VISIBLE_BATCH_COUNT = 25
 const DEFAULT_SIGNAL = 'top_gainers'
 const MIRROR_DATA_VERSION = 'finviz_mover_identity_v3'
 const MIRROR_QUOTE_SOURCE = 'finviz_elite_screener'
+const MIRROR_WINDOW_MIN = 5
+const MIRROR_WINDOW_MAX = 360
+const MIRROR_WINDOW_STEP = 5
 
 const ROLLING_WINDOWS = [
   { value: 'adaptive', label: 'Adaptive' },
@@ -21,7 +25,9 @@ const ROLLING_WINDOWS = [
   { value: '30', label: '30m' },
   { value: '60', label: '1h' },
   { value: '120', label: '2h' },
-  { value: '1440', label: '24h' },
+  { value: '180', label: '3h' },
+  { value: '240', label: '4h' },
+  { value: '360', label: '6h' },
 ]
 
 const LATEST_NEWS = [
@@ -197,6 +203,27 @@ function rowList(payload: any): ScreenerRow[] {
   return uniqueRows(Array.isArray(rows) ? rows : [])
 }
 
+function resolvedRollingWindowMinutes(value: string): number {
+  if (value === 'adaptive') return MIRROR_WINDOW_MAX
+  const minutes = Number(value)
+  return Number.isFinite(minutes) ? Math.max(MIRROR_WINDOW_MIN, Math.min(MIRROR_WINDOW_MAX, Math.round(minutes))) : MIRROR_WINDOW_MAX
+}
+
+function formatWindowMinutes(minutes: number): string {
+  if (!Number.isFinite(minutes)) return '--'
+  if (minutes >= 1440 && minutes % 1440 === 0) return `${minutes / 1440}d`
+  if (minutes >= 60 && minutes % 60 === 0) return `${minutes / 60}h`
+  return `${minutes}m`
+}
+
+function watcherMetricValue(row: ScreenerRow): string {
+  const current = compact((row as any).stocktwits_watcher_count)
+  const delta = num((row as any).watcher_feature?.delta)
+  if (delta == null || delta === 0) return current
+  const sign = delta > 0 ? '+' : ''
+  return `${current} (${sign}${compact(delta)})`
+}
+
 type MirrorPageProps = {
   embedded?: boolean
   socialWindow?: string
@@ -207,6 +234,7 @@ export function MirrorPage({ embedded = false, socialWindow, onSocialWindowChang
   const [searchParams, setSearchParams] = useSearchParams()
   const [signal, setSignal] = useState(searchParams.get('signal') || DEFAULT_SIGNAL)
   const [localSocialWindow, setLocalSocialWindow] = useState(searchParams.get('window_minutes') || 'adaptive')
+  const [draftWindowMinutes, setDraftWindowMinutes] = useState(() => resolvedRollingWindowMinutes(searchParams.get('window_minutes') || 'adaptive'))
   const [recentDays, setRecentDays] = useState(searchParams.get('recent_days') || '0')
   const [keyword, setKeyword] = useState(searchParams.get('keyword') || '')
   const [search, setSearch] = useState(searchParams.get('search') || '')
@@ -214,13 +242,38 @@ export function MirrorPage({ embedded = false, socialWindow, onSocialWindowChang
   const [refreshNonce, setRefreshNonce] = useState(() => Date.now())
   const loadMoreRef = useRef<HTMLDivElement>(null)
   const activeSocialWindow = socialWindow ?? localSocialWindow
-  const activeWindowLabel = ROLLING_WINDOWS.find(option => option.value === activeSocialWindow)?.label || `${activeSocialWindow}m`
+  const activeWindowMinutes = resolvedRollingWindowMinutes(activeSocialWindow)
+  const selectedWindowLabel = ROLLING_WINDOWS.find(option => option.value === activeSocialWindow)?.label || `${activeSocialWindow}m`
+  const activeWindowLabel = activeSocialWindow === 'adaptive' ? `${selectedWindowLabel} (${formatWindowMinutes(activeWindowMinutes)})` : selectedWindowLabel
+  const draftWindowLabel = formatWindowMinutes(draftWindowMinutes)
+  const windowApplying = draftWindowMinutes !== activeWindowMinutes
 
   const setActiveSocialWindow = (value: string) => {
     onSocialWindowChange?.(value)
     if (!onSocialWindowChange) setLocalSocialWindow(value)
     setVisibleCount(INITIAL_VISIBLE_COUNT)
   }
+
+  const updateDraftWindowMinutes = (value: string | number) => {
+    const minutes = Number(value)
+    if (!Number.isFinite(minutes)) return
+    setDraftWindowMinutes(Math.max(MIRROR_WINDOW_MIN, Math.min(MIRROR_WINDOW_MAX, Math.round(minutes))))
+  }
+
+  useEffect(() => {
+    setDraftWindowMinutes(activeWindowMinutes)
+  }, [activeWindowMinutes])
+
+  useEffect(() => {
+    if (draftWindowMinutes === activeWindowMinutes) return
+    const timer = window.setTimeout(() => {
+      setActiveSocialWindow(String(draftWindowMinutes))
+    }, 300)
+    return () => window.clearTimeout(timer)
+    // setActiveSocialWindow intentionally stays local to this component; the
+    // debounced commit should follow only the selected numeric value.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftWindowMinutes, activeWindowMinutes])
 
   useEffect(() => {
     if (embedded) {
@@ -251,28 +304,29 @@ export function MirrorPage({ embedded = false, socialWindow, onSocialWindowChang
       signal,
       orderBy: 'change_pct',
       orderDir: signal === 'top_losers' ? 'asc' : 'desc',
+      window_minutes: String(activeWindowMinutes),
       _v: MIRROR_DATA_VERSION,
       _r: String(refreshNonce),
     })
-    if (activeSocialWindow !== 'adaptive') params.set('window_minutes', activeSocialWindow)
     if (search.trim()) params.set('search', search.trim().toUpperCase())
     return `/api/screener?${params.toString()}`
-  }, [signal, activeSocialWindow, search, refreshNonce])
+  }, [signal, activeWindowMinutes, search, refreshNonce])
 
   const finvizUrl = useMemo(() => {
     if (signal !== 'top_gainers') return null
     const params = new URLSearchParams({
       limit: '100',
       days: recentDays && recentDays !== '0' ? recentDays : '2',
-      window_minutes: activeSocialWindow === 'adaptive' ? '1440' : activeSocialWindow,
+      window_minutes: String(activeWindowMinutes),
       _v: MIRROR_DATA_VERSION,
       _r: String(refreshNonce),
     })
     return `/api/finviz/movers?${params.toString()}`
-  }, [signal, activeSocialWindow, recentDays, refreshNonce])
+  }, [signal, activeWindowMinutes, recentDays, refreshNonce])
 
-  const { data, error, isLoading, mutate } = useSWR(screenerUrl, fetcher, { revalidateOnFocus: false })
-  const { data: finvizData, error: finvizError, isLoading: finvizLoading, mutate: mutateFinviz } = useSWR(finvizUrl, fetcher, { revalidateOnFocus: false })
+  const mirrorSWR = { revalidateOnFocus: false, refreshInterval: 60_000, keepPreviousData: false }
+  const { data, error, isLoading, mutate } = useSWR(screenerUrl, fetcher, mirrorSWR)
+  const { data: finvizData, error: finvizError, isLoading: finvizLoading, mutate: mutateFinviz } = useSWR(finvizUrl, fetcher, mirrorSWR)
   const rows = useMemo(() => {
     const screenerRows = rowList(data)
     const finvizRows = rowList(finvizData)
@@ -288,7 +342,7 @@ export function MirrorPage({ embedded = false, socialWindow, onSocialWindowChang
   const mirrorLoading = isLoading || Boolean(finvizUrl && finvizLoading && !rows.length)
 
   const refresh = () => {
-    setRefreshNonce(n => n + 1)
+    setRefreshNonce(Date.now())
     mutate()
     mutateFinviz()
   }
@@ -333,12 +387,36 @@ export function MirrorPage({ embedded = false, socialWindow, onSocialWindowChang
               {SIGNALS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
           </label>
-          <label className="flex items-center gap-1.5 text-xs text-neutral">
-            Rolling Window
-            <select value={activeSocialWindow} onChange={event => setActiveSocialWindow(event.target.value)} className="rounded border border-border bg-bg px-2 py-1.5 text-sm text-white focus:border-accent focus:outline-none">
-              {ROLLING_WINDOWS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
-          </label>
+          <div className="flex min-w-[420px] flex-[1_1_560px] items-center gap-2 text-xs text-neutral lg:max-w-[720px]">
+            <span className="whitespace-nowrap">Rolling Window</span>
+            <button
+              type="button"
+              onClick={() => setActiveSocialWindow('adaptive')}
+              className={clsx(
+                'rounded border px-2 py-1.5 text-xs transition-colors',
+                activeSocialWindow === 'adaptive'
+                  ? 'border-accent/60 bg-accent/10 text-sky-200'
+                  : 'border-border text-neutral hover:border-accent hover:text-white',
+              )}
+            >
+              Adaptive
+            </button>
+            <input
+              type="range"
+              min={MIRROR_WINDOW_MIN}
+              max={MIRROR_WINDOW_MAX}
+              step={MIRROR_WINDOW_STEP}
+              value={draftWindowMinutes}
+              onInput={event => updateDraftWindowMinutes(event.currentTarget.value)}
+              onChange={event => updateDraftWindowMinutes(event.currentTarget.value)}
+              className="min-w-[240px] flex-1 accent-orange-500 cursor-pointer"
+              aria-label="Mirror rolling window in minutes"
+            />
+            <span className="w-12 text-right font-mono text-sm text-white">{draftWindowLabel}</span>
+            <span className={clsx('w-20 text-[11px]', windowApplying ? 'text-sky-300' : 'text-neutral')}>
+              {windowApplying ? 'applying' : 'applied'}
+            </span>
+          </div>
           <label className="flex items-center gap-1.5 text-xs text-neutral">
             Latest News
             <select value={recentDays} onChange={event => setRecentDays(event.target.value)} className="rounded border border-border bg-bg px-2 py-1.5 text-sm text-white focus:border-accent focus:outline-none">
@@ -365,7 +443,15 @@ export function MirrorPage({ embedded = false, socialWindow, onSocialWindowChang
       {visibleRows.length ? (
         <div className="space-y-4">
           {visibleRows.map(row => (
-            <MirrorCard key={row.ticker} row={row} signal={signal} recentDays={recentDays} keyword={keywordClean} refreshNonce={refreshNonce} />
+            <MirrorCard
+              key={row.ticker}
+              row={row}
+              signal={signal}
+              recentDays={recentDays}
+              keyword={keywordClean}
+              refreshNonce={refreshNonce}
+              rollingWindowMinutes={activeWindowMinutes}
+            />
           ))}
         </div>
       ) : (
@@ -390,12 +476,13 @@ export function MirrorPage({ embedded = false, socialWindow, onSocialWindowChang
   )
 }
 
-function MirrorCard({ row, signal, recentDays, keyword, refreshNonce }: {
+function MirrorCard({ row, signal, recentDays, keyword, refreshNonce, rollingWindowMinutes }: {
   row: ScreenerRow
   signal: string
   recentDays: string
   keyword: string
   refreshNonce: number
+  rollingWindowMinutes: number
 }) {
   const ticker = String(row.ticker || '').toUpperCase()
   const cardRef = useRef<HTMLDivElement>(null)
@@ -415,11 +502,19 @@ function MirrorCard({ row, signal, recentDays, keyword, refreshNonce }: {
     return () => observer.disconnect()
   }, [visible])
 
-  const chartUrl = ticker && visible ? `/api/charts/${encodeURIComponent(ticker)}?tf=1d&_r=${refreshNonce}` : null
+  // Keep Mirror density on 1-minute buckets so the rolling-window slider uses
+  // the same trailing message-count definition as the full Charts view.
+  const chartBucketMinutes = 1
+  const chartUrl = ticker && visible
+    ? `/api/charts/${encodeURIComponent(ticker)}?tf=1m&events=1&window_minutes=${rollingWindowMinutes}&view_window_minutes=${rollingWindowMinutes}&bucket_minutes=${chartBucketMinutes}&_r=${refreshNonce}`
+    : null
   const articleDays = recentDays && recentDays !== '0' ? recentDays : '30'
-  const articleUrl = ticker && visible ? `/api/articles?ticker=${encodeURIComponent(ticker)}&limit=12&recent_days=${articleDays}&facets=0&_r=${refreshNonce}` : null
-  const { data: chart, error: chartError, isLoading: chartLoading } = useSWR(chartUrl, fetcher, { revalidateOnFocus: false })
-  const { data: articleData } = useSWR(articleUrl, fetcher, { revalidateOnFocus: false })
+  const articleUrl = ticker && visible
+    ? `/api/articles?ticker=${encodeURIComponent(ticker)}&limit=12&window_minutes=${rollingWindowMinutes}&recent_days=${articleDays}&facets=0&_r=${refreshNonce}`
+    : null
+  const cardSWR = { revalidateOnFocus: false, refreshInterval: 60_000, keepPreviousData: false }
+  const { data: chart, error: chartError, isLoading: chartLoading } = useSWR(chartUrl, fetcher, cardSWR)
+  const { data: articleData } = useSWR(articleUrl, fetcher, cardSWR)
 
   const candles = Array.isArray(chart?.candles) ? chart.candles : []
   const screenerQuoteSec = secondsFromTimestamp(row.quote_updated_at)
@@ -437,6 +532,51 @@ function MirrorCard({ row, signal, recentDays, keyword, refreshNonce }: {
   const rawArticleCount = Array.isArray(articleData?.articles) ? articleData.articles.length : 0
   const rejectedAmbiguousArticles = Math.max(0, rawArticleCount - rawArticles.length)
   const articles = rawArticles
+  const matchedNewsCount = articles.length || Number((row as any).news_article_count ?? (row as any).article_count ?? 0)
+  const displaySentiment = num((row as any).sentiment ?? row.avg_sentiment)
+  const chartOverlays = useMemo(() => {
+    if (!candles.length) return { density: undefined, sentiment: undefined, watchers: undefined }
+    const socialRows = Array.isArray((chart as any)?.social_series)
+      ? (chart as any).social_series
+      : Array.isArray((chart as any)?.social_density)
+        ? (chart as any).social_density
+        : []
+    const socialSeries: SocialSeries = {
+      labels: [],
+      density: socialRows.map((point: any) => Number(point?.count ?? point?.message_count ?? point?.value ?? 0)).filter(Number.isFinite),
+      times: socialRows.map((point: any) => {
+        const raw = point?.time ?? point?.bucket_sec
+        const parsed = typeof raw === 'string' ? Date.parse(raw) / 1000 : Number(raw)
+        return Number.isFinite(parsed) ? parsed : 0
+      }).filter(Boolean),
+      sent_labels: [],
+      scores_smooth: Array.isArray((chart as any)?.sentiment)
+        ? (chart as any).sentiment.map((point: any) => Number(point?.value ?? 0)).filter(Number.isFinite)
+        : socialRows.map((point: any) => Number(point?.sentiment ?? 0)).filter(Number.isFinite),
+      sent_times: Array.isArray((chart as any)?.sentiment)
+        ? (chart as any).sentiment.map((point: any) => {
+            const raw = point?.time
+            const parsed = typeof raw === 'string' ? Date.parse(raw) / 1000 : Number(raw)
+            return Number.isFinite(parsed) ? parsed : 0
+          }).filter(Boolean)
+        : socialRows.map((point: any) => {
+            const raw = point?.time ?? point?.bucket_sec
+            const parsed = typeof raw === 'string' ? Date.parse(raw) / 1000 : Number(raw)
+            return Number.isFinite(parsed) ? parsed : 0
+          }).filter(Boolean),
+    }
+    const overlays = overlaySeries(candles as any, socialSeries, 1, rollingWindowMinutes)
+    const watcherSource = (chart as any)?.watcher_series
+    const watchers = (watcherSource?.times || []).map((time: number, index: number) => ({
+      time,
+      value: Number((watcherSource?.watchers || [])[index]),
+    })).filter((point: any) => Number.isFinite(point.time) && Number.isFinite(point.value))
+    return {
+      density: overlays.density,
+      sentiment: overlays.sentiment,
+      watchers,
+    }
+  }, [candles, chart, rollingWindowMinutes])
 
   const change = displayChange
   const up = Number(change || 0) >= 0
@@ -507,8 +647,14 @@ function MirrorCard({ row, signal, recentDays, keyword, refreshNonce }: {
               <CandlestickChart
                 candles={candles as any}
                 bollinger={chart?.bollinger as any}
+                densityOverlay={chartOverlays.density as any}
+                sentimentOverlay={chartOverlays.sentiment as any}
+                watcherOverlay={chartOverlays.watchers as any}
                 chartStyle="candles"
                 showBollinger
+                showDensity
+                showSentiment
+                showWatchers
                 showMarkers={false}
                 minHeight={0}
               />
@@ -530,10 +676,10 @@ function MirrorCard({ row, signal, recentDays, keyword, refreshNonce }: {
             ))}
           </div>
           <div className="mt-3 grid grid-cols-2 gap-2 text-center text-[11px] sm:grid-cols-4">
-            <MetricBadge label="News" value={compact(articles.length)} />
+            <MetricBadge label="News" value={compact(matchedNewsCount)} />
             <MetricBadge label="Messages" value={compact(row.message_count)} />
-            <MetricBadge label="Watchers" value={compact((row as any).stocktwits_watcher_count)} />
-            <MetricBadge label="Sentiment" value={row.avg_sentiment != null ? Number(row.avg_sentiment).toFixed(2) : '--'} />
+            <MetricBadge label="Watchers (Δ)" value={watcherMetricValue(row)} />
+            <MetricBadge label="Sentiment" value={displaySentiment != null ? displaySentiment.toFixed(2) : '--'} />
           </div>
         </div>
       </div>
@@ -584,7 +730,13 @@ function MirrorCard({ row, signal, recentDays, keyword, refreshNonce }: {
         </div>
         {show3d && (
           <div className="border-t border-border p-3">
-            <DecisionMapPanel key={`mirror-decision-map-${ticker}`} focusTicker={ticker} single embedded />
+            <DecisionMapPanel
+              key={`mirror-decision-map-${ticker}-${rollingWindowMinutes}`}
+              focusTicker={ticker}
+              single
+              embedded
+              rollingWindowMinutes={rollingWindowMinutes}
+            />
           </div>
         )}
       </section>

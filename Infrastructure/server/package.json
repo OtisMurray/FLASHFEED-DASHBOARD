@@ -5,7 +5,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "indexes": "node scripts/add_mongodb_indexes.js"
+    "indexes": "node scripts/add_mongodb_indexes.js",
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

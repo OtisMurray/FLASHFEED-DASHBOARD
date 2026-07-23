@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd ~/Desktop/"INTEGRATED STOCK PROJECT"/Project/Working_Code
+cd ~/Desktop/"INTEGRATED STOCK PROJECT"/Project
 
 INTERVAL_SECONDS="${SOCIAL_LOOP_INTERVAL_SECONDS:-60}"
 

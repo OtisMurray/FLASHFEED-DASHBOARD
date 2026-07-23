@@ -28,12 +28,12 @@ const COLUMNS: Array<{ key: string; label: string }> = [
 ]
 
 export function ExitScreenerPage() {
-  const [stopPct, setStopPct] = useState(10)
+  const [stopPct, setStopPct] = useState(5)
   const [orderBy, setOrderBy] = useState<string>('distance_to_stop_pct')
   const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('asc')
 
   // stopPct is intentionally NOT in the SWR key — the server sims at the default
-  // 10% (which decides Holding vs Stopped Out); the slider re-derives stop price
+  // 5% (which decides Holding vs Stopped Out); the slider re-derives stop price
   // and distance client-side from the sim's tracked peak, so moving it never refetches
   const { data, isLoading } = useSWR('/api/exit-screener?limit=30', fetcher, { refreshInterval: 30_000 })
 
@@ -96,9 +96,13 @@ export function ExitScreenerPage() {
           </span>
         </div>
         <div className="text-[10px] text-slate-500 mt-2">
+          <span className="text-slate-400 italic">
+            Default 5% is the sweep-optimal value from the professor sweep analysis; provisional, pending validation against the corrected backtest.
+          </span>
+          <br />
           Positions are simulated by the Charts strategy (rolling-corr entry at {data?.threshold ?? 0.1}, trailing
           stop exit). Stop Price = post-entry peak × (1 − stop%). The slider re-derives stop price and distance
-          live; Holding vs Stopped Out reflects the {data?.stopPct ?? 10}% sim. Amber rows are within {NEAR_STOP_PCT}% of
+          live; Holding vs Stopped Out reflects the {data?.stopPct ?? 5}% sim. Amber rows are within {NEAR_STOP_PCT}% of
           their stop.
           {warming > 0 && ` · ${warming} ticker${warming > 1 ? 's' : ''} still collecting messages`}
         </div>

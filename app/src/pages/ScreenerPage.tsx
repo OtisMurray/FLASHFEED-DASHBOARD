@@ -39,6 +39,23 @@ const PRESETS = [
   { key: 'oversold', label: 'Oversold' },
   { key: 'overbought', label: 'Overbought' },
 ]
+const SOCIAL_WINDOW_MIN = 5
+const SOCIAL_WINDOW_MAX = 360
+const SOCIAL_WINDOW_STEP = 5
+
+function resolvedSocialWindowMinutes(value: string) {
+  if (value === 'adaptive') return SOCIAL_WINDOW_MAX
+  const minutes = Number(value)
+  return Number.isFinite(minutes)
+    ? Math.max(SOCIAL_WINDOW_MIN, Math.min(SOCIAL_WINDOW_MAX, Math.round(minutes)))
+    : SOCIAL_WINDOW_MAX
+}
+
+function socialWindowLabel(minutes: number) {
+  if (!Number.isFinite(minutes)) return '--'
+  if (minutes >= 60 && minutes % 60 === 0) return `${minutes / 60}h`
+  return `${minutes}m`
+}
 
 function compact(n: number | null | undefined) {
   if (n == null || Number.isNaN(n)) return '--'
@@ -69,6 +86,10 @@ export function ScreenerPage() {
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(0)
   const pageSize = 50
+  const socialWindowMinutes = resolvedSocialWindowMinutes(socialWindow)
+  const socialWindowDisplay = socialWindow === 'adaptive'
+    ? `Adaptive (${socialWindowLabel(socialWindowMinutes)})`
+    : socialWindowLabel(socialWindowMinutes)
 
   // Clickable column sorting: toggle asc/desc, reset on new column
   const handleSort = useCallback((key: string) => {
@@ -538,21 +559,30 @@ export function ScreenerPage() {
     <div>
       <div className="flex items-center justify-between gap-3 mb-3">
         <h1 className="text-white font-semibold text-lg">Market Screener</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-[360px] items-center gap-2">
           <span className="text-[10px] text-neutral uppercase">Social Window</span>
-          <select
-            value={socialWindow}
-            onChange={event => setSocialWindow(event.target.value)}
-            className="bg-bg border border-border rounded px-2 py-1 text-xs text-neutral"
+          <button
+            type="button"
+            onClick={() => setSocialWindow('adaptive')}
+            className={`rounded border px-2 py-1 text-xs transition-colors ${
+              socialWindow === 'adaptive'
+                ? 'border-accent/60 bg-accent/10 text-sky-200'
+                : 'border-border text-neutral hover:border-accent hover:text-white'
+            }`}
           >
-            <option value="adaptive">Adaptive</option>
-            <option value="5">5m</option>
-            <option value="15">15m</option>
-            <option value="30">30m</option>
-            <option value="60">1h</option>
-            <option value="120">2h</option>
-            <option value="1440">24h</option>
-          </select>
+            Adaptive
+          </button>
+          <input
+            type="range"
+            min={SOCIAL_WINDOW_MIN}
+            max={SOCIAL_WINDOW_MAX}
+            step={SOCIAL_WINDOW_STEP}
+            value={socialWindowMinutes}
+            onChange={event => setSocialWindow(event.currentTarget.value)}
+            className="w-48 accent-orange-500 cursor-pointer"
+            aria-label="Screener social rolling window in minutes"
+          />
+          <span className="w-24 font-mono text-xs text-slate-200">{socialWindowDisplay}</span>
           <span className="text-neutral text-sm">{filtered.length} NASDAQ/NYSE/AMEX tickers</span>
         </div>
       </div>

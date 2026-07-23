@@ -24,6 +24,12 @@ from source_status import record_source_status
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 CONFIG_PATH = os.path.join(ROOT, "config", "unstructured_news_sources.json")
 
+sys.path.insert(0, os.path.join(ROOT, "chart-service"))
+try:
+    import finviz_auth as _finviz_auth
+except Exception:
+    _finviz_auth = None
+
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017/feedflash")
 DB_NAME = os.getenv("MONGODB_DB", "feedflash")
 MAX_PER_SOURCE = int(os.getenv("UNSTRUCTURED_MAX_PER_SOURCE", "0"))  # 0 = uncapped
@@ -343,6 +349,7 @@ def fetch_source(cfg):
 
     print(f"\nFetching {source}: {page_url}")
 
+    finviz_auth_mode = "browser_impersonation"
     try:
         headers = dict(HEADERS)
         if source.lower() in FINVIZ_SOURCE_NAMES:
@@ -350,10 +357,23 @@ def fetch_source(cfg):
             if finviz_cookie:
                 headers["Cookie"] = finviz_cookie
         if curl_requests is not None and source.lower() in FINVIZ_SOURCE_NAMES:
-            resp = curl_requests.get(page_url, headers=headers, timeout=25, impersonate="chrome124")
+            session = curl_requests.Session()
+            if _finviz_auth is not None and _finviz_auth.load_cookies_into(session):
+                finviz_auth_mode = "auto_login_cookie"
+            elif headers.get("Cookie"):
+                finviz_auth_mode = "configured_cookie"
+            resp = session.get(page_url, headers=headers, timeout=25, impersonate="chrome124")
+            if resp.status_code in {401, 403} and _finviz_auth is not None:
+                try:
+                    _finviz_auth.refresh(force=True)
+                    if _finviz_auth.load_cookies_into(session, auto_login=False):
+                        finviz_auth_mode = "auto_login_cookie_refreshed"
+                        resp = session.get(page_url, headers=headers, timeout=25, impersonate="chrome124")
+                except Exception:
+                    pass
         else:
             resp = requests.get(page_url, headers=headers, timeout=25)
-        print("status:", resp.status_code, "len:", len(resp.text))
+        print("status:", resp.status_code, "len:", len(resp.text), "auth_mode:", finviz_auth_mode)
         resp.raise_for_status()
     except Exception as e:
         print(f"{source}: SKIP {e}")
@@ -394,6 +414,7 @@ def fetch_source(cfg):
             "fetched_at": now_ts(),
             "detected_at": now_ts(),
             "collector": "finviz_public_news_table_v1" if source.lower() in FINVIZ_SOURCE_NAMES else "unstructured_news_title_only_v1",
+            "ingestion_auth_mode": finviz_auth_mode if source.lower() in FINVIZ_SOURCE_NAMES else None,
             "ticker": ",".join(tickers),
             "tickers_mentioned": tickers,
             "sentiment": sentiment,
@@ -476,7 +497,10 @@ def main():
                 db,
                 cfg["source"],
                 "working",
-                detail=f"{len(docs)} qualifying titles scanned without a local per-source cap",
+                detail=(
+                    f"{len(docs)} qualifying titles scanned; auth_mode={docs[0].get('ingestion_auth_mode') or 'public'}; "
+                    f"per_source_limit={MAX_PER_SOURCE or 'uncapped'}"
+                ),
                 count=len(docs),
                 source_type="public_news",
             )

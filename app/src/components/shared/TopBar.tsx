@@ -23,12 +23,39 @@ const NAV = [
   { href: '/exit-screener', label: 'Exit Screener' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
+  { href: '/v11-screener', label: 'v11 Profile (test)' },
   { href: '/prediction-audit', label: 'Prediction Audit' },
   { href: '/system-health', label: 'System Health' },
   { href: '/settings', label: 'Settings' },
 ]
 const PRIMARY_NAV = NAV.slice(0, 11)
 const MORE_NAV = NAV.slice(11)
+const ROUTE_PREFETCHERS: Record<string, () => Promise<unknown>> = {
+  '/overview': () => import('@/pages/OverviewPage'),
+  '/ai': () => import('@/pages/AIPage'),
+  '/news': () => import('@/pages/NewsPage'),
+  '/screener': () => import('@/pages/ScreenerPage'),
+  '/decision-map': () => import('@/pages/DecisionMapPanel'),
+  '/social': () => import('@/pages/SocialPage'),
+  '/charts': () => import('@/pages/ChartsPage'),
+  '/entry-screener': () => import('@/pages/sentchart/EntryScreenerPage'),
+  '/exit-screener': () => import('@/pages/sentchart/ExitScreenerPage'),
+  '/momentum': () => import('@/pages/MomentumPage'),
+  '/correlation': () => import('@/pages/CorrelationPage'),
+  '/v11-screener': () => import('@/pages/sentchart/V11ScreenerPage'),
+  '/prediction-audit': () => import('@/pages/PredictionAuditPage'),
+  '/system-health': () => import('@/pages/SystemHealthPage'),
+  '/settings': () => import('@/pages/SettingsPage'),
+}
+const prefetchedRoutes = new Set<string>()
+
+function prefetchRoute(href: string) {
+  if (prefetchedRoutes.has(href)) return
+  const prefetcher = ROUTE_PREFETCHERS[href]
+  if (!prefetcher) return
+  prefetchedRoutes.add(href)
+  prefetcher().catch(() => prefetchedRoutes.delete(href))
+}
 
 function compactCount(value: unknown): string {
   const n = Number(value || 0)
@@ -46,7 +73,7 @@ export function TopBar() {
   const { data: status, mutate: mutateStatus } = useSWR('/api/status', fetcher, { refreshInterval: 60_000 })
   const { data: stats } = useSWR('/api/stats?days=3', fetcher, { refreshInterval: 60_000 })
   const { data: marketStatus } = useSWR('/api/market/status', fetcher, { refreshInterval: 60_000 })
-  const { data: autoRefreshStatus } = useSWR('/api/auto-refresh/status', fetcher, { refreshInterval: 5_000 })
+  const { data: autoRefreshStatus } = useSWR('/api/auto-refresh/status', fetcher, { refreshInterval: 15_000 })
   // Hard-disk database status (RAM = Redis; this is the on-disk SQLite companion).
   const { data: diskStats, mutate: mutateDisk } = useSWR('/api/disk/stats', fetcher, { refreshInterval: 60_000 })
   const [savingDisk, setSavingDisk] = useState(false)
@@ -165,13 +192,13 @@ export function TopBar() {
       setAutoProgress(Math.max(0, Math.min(100, (elapsed / intervalMs) * 100)))
     }
     update()
-    const timer = window.setInterval(update, 250)
+    const timer = window.setInterval(update, 1000)
     return () => window.clearInterval(timer)
   }, [watching, autoQueueStartedAt, watchInterval])
 
   useEffect(() => {
     if (!autoRefreshStatus?.onsite_fetch?.enabled) return
-    const timer = window.setInterval(() => setServerProgressNowMs(Date.now()), 250)
+    const timer = window.setInterval(() => setServerProgressNowMs(Date.now()), 1000)
     return () => window.clearInterval(timer)
   }, [autoRefreshStatus?.onsite_fetch?.enabled])
 
@@ -406,20 +433,27 @@ export function TopBar() {
           </div>
         )}
         <div className="flex min-h-14 items-center gap-2 px-3 py-2 md:px-4">
-          <NavLink to="/overview" className="flex-shrink-0">
+          <NavLink
+            to="/overview"
+            onMouseEnter={() => prefetchRoute('/overview')}
+            onFocus={() => prefetchRoute('/overview')}
+            className="flex-shrink-0"
+          >
             <div className="text-accent font-bold text-lg tracking-tight font-mono leading-none">FlashFeed</div>
             <div className="text-neutral text-[10px] mt-1 uppercase tracking-wide">Financial Intelligence</div>
           </NavLink>
 
-          <nav className="hidden min-w-0 flex-1 items-center gap-1 lg:flex">
+          <nav className="hidden min-w-0 flex-1 items-center gap-1 overflow-x-auto lg:flex">
             {PRIMARY_NAV.map(({ href, label }) => {
               const active = pathname === href || pathname.startsWith(`${href}/`)
               return (
                 <NavLink
                   key={href}
                   to={href}
+                  onMouseEnter={() => prefetchRoute(href)}
+                  onFocus={() => prefetchRoute(href)}
                   className={clsx(
-                    'px-3 py-2 text-xs rounded-md border transition-colors',
+                    'flex-none whitespace-nowrap px-2 py-2 text-xs rounded-md border transition-colors xl:px-3',
                     active
                       ? 'bg-accent/15 border-accent/50 text-white'
                       : 'border-transparent text-neutral hover:text-white hover:bg-bg/60'
@@ -429,11 +463,13 @@ export function TopBar() {
                 </NavLink>
               )
             })}
-            <div className="relative">
+            <div className="relative flex-none">
               <button
+                onMouseEnter={() => MORE_NAV.forEach(({ href }) => prefetchRoute(href))}
+                onFocus={() => MORE_NAV.forEach(({ href }) => prefetchRoute(href))}
                 onClick={() => setShowMoreNav(v => !v)}
                 className={clsx(
-                  'px-3 py-2 text-xs rounded-md border transition-colors',
+                  'whitespace-nowrap px-2 py-2 text-xs rounded-md border transition-colors xl:px-3',
                   MORE_NAV.some(({ href }) => pathname === href || pathname.startsWith(`${href}/`))
                     ? 'bg-accent/15 border-accent/50 text-white'
                     : 'border-transparent text-neutral hover:text-white hover:bg-bg/60'
@@ -447,6 +483,8 @@ export function TopBar() {
                     <NavLink
                       key={href}
                       to={href}
+                      onMouseEnter={() => prefetchRoute(href)}
+                      onFocus={() => prefetchRoute(href)}
                       onClick={() => setShowMoreNav(false)}
                       className={({ isActive }) => clsx(
                         'block rounded px-3 py-2 text-xs transition-colors',
@@ -461,7 +499,7 @@ export function TopBar() {
             </div>
           </nav>
 
-          <div className="ml-auto flex min-w-0 items-center justify-end gap-2">
+          <div className="ml-auto flex flex-none items-center justify-end gap-2">
             {fetchResult && (
               <span className="hidden max-w-[12rem] truncate text-xs text-emerald-400 animate-in lg:inline">
                 +{fetchResult.new_articles ?? 0} new{fetchResult.updated_articles !== undefined ? `, ${fetchResult.updated_articles} refreshed` : fetchResult.refreshed_articles !== undefined ? `, ${fetchResult.refreshed_articles} refreshed` : ''} ({((fetchResult.ms ?? 0) / 1000).toFixed(1)}s)
@@ -615,6 +653,8 @@ export function TopBar() {
               <NavLink
                 key={href}
                 to={href}
+                onMouseEnter={() => prefetchRoute(href)}
+                onFocus={() => prefetchRoute(href)}
                 className={clsx(
                   'flex-shrink-0 px-3 py-1.5 text-xs rounded-md border transition-colors',
                   active

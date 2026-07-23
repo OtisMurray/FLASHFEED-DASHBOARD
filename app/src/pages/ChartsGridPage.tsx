@@ -12,6 +12,8 @@ const VISIBLE_BATCH_COUNT = 25
 const DEFAULT_SIGNAL = 'top_gainers'
 const MIRROR_DATA_VERSION = 'finviz_mover_identity_v3'
 const MIRROR_QUOTE_SOURCE = 'finviz_elite_screener'
+const GRID_WINDOW_MIN = 5
+const GRID_WINDOW_MAX = 360
 
 const ROLLING_WINDOWS = [
   { value: 'adaptive', label: 'Adaptive' },
@@ -20,7 +22,9 @@ const ROLLING_WINDOWS = [
   { value: '30', label: '30m' },
   { value: '60', label: '1h' },
   { value: '120', label: '2h' },
-  { value: '1440', label: '24h' },
+  { value: '180', label: '3h' },
+  { value: '240', label: '4h' },
+  { value: '360', label: '6h' },
 ]
 
 const LATEST_NEWS = [
@@ -160,6 +164,12 @@ function rowList(payload: any): ScreenerRow[] {
   return uniqueRows(Array.isArray(rows) ? rows : [])
 }
 
+function resolvedRollingWindowMinutes(value: string): number {
+  if (value === 'adaptive') return GRID_WINDOW_MAX
+  const minutes = Number(value)
+  return Number.isFinite(minutes) ? Math.max(GRID_WINDOW_MIN, Math.min(GRID_WINDOW_MAX, Math.round(minutes))) : GRID_WINDOW_MAX
+}
+
 type ChartsGridPageProps = {
   embedded?: boolean
   socialWindow?: string
@@ -177,7 +187,8 @@ export function ChartsGridPage({ embedded = false, socialWindow, onSocialWindowC
   const [refreshNonce, setRefreshNonce] = useState(() => Date.now())
   const loadMoreRef = useRef<HTMLDivElement>(null)
   const activeSocialWindow = socialWindow ?? localSocialWindow
-  const activeWindowLabel = ROLLING_WINDOWS.find(option => option.value === activeSocialWindow)?.label || `${activeSocialWindow}m`
+  const activeWindowMinutes = resolvedRollingWindowMinutes(activeSocialWindow)
+  const activeWindowLabel = ROLLING_WINDOWS.find(option => option.value === activeSocialWindow)?.label || `${activeWindowMinutes}m`
 
   const setActiveSocialWindow = (value: string) => {
     onSocialWindowChange?.(value)
@@ -217,22 +228,22 @@ export function ChartsGridPage({ embedded = false, socialWindow, onSocialWindowC
       _v: MIRROR_DATA_VERSION,
       _r: String(refreshNonce),
     })
-    if (activeSocialWindow !== 'adaptive') params.set('window_minutes', activeSocialWindow)
+    params.set('window_minutes', String(activeWindowMinutes))
     if (search.trim()) params.set('search', search.trim().toUpperCase())
     return `/api/screener?${params.toString()}`
-  }, [signal, activeSocialWindow, search, refreshNonce])
+  }, [signal, activeWindowMinutes, search, refreshNonce])
 
   const finvizUrl = useMemo(() => {
     if (signal !== 'top_gainers') return null
     const params = new URLSearchParams({
       limit: '100',
       days: recentDays && recentDays !== '0' ? recentDays : '2',
-      window_minutes: activeSocialWindow === 'adaptive' ? '1440' : activeSocialWindow,
+      window_minutes: String(activeWindowMinutes),
       _v: MIRROR_DATA_VERSION,
       _r: String(refreshNonce),
     })
     return `/api/finviz/movers?${params.toString()}`
-  }, [signal, activeSocialWindow, recentDays, refreshNonce])
+  }, [signal, activeWindowMinutes, recentDays, refreshNonce])
 
   const { data, error, isLoading, mutate } = useSWR(screenerUrl, fetcher, { revalidateOnFocus: false })
   const { data: finvizData, error: finvizError, isLoading: finvizLoading, mutate: mutateFinviz } = useSWR(finvizUrl, fetcher, { revalidateOnFocus: false })

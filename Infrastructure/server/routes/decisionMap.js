@@ -1,8 +1,10 @@
 import { Router } from 'express'
 import mongoose from 'mongoose'
 import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { analyzeDecisionMapPath, analyzeDecisionMapRows, decisionMapPathScope, decisionMapRowLimit } from '../lib/decisionMapRows.js'
 
 const router = Router()
 
@@ -31,6 +33,7 @@ const DEFAULT_THRESHOLDS = Object.freeze({
 const STRUCTURED_SOURCE_RE = /finviz|tradingview|pr newswire|business wire|access newswire|benzinga|sec|edgar|fda|globenewswire|dow jones|interactive brokers|td ameritrade|schwab/i
 const SOCIAL_SOURCE_RE = /stocktwits|twitter|x\.com|reddit|bluesky|social/i
 const MARKET_CAP_BUCKETS = new Set(['mega', 'large', 'mid', 'small', 'micro', 'nano'])
+const FLOAT_BUCKETS = new Set(['ultra_low', 'low', 'mid', 'high', 'very_high', 'unknown'])
 const DECISION_MAP_REDIS_TTL = Math.max(30, Number(process.env.DECISION_MAP_REDIS_TTL || 300))
 const DECISION_MAP_PATH_TTL = Math.max(3 * 86_400, Number(process.env.DECISION_MAP_PATH_TTL || 4 * 86_400))
 const DECISION_MAP_HISTORY_SECONDS = Math.max(DECISION_MAP_PATH_TTL, Number(process.env.DECISION_MAP_HISTORY_SECONDS || 4 * 86_400))
@@ -163,7 +166,7 @@ function rollingWindowHoursFromQuery(query = {}, key, fallbackHours = 4) {
     catalystLookbackHours: query.catalyst_lookback_hours ?? query.catalystLookbackHours,
   }
   const raw = aliases[key] ?? fallbackHours
-  return clamp(Number(raw), 0.25, 168)
+  return clamp(Number(raw), 5 / 60, 168)
 }
 
 function nySessionForNow(now = new Date()) {
@@ -254,7 +257,7 @@ async function mapWithConcurrency(items = [], limit = 4, worker) {
 function pathSinceSec(windowHours = DEFAULT_THRESHOLDS.pathWindowHours, marketDayOnly = false) {
   const nowSec = Math.floor(Date.now() / 1000)
   if (marketDayOnly) return nowSec - DECISION_MAP_MARKET_DAY_PATH_HISTORY_SECONDS
-  return nowSec - Math.round(Math.max(0.25, Number(windowHours || DEFAULT_THRESHOLDS.pathWindowHours)) * 3600)
+  return nowSec - Math.round(Math.max(5 / 60, Number(windowHours || DEFAULT_THRESHOLDS.pathWindowHours)) * 3600)
 }
 
 function redisFromReq(req) {
@@ -364,14 +367,14 @@ function ensureDecisionMapHealthMonitor(req, db) {
   if (decisionMapHealthTimer.unref) decisionMapHealthTimer.unref()
 }
 
-function stableQuerySignature(query = {}) {
-  const ignored = new Set(['fresh', '_', 't'])
-  const normalized = { __cache_version: 'finviz-mover-broad-universe-v10' }
+export function stableDecisionMapQuerySignature(query = {}) {
+  const ignored = new Set(['fresh', '_', '_r', 't', 'cache_bust', 'cacheBust'])
+  const normalized = { __cache_version: 'finviz-mover-top30-v13-float-filter' }
   for (const key of Object.keys(query).sort()) {
     if (ignored.has(key)) continue
     normalized[key] = String(query[key])
   }
-  return Buffer.from(JSON.stringify(normalized)).toString('base64url').slice(0, 96) || 'default'
+  return `v12-${createHash('sha256').update(JSON.stringify(normalized)).digest('hex').slice(0, 40)}`
 }
 
 function decisionMapCacheFields({
@@ -416,7 +419,7 @@ function parsePoint(raw) {
   }
 }
 
-function decisionMapPointForStorage(row = {}, snapshotSec = quantizedNowSec()) {
+function decisionMapPointForStorage(row = {}, snapshotSec = quantizedNowSec(), pathScope = decisionMapPathScope()) {
   const point = decisionPointFromValues({
     timestamp: snapshotSec,
     combinedSentiment: row.combinedSentiment,
@@ -431,6 +434,7 @@ function decisionMapPointForStorage(row = {}, snapshotSec = quantizedNowSec()) {
   return {
     ...point,
     ticker: row.ticker,
+    pathScope,
     company: row.company || '',
     snapshotSec,
     timestamp: snapshotSec,
@@ -451,7 +455,7 @@ function decisionMapPointForStorage(row = {}, snapshotSec = quantizedNowSec()) {
   }
 }
 
-function decisionMapPathPointForStorage(row = {}, point = {}, fallbackSnapshotSec = quantizedNowSec()) {
+function decisionMapPathPointForStorage(row = {}, point = {}, fallbackSnapshotSec = quantizedNowSec(), pathScope = decisionMapPathScope()) {
   const timestamp = Number(point.timestamp || point.time || point.snapshotSec || point.snapshot_sec || fallbackSnapshotSec)
   const normalized = decisionPointFromValues({
     ...point,
@@ -468,6 +472,7 @@ function decisionMapPathPointForStorage(row = {}, point = {}, fallbackSnapshotSe
   return {
     ...normalized,
     ticker: normalizeTicker(row.ticker || point.ticker),
+    pathScope,
     company: row.company || '',
     snapshotSec: timestamp,
     timestamp,
@@ -487,7 +492,7 @@ function decisionMapPathPointForStorage(row = {}, point = {}, fallbackSnapshotSe
   }
 }
 
-function decisionMapStoragePoints(rows = [], snapshotSec = quantizedNowSec(), marketDayOnly = false) {
+function decisionMapStoragePoints(rows = [], snapshotSec = quantizedNowSec(), marketDayOnly = false, pathScope = decisionMapPathScope()) {
   const byKey = new Map()
   for (const row of rows) {
     const ticker = normalizeTicker(row?.ticker)
@@ -497,12 +502,12 @@ function decisionMapStoragePoints(rows = [], snapshotSec = quantizedNowSec(), ma
       const timestamp = Number(point?.timestamp || point?.time || 0)
       if (!timestamp) continue
       if (marketDayOnly && !isLikelyMarketMovementDate(timestamp)) continue
-      const storagePoint = decisionMapPathPointForStorage(row, point, snapshotSec)
-      if (storagePoint.ticker) byKey.set(`${storagePoint.ticker}:${storagePoint.snapshotSec}`, storagePoint)
+      const storagePoint = decisionMapPathPointForStorage(row, point, snapshotSec, pathScope)
+      if (storagePoint.ticker) byKey.set(`${pathScope}:${storagePoint.ticker}:${storagePoint.snapshotSec}`, storagePoint)
     }
     if (!pathPoints.length && (!marketDayOnly || isLikelyMarketMovementDate(snapshotSec))) {
-      const storagePoint = decisionMapPointForStorage(row, snapshotSec)
-      if (storagePoint.ticker) byKey.set(`${storagePoint.ticker}:${storagePoint.snapshotSec}`, storagePoint)
+      const storagePoint = decisionMapPointForStorage(row, snapshotSec, pathScope)
+      if (storagePoint.ticker) byKey.set(`${pathScope}:${storagePoint.ticker}:${storagePoint.snapshotSec}`, storagePoint)
     }
   }
   return [...byKey.values()].sort((a, b) => Number(a.snapshotSec || 0) - Number(b.snapshotSec || 0))
@@ -657,6 +662,37 @@ function liquidityProfile(row = {}) {
 function normalizedMarketCapBucket(value = '') {
   const text = String(value || '').toLowerCase()
   for (const bucket of MARKET_CAP_BUCKETS) {
+    if (text.includes(bucket)) return bucket
+  }
+  return ''
+}
+
+function normalizeSharesFloat(raw) {
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) return null
+  return value
+}
+
+function sharesFloatBucket(raw) {
+  const value = normalizeSharesFloat(raw)
+  if (value == null) return 'Unknown float'
+  if (value < 10_000_000) return 'Ultra-low float'
+  if (value < 25_000_000) return 'Low float'
+  if (value < 50_000_000) return 'Mid float'
+  if (value < 100_000_000) return 'High float'
+  return 'Very high float'
+}
+
+function normalizedFloatBucket(value = '') {
+  const text = String(value || '').toLowerCase().replace(/[\s-]+/g, '_')
+  if (!text || text === 'all') return ''
+  if (text.includes('ultra') || text === 'under_10m' || text === 'lt10m') return 'ultra_low'
+  if (text === 'low' || text.includes('10_25') || text === '10m_25m') return 'low'
+  if (text === 'mid' || text.includes('25_50') || text === '25m_50m') return 'mid'
+  if (text === 'high' || text.includes('50_100') || text === '50m_100m') return 'high'
+  if (text.includes('very') || text.includes('100m') || text.includes('100_')) return 'very_high'
+  if (text.includes('unknown')) return 'unknown'
+  for (const bucket of FLOAT_BUCKETS) {
     if (text.includes(bucket)) return bucket
   }
   return ''
@@ -865,6 +901,7 @@ function normalizeScreenerRow(doc = {}, requestedSession = 'auto') {
   const isFinvizSource = /finviz/i.test(String(source || ''))
   const marketCap = normalizeMarketCap(doc.market_cap, source)
   const bucket = marketCapBucket(marketCap)
+  const sharesFloat = normalizeSharesFloat(doc.shares_float ?? doc.float ?? doc.float_shares)
   const sessions = sessionMetrics(doc, requestedSession)
   const currentVolume = sessions.active.volume || volume
   const currentDollarVolume = Number(((sessions.active.price || 0) * currentVolume).toFixed(2))
@@ -880,6 +917,11 @@ function normalizeScreenerRow(doc = {}, requestedSession = 'auto') {
     marketCap,
     rawMarketCap: toNumber(doc.market_cap, null),
     marketCapBucket: bucket,
+    sharesFloat,
+    rawSharesFloat: toNumber(doc.shares_float ?? doc.float ?? doc.float_shares, null),
+    floatBucket: sharesFloatBucket(sharesFloat),
+    floatShort: toNumber(doc.float_short ?? doc.short_interest_pct_float ?? doc.short_interest_pct, null),
+    floatPercent: toNumber(doc.float_percent, null),
     marketCapRelVolumeTarget: marketCapRelVolumeTarget(bucket),
     dollarVolumeTarget: dollarVolumeTarget(bucket),
     currentDollarVolume,
@@ -909,7 +951,7 @@ function normalizeScreenerRow(doc = {}, requestedSession = 'auto') {
 }
 
 async function activeScreenerRows(db, query, thresholds) {
-  const limit = Math.max(1, Math.min(600, Number(query.limit || 150)))
+  const limit = decisionMapRowLimit(query)
   const internalLimit = Math.max(600, Math.min(1600, limit * 4))
   const sortField = String(query.sort || 'activity').toLowerCase()
   const focusTicker = normalizeTicker(query.focusTicker || query.ticker || query.search || query.q || '')
@@ -962,9 +1004,11 @@ async function activeScreenerRows(db, query, thresholds) {
     return Math.abs(change) >= minAbsChange
   })
   const marketCapFilter = normalizedMarketCapBucket(query.market_cap_bucket || query.market_cap || '')
+  const floatFilter = normalizedFloatBucket(query.float_bucket || query.shares_float_bucket || query.floatBucket || '')
   const relBucketFilter = String(query.rel_volume_bucket || query.relative_volume_bucket || '').toLowerCase()
   let filtered = normalized.filter(row => {
     if (marketCapFilter && normalizedMarketCapBucket(row.marketCapBucket) !== marketCapFilter) return false
+    if (floatFilter && normalizedFloatBucket(row.floatBucket) !== floatFilter) return false
     if (['low', 'medium', 'high', 'extreme'].includes(relBucketFilter) && relVolumeBucket(row.relativeVolume) !== relBucketFilter) return false
     return true
   })
@@ -985,7 +1029,7 @@ async function articleEvidence(db, tickersOrRows, windowHours, catalystLookbackH
     if (ticker) wantedRows.set(ticker, typeof item === 'string' ? { ticker } : item)
   }
   const wanted = new Set(wantedRows.keys())
-  const windowSec = Math.round(Math.max(0.25, Number(windowHours || DEFAULT_THRESHOLDS.newsWindowHours)) * 3600)
+  const windowSec = Math.round(Math.max(5 / 60, Number(windowHours || DEFAULT_THRESHOLDS.newsWindowHours)) * 3600)
   const windowMinutes = Math.max(1, Math.round(windowSec / 60))
   const lookbackHours = Math.max(
     Number(windowHours || DEFAULT_THRESHOLDS.newsWindowHours || 0),
@@ -1074,7 +1118,7 @@ async function articleEvidence(db, tickersOrRows, windowHours, catalystLookbackH
 
 async function socialEvidence(db, tickers, windowHours) {
   const wanted = new Set(tickers)
-  const windowSec = Math.round(Math.max(0.25, Number(windowHours || DEFAULT_THRESHOLDS.socialWindowHours)) * 3600)
+  const windowSec = Math.round(Math.max(5 / 60, Number(windowHours || DEFAULT_THRESHOLDS.socialWindowHours)) * 3600)
   const windowMinutes = Math.max(1, Math.round(windowSec / 60))
   const sinceSec = Math.floor(Date.now() / 1000) - windowSec
   const docs = await db.collection('socials').find({
@@ -1248,7 +1292,7 @@ function evidenceSnapshotAt(timeline = new Map(), ticker = '', timestamp = 0, fa
 }
 
 async function rollingVolumeEvidence(db, tickers, windowHours = DEFAULT_THRESHOLDS.rollingWindowHours) {
-  const windowSec = Math.round(Math.max(0.25, Number(windowHours || DEFAULT_THRESHOLDS.rollingWindowHours)) * 3600)
+  const windowSec = Math.round(Math.max(5 / 60, Number(windowHours || DEFAULT_THRESHOLDS.rollingWindowHours)) * 3600)
   const sinceSec = Math.floor(Date.now() / 1000) - windowSec
   const snapshots = await db.collection('finviz_momentum_snapshots')
     .find({ snapshot_sec: { $gte: sinceSec } }, { projection: { snapshot_sec: 1, rows: 1 } })
@@ -1766,7 +1810,7 @@ function selectPathMovementWindow(points = [], windowHours = DEFAULT_THRESHOLDS.
   const sorted = [...points]
     .filter(point => point && Number.isFinite(Number(point.timestamp || 0)))
     .sort((a, b) => Number(a.timestamp || 0) - Number(b.timestamp || 0))
-  const windowSec = Math.round(Math.max(0.25, Number(windowHours || DEFAULT_THRESHOLDS.pathWindowHours)) * 3600)
+  const windowSec = Math.round(Math.max(5 / 60, Number(windowHours || DEFAULT_THRESHOLDS.pathWindowHours)) * 3600)
   const latestPointSec = Number(sorted[sorted.length - 1]?.timestamp || 0)
   const windowStartSec = latestPointSec ? latestPointSec - windowSec : 0
   const windowed = windowStartSec ? sorted.filter(point => Number(point.timestamp || 0) >= windowStartSec) : sorted
@@ -1843,7 +1887,7 @@ function selectPathMovementWindow(points = [], windowHours = DEFAULT_THRESHOLDS.
   }
 }
 
-async function redisTickerPathEvidence(redis, scoredRows = [], maxPoints = 14, windowHours = DEFAULT_THRESHOLDS.pathWindowHours, marketDayOnly = false) {
+async function redisTickerPathEvidence(redis, scoredRows = [], maxPoints = 14, windowHours = DEFAULT_THRESHOLDS.pathWindowHours, marketDayOnly = false, pathScope = decisionMapPathScope()) {
   if (!redis || !Array.isArray(scoredRows) || !scoredRows.length) return new Map()
   const tickers = scoredRows.map(row => normalizeTicker(row.ticker)).filter(Boolean)
   if (!tickers.length) return new Map()
@@ -1851,7 +1895,7 @@ async function redisTickerPathEvidence(redis, scoredRows = [], maxPoints = 14, w
   try {
     const zpipe = redis.pipeline()
     for (const ticker of tickers) {
-      zpipe.zrevrange(`decision_map:path:${ticker}`, 0, Math.max(0, maxPoints - 1))
+      zpipe.zrevrange(`decision_map:path:${pathScope}:${ticker}`, 0, Math.max(0, maxPoints - 1))
     }
     const zResults = await zpipe.exec()
     const keysByTicker = new Map()
@@ -1882,7 +1926,7 @@ async function redisTickerPathEvidence(redis, scoredRows = [], maxPoints = 14, w
   }
 }
 
-async function mongoDecisionMapPointEvidence(db, scoredRows = [], maxPoints = 14, windowHours = DEFAULT_THRESHOLDS.pathWindowHours, marketDayOnly = false) {
+async function mongoDecisionMapPointEvidence(db, scoredRows = [], maxPoints = 14, windowHours = DEFAULT_THRESHOLDS.pathWindowHours, marketDayOnly = false, pathScope = decisionMapPathScope()) {
   if (!db || !Array.isArray(scoredRows) || !scoredRows.length) return new Map()
   const tickers = scoredRows.map(row => normalizeTicker(row.ticker)).filter(Boolean)
   if (!tickers.length) return new Map()
@@ -1894,6 +1938,7 @@ async function mongoDecisionMapPointEvidence(db, scoredRows = [], maxPoints = 14
     const docs = await pointDb.collection('decision_map_points')
       .find({
         ticker: { $in: tickers },
+        path_scope: pathScope,
         $or: [
           { snapshot_sec: { $gte: sinceSec } },
           { snapshotSec: { $gte: sinceSec } },
@@ -1902,6 +1947,7 @@ async function mongoDecisionMapPointEvidence(db, scoredRows = [], maxPoints = 14
       }, {
         projection: {
           ticker: 1,
+          path_scope: 1,
           snapshot_sec: 1,
           snapshotSec: 1,
           timestamp: 1,
@@ -2028,7 +2074,7 @@ async function screenerHistoricalPathEvidence(db, scoredRows = [], maxPoints = 1
 async function chartCandlePathEvidence(db, scoredRows = [], maxPoints = 120, windowHours = DEFAULT_THRESHOLDS.pathWindowHours, volumeTimeframe = '5m', marketDayOnly = false) {
   const out = new Map()
   const requestedMax = Math.max(4, Math.min(DECISION_MAP_MAX_PATH_POINTS, Number(maxPoints || DECISION_MAP_DEFAULT_PATH_POINTS)))
-  const windowSec = Math.round(Math.max(0.25, Number(windowHours || DEFAULT_THRESHOLDS.pathWindowHours)) * 3600)
+  const windowSec = Math.round(Math.max(5 / 60, Number(windowHours || DEFAULT_THRESHOLDS.pathWindowHours)) * 3600)
   const sinceSec = pathSinceSec(windowHours, marketDayOnly)
   const timeline = await intradayEvidenceTimeline(db, scoredRows, sinceSec, Math.floor(Date.now() / 1000))
   const volumeTf = DECISION_MAP_VOLUME_TIMEFRAMES[volumeTimeframe] ? volumeTimeframe : '5m'
@@ -2075,7 +2121,7 @@ async function chartCandlePathEvidence(db, scoredRows = [], maxPoints = 120, win
       const timeframeRelVolume = timeframeVolume != null && expectedTimeframeVolume && expectedTimeframeVolume > 0
         ? timeframeVolume / expectedTimeframeVolume
         : null
-      const evidence = evidenceSnapshotAt(timeline, ticker, Number(candle.time || 0), Number(row.combinedSentiment || 0), Math.max(60, Math.round(windowHours * 60)))
+      const evidence = evidenceSnapshotAt(timeline, ticker, Number(candle.time || 0), Number(row.combinedSentiment || 0), Math.max(5, Math.round(windowHours * 60)))
       points.push(decisionPointFromValues({
         ticker,
         timestamp: Number(candle.time || 0),
@@ -2138,10 +2184,11 @@ async function tickerPathEvidence(db, scoredRows = [], maxPoints = 14, redis = n
   const wanted = new Set(scoredRows.map(row => normalizeTicker(row.ticker)).filter(Boolean))
   if (!wanted.size) return new Map()
   const currentByTicker = new Map(scoredRows.map(row => [normalizeTicker(row.ticker), row]))
-  const pathWindowHours = Math.max(0.25, Number(windowHours || DEFAULT_THRESHOLDS.pathWindowHours))
+  const pathWindowHours = Math.max(5 / 60, Number(windowHours || DEFAULT_THRESHOLDS.pathWindowHours))
+  const pathScope = decisionMapPathScope({ windowHours: pathWindowHours, volumeTimeframe, marketDayOnly })
   const sinceSec = pathSinceSec(pathWindowHours, marketDayOnly)
-  const redisPaths = await redisTickerPathEvidence(redis, scoredRows, maxPoints, pathWindowHours, marketDayOnly)
-  const mongoPointPaths = await mongoDecisionMapPointEvidence(db, scoredRows, maxPoints, pathWindowHours, marketDayOnly)
+  const redisPaths = await redisTickerPathEvidence(redis, scoredRows, maxPoints, pathWindowHours, marketDayOnly, pathScope)
+  const mongoPointPaths = await mongoDecisionMapPointEvidence(db, scoredRows, maxPoints, pathWindowHours, marketDayOnly, pathScope)
   const tickersNeedingSnapshots = new Set([...wanted].filter(ticker => {
     const existing = [...(redisPaths.get(ticker) || []), ...(mongoPointPaths.get(ticker) || [])]
     return existing.length < maxPoints || !pathHasVisibleMovement(existing)
@@ -2240,6 +2287,7 @@ async function tickerPathEvidence(db, scoredRows = [], maxPoints = 14, redis = n
     const selectedWindow = selectPathMovementWindow(points, pathWindowHours)
     const pathPoints = compactPathPoints(selectedWindow.points, maxPoints)
       .map(point => annotatePathWindowPoint(point, row, selectedWindow))
+    const pathIdentity = analyzeDecisionMapPath(pathPoints, ticker)
     const direction = pathDirectionFromPoints(pathPoints, row, {
       quality: selectedWindow.quality,
       coverage: selectedWindow.coverage,
@@ -2250,6 +2298,11 @@ async function tickerPathEvidence(db, scoredRows = [], maxPoints = 14, redis = n
     map.set(ticker, {
       ticker_path: pathPoints,
       path_points: pathPoints,
+      path_scope: pathScope,
+      path_ticker: ticker,
+      path_chronological: pathIdentity.chronological,
+      path_wrong_ticker_rows: pathIdentity.wrong_ticker_rows,
+      path_current_timestamp: pathIdentity.latest_timestamp,
       ...direction,
       path_raw_points_count: points.length,
       path_window_raw_points_count: selectedWindow.points.length,
@@ -2298,7 +2351,7 @@ async function finvizFreshness(db, staleSeconds) {
 async function loadHotDecisionMap(req, db) {
   const redis = redisFromReq(req)
   if (!redis || req.query.fresh === '1') return null
-  const signature = stableQuerySignature(req.query)
+  const signature = stableDecisionMapQuerySignature(req.query)
   const key = `decision_map:latest:${signature}`
   try {
     const [raw, redisTtl] = await Promise.all([
@@ -2343,8 +2396,12 @@ async function persistDecisionMapHotState(req, db, payload) {
   if (!rows.length) return { redis_points: 0, mongo_points: 0, kafka_queued: 0 }
 
   const snapshotSec = quantizedNowSec()
-  const signature = stableQuerySignature(req.query)
-  const points = decisionMapStoragePoints(rows, snapshotSec, marketDayPathsOnly(req.query))
+  const signature = stableDecisionMapQuerySignature(req.query)
+  const marketDayOnly = marketDayPathsOnly(req.query)
+  const pathWindowHours = rollingWindowHoursFromQuery(req.query, 'pathWindowHours', DEFAULT_THRESHOLDS.pathWindowHours)
+  const volumeTimeframe = decisionMapVolumeTimeframe(req.query)
+  const pathScope = decisionMapPathScope({ windowHours: pathWindowHours, volumeTimeframe, marketDayOnly })
+  const points = decisionMapStoragePoints(rows, snapshotSec, marketDayOnly, pathScope)
 
   let redisPoints = 0
   if (redis) {
@@ -2376,13 +2433,13 @@ async function persistDecisionMapHotState(req, db, payload) {
       })
       pipe.expire('decision_map:meta', DECISION_MAP_PATH_TTL)
       for (const point of points) {
-        const pointKey = `decision_map:point:${point.ticker}:${point.snapshotSec}`
+        const pointKey = `decision_map:point:${pathScope}:${point.ticker}:${point.snapshotSec}`
         pipe.set(pointKey, pointJson(point), 'EX', DECISION_MAP_PATH_TTL)
-        pipe.zadd(`decision_map:path:${point.ticker}`, point.snapshotSec, pointKey)
+        pipe.zadd(`decision_map:path:${pathScope}:${point.ticker}`, point.snapshotSec, pointKey)
         pipe.zadd('decision_map:active', point.snapshotSec, point.ticker)
-        pipe.set(`decision_map:ticker:${point.ticker}:latest`, pointJson(point), 'EX', DECISION_MAP_PATH_TTL)
-        pipe.expire(`decision_map:path:${point.ticker}`, DECISION_MAP_PATH_TTL)
-        pipe.zremrangebyrank(`decision_map:path:${point.ticker}`, 0, -(DECISION_MAP_PATH_MAX + 1))
+        pipe.set(`decision_map:ticker:${pathScope}:${point.ticker}:latest`, pointJson(point), 'EX', DECISION_MAP_PATH_TTL)
+        pipe.expire(`decision_map:path:${pathScope}:${point.ticker}`, DECISION_MAP_PATH_TTL)
+        pipe.zremrangebyrank(`decision_map:path:${pathScope}:${point.ticker}`, 0, -(DECISION_MAP_PATH_MAX + 1))
       }
       pipe.expire('decision_map:active', DECISION_MAP_PATH_TTL)
       await pipe.exec()
@@ -2396,14 +2453,15 @@ async function persistDecisionMapHotState(req, db, payload) {
   if (DECISION_MAP_PERSIST_MONGO) {
     try {
       const pointDb = decisionMapStorageDb(db)
-      await pointDb.collection('decision_map_points').createIndex({ ticker: 1, snapshot_sec: -1 })
+      await pointDb.collection('decision_map_points').createIndex({ path_scope: 1, ticker: 1, snapshot_sec: -1 })
       await pointDb.collection('decision_map_points').createIndex({ snapshot_sec: -1 })
       const result = await pointDb.collection('decision_map_points').bulkWrite(points.map(point => ({
         updateOne: {
-          filter: { _id: `${point.ticker}:${point.snapshotSec}` },
+          filter: { _id: `${pathScope}:${point.ticker}:${point.snapshotSec}` },
           update: {
             $set: {
               ...point,
+              path_scope: pathScope,
               snapshot_sec: point.snapshotSec,
               generated_at: new Date(point.snapshotSec * 1000),
               updated_at: new Date(),
@@ -2536,7 +2594,7 @@ router.get('/', async (req, res) => {
       return res.json(hot)
     }
     const redis = redisFromReq(req)
-    const signature = stableQuerySignature(req.query)
+    const signature = stableDecisionMapQuerySignature(req.query)
     const builtAt = new Date().toISOString()
 
     const thresholds = {
@@ -2558,6 +2616,7 @@ router.get('/', async (req, res) => {
     const windowMeta = rollingWindowMeta(thresholds)
     const volumeTimeframe = decisionMapVolumeTimeframe(req.query)
     const marketDayPathMode = marketDayPathsOnly(req.query)
+    const activePathScope = decisionMapPathScope({ windowHours: thresholds.pathWindowHours, volumeTimeframe, marketDayOnly: marketDayPathMode })
 
     const rows = await activeScreenerRows(db, req.query, thresholds)
     const tickers = rows.map(row => row.ticker)
@@ -2569,15 +2628,36 @@ router.get('/', async (req, res) => {
     ])
 
     let scored = rows.map(row => scoreRow(row, articles.get(row.ticker), socials.get(row.ticker), volumes.get(row.ticker), thresholds))
-    scored = scored.filter(row => row.activityScore >= thresholds.minActivityScore)
+    const scoredRowsBeforeActivity = scored.length
+    const stageExclusions = []
+    scored = scored.filter(row => {
+      const keep = row.activityScore >= thresholds.minActivityScore
+      if (!keep) stageExclusions.push({ ticker: row.ticker, reasons: ['below_min_activity_score'] })
+      return keep
+    })
+    const rowsAfterActivity = scored.length
     const search = normalizeTicker(req.query.search || req.query.q || '')
     const explicitChartVolume = ['1', 'true', 'yes'].includes(String(req.query.force_chart_volume || req.query.forceChartVolume || '').toLowerCase())
     const requestedChartVolumeTimeframe = req.query.volume_timeframe != null || req.query.volumeTimeframe != null
     const forceChartVolume = Boolean(search || explicitChartVolume || (marketDayPathMode && requestedChartVolumeTimeframe))
-    if (search) scored = scored.filter(row => row.ticker === search)
+    if (search) scored = scored.filter(row => {
+      const keep = row.ticker === search
+      if (!keep) stageExclusions.push({ ticker: row.ticker, reasons: ['ticker_search_filter'] })
+      return keep
+    })
+    const rowsAfterTickerFilter = scored.length
     const alignment = String(req.query.alignment || '').toLowerCase()
-    if (alignment === 'aligned') scored = scored.filter(row => row.quadrant === 'Q1' || row.quadrant === 'Q3')
-    if (alignment === 'divergence') scored = scored.filter(row => row.quadrant === 'Q2' || row.quadrant === 'Q4')
+    if (alignment === 'aligned') scored = scored.filter(row => {
+      const keep = row.quadrant === 'Q1' || row.quadrant === 'Q3'
+      if (!keep) stageExclusions.push({ ticker: row.ticker, reasons: ['alignment_filter'] })
+      return keep
+    })
+    if (alignment === 'divergence') scored = scored.filter(row => {
+      const keep = row.quadrant === 'Q2' || row.quadrant === 'Q4'
+      if (!keep) stageExclusions.push({ ticker: row.ticker, reasons: ['divergence_filter'] })
+      return keep
+    })
+    const rowsAfterAlignmentFilter = scored.length
 
     const pathMap = await tickerPathEvidence(db, scored, decisionMapPathPointLimit(req.query), redis, thresholds.pathWindowHours, volumeTimeframe, forceChartVolume, marketDayPathMode)
     scored = scored.map(row => ({ ...row, ...(pathMap.get(row.ticker) || {
@@ -2605,6 +2685,9 @@ router.get('/', async (req, res) => {
       if (typeof av === 'string') return sortDir === 1 ? av.localeCompare(String(bv)) : String(bv).localeCompare(av)
       return sortDir === 1 ? Number(av || 0) - Number(bv || 0) : Number(bv || 0) - Number(av || 0)
     })
+
+    const rowDiagnostics = analyzeDecisionMapRows(scored)
+    scored = rowDiagnostics.validRows
 
     const summary = scored.reduce((acc, row) => {
       acc[row.quadrant] = (acc[row.quadrant] || 0) + 1
@@ -2648,8 +2731,9 @@ router.get('/', async (req, res) => {
         mongo_persist_enabled: DECISION_MAP_PERSIST_MONGO,
         mongo_storage_db: DECISION_MAP_DB_NAME || db?.databaseName || null,
         mongo_point_collection: 'decision_map_points',
-        path_store: 'decision_map:path:{ticker}',
-        point_store: 'decision_map:point:{ticker}:{snapshotSec}',
+        path_scope: activePathScope,
+        path_store: `decision_map:path:${activePathScope}:{ticker}`,
+        point_store: `decision_map:point:${activePathScope}:{ticker}:{snapshotSec}`,
       },
       freshness: { finviz },
       rolling_window: {
@@ -2671,6 +2755,24 @@ router.get('/', async (req, res) => {
       },
       thresholds,
       count: scored.length,
+      diagnostics: {
+        screener_rows_loaded: rows.length,
+        scored_rows_before_activity_filter: scoredRowsBeforeActivity,
+        rows_after_activity_filter: rowsAfterActivity,
+        removed_by_activity_filter: scoredRowsBeforeActivity - rowsAfterActivity,
+        rows_after_ticker_filter: rowsAfterTickerFilter,
+        removed_by_ticker_filter: rowsAfterActivity - rowsAfterTickerFilter,
+        rows_after_alignment_filter: rowsAfterAlignmentFilter,
+        removed_by_alignment_filter: rowsAfterTickerFilter - rowsAfterAlignmentFilter,
+        scored_rows_before_coordinate_validation: rowDiagnostics.input_rows,
+        valid_coordinate_rows: rowDiagnostics.valid_coordinate_rows,
+        unique_tickers: rowDiagnostics.unique_tickers,
+        duplicate_ticker_rows: rowDiagnostics.duplicate_ticker_rows,
+        excluded_coordinate_rows: rowDiagnostics.excluded_rows,
+        excluded: ['1', 'true', 'yes'].includes(String(req.query.debug || '').toLowerCase())
+          ? [...stageExclusions, ...rowDiagnostics.excluded].slice(0, 100)
+          : undefined,
+      },
       summary,
       rows: scored,
       methodology: {

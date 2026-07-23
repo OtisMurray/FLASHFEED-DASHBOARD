@@ -19,6 +19,7 @@ COPY Infrastructure/pipeline ./Infrastructure/pipeline
 COPY Infrastructure/kafka ./Infrastructure/kafka
 COPY 1_News ./1_News
 COPY 2_Screener ./2_Screener
+COPY chart-service/finviz_auth.py ./chart-service/finviz_auth.py
 COPY 5_Social ./5_Social
 COPY config ./config
 COPY scripts ./scripts
