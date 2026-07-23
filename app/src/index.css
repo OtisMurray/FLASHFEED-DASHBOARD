@@ -52,8 +52,8 @@ body {
 /* FlashFeed dashboard fix: Overview should fill the screen, not create one giant page scroll. */
 @media (min-width: 900px) {
   .overview-page {
-    height: calc(100vh - 52px);
-    max-height: calc(100vh - 52px);
+    height: 100%;
+    max-height: 100%;
     overflow: hidden;
     display: flex;
     flex-direction: column;
@@ -73,6 +73,34 @@ body {
     flex-direction: column;
   }
 
+  .overview-news-column,
+  .overview-social-column {
+    height: 100%;
+  }
+
+  .overview-column-scroll,
+  .overview-social-scroll {
+    flex: 1 1 0;
+    min-height: 0;
+    max-height: none;
+    overscroll-behavior: contain;
+  }
+
+  .overview-trending-footer {
+    display: flex;
+    flex: 0 0 auto;
+    max-height: 34%;
+    min-height: 116px;
+    flex-direction: column;
+    overflow: hidden;
+    border-top: 1px solid rgb(51 65 85 / 0.45);
+  }
+
+  .overview-trending-scroll {
+    min-height: 0;
+    overscroll-behavior: contain;
+  }
+
   .overview-page > .grid:last-child > .overview-side-rail {
     max-height: 100%;
     overflow-y: auto;
@@ -80,9 +108,4 @@ body {
     display: block;
   }
 
-  .overview-page > .grid:last-child [class*="overflow-y-auto"],
-  .overview-page > .grid:last-child [class*="overflow-auto"] {
-    flex: 1 1 auto;
-    min-height: 0;
-  }
 }

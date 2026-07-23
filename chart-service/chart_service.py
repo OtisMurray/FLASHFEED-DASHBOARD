@@ -76,16 +76,9 @@ _load_dotenv()
 
 
 def get_finviz_token() -> str:
-    """Finviz Elite token. Canonical name is FINVIZ_TOKEN (our convention); we
-    also accept Ryan's legacy FINVIZ_AUTH_TOKEN as a fallback so an existing
-    .env keeps working. Fail-loud if neither is set (no baked-in fallback)."""
+    """Return the optional legacy rotating Finviz export token."""
     tok = os.environ.get("FINVIZ_TOKEN") or os.environ.get("FINVIZ_AUTH_TOKEN")
-    if not tok or not tok.strip():
-        raise RuntimeError(
-            "FINVIZ_TOKEN is not set. Add it to chart-service/.env "
-            "(copy .env.example). There is no baked-in fallback."
-        )
-    return tok.strip()
+    return tok.strip() if tok and tok.strip() else ""
 
 
 def has_finviz_token() -> bool:
@@ -165,10 +158,12 @@ def _fetch_intraday_bars(ticker: str, date_str: str):
     except ValueError:
         fdate = date_str
     def build_url():
-        return (
+        url = (
             f"https://elite.finviz.com/quote_export"
-            f"?t={ticker}&p=i1&s={fdate}&e={fdate}&auth={get_finviz_token()}"
+            f"?t={ticker}&p=i1&s={fdate}&e={fdate}"
         )
+        token = get_finviz_token()
+        return f"{url}&auth={token}" if token else url
     url = build_url()
     try:
         session = cffi_requests.Session()

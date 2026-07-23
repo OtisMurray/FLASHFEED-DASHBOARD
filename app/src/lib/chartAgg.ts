@@ -21,9 +21,25 @@ export interface SocialSeries {
   sent_times?: number[]
 }
 
+// Trailing rolling COUNT (owner's spec): the value at minute t is the total
+// number of messages over the past k minutes, inclusive of the current minute.
+// This is causal/backward-looking and matches Aman's Price + Density chart.
+export function trailingCount(values: number[], k: number): number[] {
+  const n = values.length
+  const out: number[] = []
+  let sum = 0
+  const window = Math.max(1, Math.round(k))
+  for (let i = 0; i < n; i += 1) {
+    sum += Number(values[i] || 0)
+    if (i - window >= 0) sum -= Number(values[i - window] || 0)
+    out.push(sum)
+  }
+  return out
+}
+
 // TS port of the backend's _smooth_same(values, k): centered k-wide mean with
 // zero padding at the edges (np.convolve mode='same'), skipping smoothing when
-// len < k. Kept byte-faithful so k=15 reproduces the server's *_smooth series.
+// len < k. Kept for legacy sentiment/chart uses that explicitly need smoothing.
 export function smoothSame(values: number[], k: number): number[] {
   const n = values.length
   if (k <= 1 || n < k) return values.slice()
@@ -149,11 +165,10 @@ function etLabel(timeSec: number): string {
 }
 
 // Build density / sentiment overlay lines aligned to the SAME timeframe buckets
-// as resampleCandles(rawCandles, tfMin). Density is the per-minute message rate
-// smoothed with smoothSame(windowMin) (mirrors the research view's orange line);
-// sentiment is the server's 15-min-smoothed score. Each bucket value is the mean
-// of the per-minute smoothed values over the minutes it spans, so the overlays
-// stay registered to the candle x-axis at any timeframe.
+// as resampleCandles(rawCandles, tfMin). Density is the trailing windowMin-minute
+// message COUNT, not a centered average; sentiment is the server's smoothed score.
+// Each bucket value is the mean of the per-minute values over the minutes it spans,
+// so the overlays stay registered to the candle x-axis at any timeframe.
 export function overlaySeries(
   rawCandles: Candle[],
   social: SocialSeries | null,
@@ -179,7 +194,7 @@ export function overlaySeries(
     acc.set(bucket, a)
   }
 
-  const densSmooth = smoothSame(social.density || [], windowMin)
+  const densSmooth = trailingCount(social.density || [], windowMin)
   const dAcc = new Map<number, { sum: number; n: number }>()
   const sAcc = new Map<number, { sum: number; n: number }>()
 

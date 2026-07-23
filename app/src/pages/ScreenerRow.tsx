@@ -272,7 +272,51 @@ export function ScreenerRow({ row, columns }: Props) {
       case 'prediction_confidence':
         if ((row as any).decision_candidate) return <span className="text-[10px] text-neutral">candidate</span>
         if ((row as any).isFallback || (row as any).is_fallback || row.prediction_status === 'fallback_candidate') return <span className="text-[10px] text-yellow-300">Watch only</span>
-        return <span className="font-mono text-neutral">{row.prediction_confidence == null ? '—' : `${Math.round(Number(row.prediction_confidence) * 100)}%`}</span>
+        const confidenceStack = (row as any).confidence_stack || (row as any).prediction_scorecard?.confidence_stack
+        const confidenceBars = Array.isArray(confidenceStack?.bars) ? confidenceStack.bars : []
+        const visibleBars = confidenceBars
+          .filter((bar: any) => ['market', 'catalyst', 'people', 'density', 'float', 'penalty'].includes(String(bar?.key || '')))
+          .slice(0, 6)
+        const rawConfidence = Number(confidenceStack?.confidence ?? row.prediction_confidence ?? row.prediction?.confidence)
+        const displayConfidence = Number.isFinite(rawConfidence)
+          ? rawConfidence > 1 ? rawConfidence : rawConfidence * 100
+          : null
+        const confidenceTitle = confidenceBars.length
+          ? confidenceBars.map((bar: any) => `${bar.label || bar.key}: ${Math.round(Number(bar.score || 0))}/100 - ${bar.reason || ''}`).join('\n')
+          : undefined
+        const confidenceTone = displayConfidence == null
+          ? 'text-neutral'
+          : displayConfidence >= 70
+            ? 'text-emerald-400'
+            : displayConfidence >= 55
+              ? 'text-sky-300'
+              : displayConfidence >= 40
+                ? 'text-yellow-300'
+                : 'text-orange-300'
+        return (
+          <div className="min-w-[86px] leading-tight" title={confidenceTitle}>
+            <div className={clsx('font-mono', confidenceTone)}>{displayConfidence == null ? '—' : `${Math.round(displayConfidence)}%`}</div>
+            {visibleBars.length > 0 && (
+              <div className="mt-1 space-y-0.5">
+                {visibleBars.map((bar: any) => {
+                  const score = Math.max(0, Math.min(100, Number(bar.score || 0)))
+                  const isPenalty = bar.key === 'penalty'
+                  const fillClass = isPenalty
+                    ? score >= 45 ? 'bg-red-400' : score >= 20 ? 'bg-orange-400' : 'bg-emerald-500'
+                    : score >= 75 ? 'bg-emerald-400' : score >= 55 ? 'bg-sky-400' : score >= 35 ? 'bg-yellow-300' : 'bg-slate-600'
+                  return (
+                    <div key={bar.key} className="flex items-center gap-1">
+                      <span className="w-5 text-[8px] uppercase text-neutral">{String(bar.label || bar.key).slice(0, 3)}</span>
+                      <span className="h-1 w-12 overflow-hidden rounded-full bg-slate-800">
+                        <span className={clsx('block h-full rounded-full', fillClass)} style={{ width: `${Math.max(4, score)}%` }} />
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )
       case 'payoff_model_probability':
         const payoffProb = (row as any).payoff_model_probability
         const payoffThreshold = (row as any).payoff_model_threshold

@@ -13,9 +13,13 @@ async function addIndexes() {
   const articlesIndexes = [
     { keys: { ticker: 1, publish_date: -1 }, name: 'ticker_publish_date' },
     { keys: { tickers: 1, publish_date: -1 }, name: 'tickers_publish_date' },
+    { keys: { symbol: 1, publish_date: -1 }, name: 'symbol_publish_date' },
+    { keys: { symbols: 1, publish_date: -1 }, name: 'symbols_publish_date' },
     { keys: { article_kind: 1, publish_date: -1 }, name: 'article_kind_publish_date' },
     { keys: { ticker: 1, sentiment: 1 }, name: 'ticker_sentiment' },
     { keys: { publish_date: -1 }, name: 'publish_date' },
+    { keys: { fetched_date: -1 }, name: 'fetched_date_desc' },
+    { keys: { detected_at: -1 }, name: 'detected_at_desc' },
     { keys: { source: 1, publish_date: -1 }, name: 'source_publish_date' },
     { keys: { sentiment: 1, publish_date: -1 }, name: 'sentiment_publish_date' },
     { keys: { feed_sort_time: -1 }, name: 'feed_sort_time_desc' },
@@ -64,6 +68,9 @@ async function addIndexes() {
     { keys: { quote_updated_at: -1, change_pct: -1 }, name: 'quote_updated_change_desc' },
     { keys: { rel_volume: -1, volume: -1 }, name: 'rel_volume_volume_desc' },
     { keys: { threshold_feature_updated_at: -1 }, name: 'threshold_feature_updated_desc' },
+    { keys: { threshold_feature_policy_version: 1, threshold_feature_status: 1 }, name: 'threshold_policy_status' },
+    { keys: { threshold_feature_policy_version: 1, threshold_feature_window_minutes: 1, threshold_feature_status: 1, threshold_feature_updated_at: -1 }, name: 'threshold_policy_window_status_updated' },
+    { keys: { threshold_feature_policy_version: 1, threshold_setup_score: -1, rel_volume: -1 }, name: 'threshold_policy_setup_score_relvol' },
   ]
 
   for (const idx of screenerIndexes) {
@@ -102,9 +109,14 @@ async function addIndexes() {
     { keys: { ticker: 1, signal_sec: -1 }, name: 'ticker_signal_sec_desc' },
     { keys: { label_status: 1, signal_sec: -1 }, name: 'label_status_signal_sec_desc' },
     { keys: { signal_sec: -1, ticker: 1, entry_price: 1 }, name: 'signal_sec_ticker_entry_price' },
+    { keys: { 'entry_signal.status': 1, signal_sec: -1 }, name: 'entry_signal_status_signal_sec' },
+    { keys: { 'entry_signal.entry_ready': 1, signal_sec: -1 }, name: 'entry_ready_signal_sec' },
+    { keys: { threshold_policy_version: 1, signal_sec: -1 }, name: 'threshold_policy_version_signal_sec' },
+    { keys: { 'entry_signal.policy_version': 1, signal_sec: -1 }, name: 'entry_policy_version_signal_sec' },
     { keys: { 'labels.return_5m.label_source': 1, signal_sec: -1 }, name: 'return_5m_label_source_signal_sec' },
     { keys: { 'labels.return_15m.label_source': 1, signal_sec: -1 }, name: 'return_15m_label_source_signal_sec' },
     { keys: { 'labels.return_60m.label_source': 1, signal_sec: -1 }, name: 'return_60m_label_source_signal_sec' },
+    { keys: { 'labels.return_5m.missing_reason': 1, signal_sec: -1 }, name: 'return_5m_missing_reason_signal_sec' },
   ]
 
   for (const idx of predictionSignalIndexes) {
@@ -116,6 +128,27 @@ async function addIndexes() {
         console.log(`- Index already exists: ${idx.name}`)
       } else {
         console.error(`✗ Failed to create index ${idx.name} on prediction_signals:`, err.message)
+      }
+    }
+  }
+
+  const activeContextIndexes = [
+    { keys: { ticker: 1 }, options: { unique: true, background: true }, name: 'ticker_unique' },
+    { keys: { threshold_policy_version: 1, signal_sec: -1 }, name: 'threshold_policy_signal_sec' },
+    { keys: { 'entry_signal.status': 1, signal_sec: -1 }, name: 'entry_status_signal_sec' },
+    { keys: { 'entry_signal.entry_ready': 1, signal_sec: -1 }, name: 'entry_ready_signal_sec' },
+    { keys: { rank: 1, signal_sec: -1 }, name: 'rank_signal_sec' },
+  ]
+
+  for (const idx of activeContextIndexes) {
+    try {
+      await db.collection('active_ticker_context').createIndex(idx.keys, { ...(idx.options || { background: true }), name: idx.name })
+      console.log(`✓ Created index: ${idx.name} on active_ticker_context`)
+    } catch (err) {
+      if (err.codeName === 'IndexOptionsConflict') {
+        console.log(`- Index already exists: ${idx.name}`)
+      } else {
+        console.error(`✗ Failed to create index ${idx.name} on active_ticker_context:`, err.message)
       }
     }
   }

@@ -423,6 +423,82 @@ export interface MomentumRow {
   }
 }
 
+// v11 Screener (experimental) — postmortem replay of one fixed backtest profile
+// over the catalyst-enriched set. Rows from /api/v11-screener.
+export interface V11EvidenceGate {
+  required: boolean
+  ok: boolean
+  status: string
+  shortSupport?: boolean
+  catalystSupport?: boolean
+  socialSupport?: boolean
+}
+
+export interface V11ScreenerRow {
+  ticker: string
+  company?: string
+  tier?: string
+  prediction_date?: string | null
+  session_date?: string | null
+  catalyst_reason?: string
+  status: 'entered' | 'no_entry' | 'insufficient_bars' | 'missing_session_date' | 'bad_session_date' | 'error' | string
+  evidence?: V11EvidenceGate
+  entry?: {
+    price?: number | null
+    signal_sec?: number | null
+    entry_sec?: number | null
+    corr?: number | null
+    prev_corr?: number | null
+    pre_return_60m_pct?: number | null
+    active_move_pct?: number | null
+    trailing_60m_messages?: number | null
+    gate_reason?: string
+  }
+  legs?: {
+    partial?: { filled?: boolean; price?: number | null; pnl_pct?: number | null; exit_sec?: number | null }
+    runner?: { price?: number | null; pnl_pct?: number | null; exit_sec?: number | null; exit_reason?: string }
+  }
+  outcome?: {
+    realized_return_pct?: number | null
+    gross_return_pct?: number | null
+    won?: boolean
+    max_forward_return_pct?: number | null
+    min_forward_return_pct?: number | null
+  }
+  reject?: { reason?: string; gate_reason?: string; active_move_pct?: number | null; evidence_status?: string }
+  note?: string
+  bars?: number
+}
+
+export interface V11Profile {
+  label: string
+  windowMinutes: number
+  thresholdC: number
+  maxPreSignalReturn60mPct: number
+  minTrailing60Messages: number
+  activeMoveMinPct: number
+  activeMoveMaxPct: number
+  partialExitFraction: number
+  partialProfitTargetPct: number
+  profitGivebackPct: number
+  profitGivebackActivationPct: number
+  protectiveStopPct: number
+  exitPlan: string
+}
+
+export interface V11ScreenerResponse {
+  ok: boolean
+  profile: V11Profile
+  universe: string
+  mode: string
+  experimental: boolean
+  candidates_scanned?: number
+  count: number
+  entered: number
+  rows: V11ScreenerRow[]
+  note?: string
+}
+
 export interface SocialPost {
   id?:        string
   post_id?:   string

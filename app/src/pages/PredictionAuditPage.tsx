@@ -37,6 +37,8 @@ type AuditRow = {
   baseline_signal?: { direction?: string; confidence?: number; entry_ready?: boolean; threshold_status?: string } | null
   model_signal?: { direction?: string; confidence?: number; predicted_return_5m?: number } | null
   entry_signal?: { status?: string; entry_ready?: boolean; reason?: string; policy_version?: string; tier?: string } | null
+  threshold_policy?: Record<string, any> | null
+  features?: Record<string, any> | null
   audit_quality?: { valid?: boolean; flags?: string[] }
 }
 
@@ -125,7 +127,7 @@ type AuditData = {
   }
   latest_prediction_archive?: Record<string, unknown>
   model?: Record<string, unknown>
-  threshold_policy?: Record<string, unknown>
+  threshold_policy?: Record<string, any>
   missed_mover_replay?: ReplayReport | null
   error?: string
 }
@@ -147,6 +149,20 @@ function compact(value: unknown) {
   if (n >= 10_000) return `${Math.round(n / 1000)}k`
   if (n >= 1_000) return `${(n / 1000).toFixed(1)}k`
   return String(n)
+}
+
+function num(value: unknown, digits = 2) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '--'
+  return n.toFixed(digits)
+}
+
+function countBy<T>(items: T[], keyFn: (item: T) => string) {
+  return items.reduce<Record<string, number>>((acc, item) => {
+    const key = keyFn(item) || 'unknown'
+    acc[key] = (acc[key] || 0) + 1
+    return acc
+  }, {})
 }
 
 function timeLabel(value?: string | null) {
@@ -220,6 +236,17 @@ export function PredictionAuditPage() {
   const replay = data?.missed_mover_replay
   const replayRows = replay?.top_mover_missed_opportunities || []
   const capture = replay?.capture_metrics || {}
+  const policy = data?.threshold_policy || {}
+  const policyRule = policy.candidateRule || {}
+  const readinessCounts = countBy(rows, row => row.entry_signal?.status || 'missing')
+  const entryReadyCount = rows.filter(row => row.entry_signal?.entry_ready).length
+  const floatRejectedCount = rows.filter(row => String(row.entry_signal?.status || '').includes('float') || String(row.entry_signal?.reason || '').includes('evidence gate failed')).length
+  const overextendedCount = rows.filter(row => String(row.entry_signal?.status || '').includes('overextended')).length
+  const nearThresholdCount = rows.filter(row => {
+    const corr = Number(row.features?.price_density_correlation)
+    const threshold = Number(policyRule.thresholdC ?? 0.36)
+    return Number.isFinite(corr) && corr >= threshold - Number(policyRule.setupNearThresholdBand ?? 0.04) && corr < threshold
+  }).length
   const snapshotAgeHours = Number(replay?.mover_snapshot?.latest_available_snapshot_age_hours)
   const replayIsStale = Number.isFinite(snapshotAgeHours) && snapshotAgeHours > 24
 
@@ -268,6 +295,94 @@ export function PredictionAuditPage() {
         <Metric label="Archive Rows" value={compact(archive.finalRows ?? archive.rowCount)} detail={`${compact(archive.strictRows)} strict · ${compact(archive.candidatePoolRows)} developing`} />
         <Metric label="Model" value={String(data?.model?.status || 'unknown')} detail={`${compact(data?.model?.samples)} samples`} />
       </div>
+
+      <section className="rounded-lg border border-border bg-surface p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="font-semibold text-white">Threshold Monitor</h2>
+            <p className="mt-1 text-xs text-neutral">Current entry gate, float squeeze safeguards, and recent pass/fail reasons.</p>
+          </div>
+          <div className="max-w-xl text-right text-xs text-neutral">
+            <div>{String(policy.version || '—')}</div>
+            <div className="truncate" title={String(policy.caveat || '')}>{String(policy.candidate_rule || '')}</div>
+          </div>
+        </div>
+
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+          <Metric label="Window" value={`${compact(policyRule.windowMinutes)}m`} detail={`C > ${num(policyRule.thresholdC, 2)}`} />
+          <Metric label="Pre60 Cap" value={`${num(policyRule.maxPreSignalReturn60mPct, 1)}%`} detail={`Move cap ${num(policyRule.maxSignalAbsChangePct, 0)}%`} />
+          <Metric label="Messages" value={compact(policyRule.minTrailing60Messages)} detail="trailing 60m min" />
+          <Metric label="Entry Ready" value={compact(entryReadyCount)} tone={entryReadyCount ? 'text-emerald-300' : 'text-neutral'} />
+          <Metric label="Near C" value={compact(nearThresholdCount)} detail="watch setups" />
+          <Metric label="Guard Blocks" value={compact(floatRejectedCount + overextendedCount)} detail={`${compact(floatRejectedCount)} evidence · ${compact(overextendedCount)} extended`} tone={floatRejectedCount + overextendedCount ? 'text-yellow-300' : 'text-emerald-300'} />
+        </div>
+
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+          <div className="rounded border border-border bg-bg/40 p-3">
+            <div className="text-xs font-semibold uppercase text-neutral">Recent Readiness</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {Object.entries(readinessCounts).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([status, count]) => (
+                <span key={status} className="rounded border border-border bg-surface px-2 py-1 text-xs">
+                  <span className={clsx('font-mono', statusTone(status))}>{status.replace(/_/g, ' ')}</span>
+                  <span className="ml-2 text-neutral">{count}</span>
+                </span>
+              ))}
+              {!Object.keys(readinessCounts).length && <span className="text-xs text-neutral">No recent signal rows.</span>}
+            </div>
+          </div>
+
+          <div className="rounded border border-border bg-bg/40 p-3">
+            <div className="text-xs font-semibold uppercase text-neutral">Float And Exit Rules</div>
+            <div className="mt-2 grid gap-x-4 gap-y-1 text-xs text-neutral sm:grid-cols-2">
+              <div>Ultra-low float: &lt;10M, stronger message/evidence gate</div>
+              <div>Low float: 10-25M, catalyst/social/short support</div>
+              <div>High float: requires stronger RelVol/liquidity</div>
+              <div>Exit: 50% at +5%, runner after +10%</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="border-b border-border uppercase text-neutral">
+              <tr>
+                <th className="py-2 pr-4">Ticker</th>
+                <th className="py-2 pr-4">Corr</th>
+                <th className="py-2 pr-4">Pre60</th>
+                <th className="py-2 pr-4">Messages</th>
+                <th className="py-2 pr-4">Float</th>
+                <th className="py-2 pr-4">Status</th>
+                <th className="py-2 pr-4">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, 10).map(row => {
+                const gate = row.threshold_policy?.floatGate || {}
+                const features = row.features || {}
+                return (
+                  <tr key={`threshold-${row.id}`} className="border-b border-border/60">
+                    <td className="py-2 pr-4 font-mono text-accent">{row.ticker}</td>
+                    <td className="py-2 pr-4 font-mono text-neutral">{num(features.price_density_correlation, 3)}</td>
+                    <td className="py-2 pr-4 font-mono text-neutral">{num(features.threshold_pre_return_60m_pct, 2)}%</td>
+                    <td className="py-2 pr-4 font-mono text-neutral">{compact(features.threshold_trailing_60m_messages)}</td>
+                    <td className="py-2 pr-4">
+                      <div className="font-mono text-white">{String(gate.floatBucket || features.float_bucket || 'unknown').replace(/_/g, ' ')}</div>
+                      <div className="text-[11px] text-neutral">{compact(features.shares_float)} sh · short {num(features.float_short, 1)}%</div>
+                    </td>
+                    <td className={clsx('py-2 pr-4 font-mono', statusTone(row.entry_signal?.status))}>{String(row.entry_signal?.status || 'missing').replace(/_/g, ' ')}</td>
+                    <td className="max-w-[420px] truncate py-2 pr-4 text-neutral" title={row.entry_signal?.reason || ''}>{row.entry_signal?.reason || '—'}</td>
+                  </tr>
+                )
+              })}
+              {!rows.length && (
+                <tr>
+                  <td colSpan={7} className="py-8 text-center text-neutral">No recent prediction signal rows.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
 
       <section className="rounded-lg border border-border bg-surface p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">

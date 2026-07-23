@@ -4,6 +4,11 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import {
+  PREDICTION_THRESHOLD_FEATURE_SOURCE,
+  PREDICTION_THRESHOLD_POLICY,
+  PREDICTION_THRESHOLD_POLICY_VERSION,
+} from '../Infrastructure/server/lib/predictionThresholdPolicy.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
@@ -13,11 +18,12 @@ try {
 } catch (_) {
   mongoose = require('mongoose')
 }
-const THRESHOLD_FEATURE_POLICY_VERSION = 'density_corr_balanced_w90_candidate_v3'
-const ENTRY_CORRELATION_THRESHOLD = 0.3
-const MAX_PRE_SIGNAL_RETURN_60M_PCT = 5
-const MIN_TRAILING_60M_MESSAGES = 3
-const SETUP_NEAR_THRESHOLD_BAND = 0.05
+const THRESHOLD_FEATURE_POLICY_VERSION = PREDICTION_THRESHOLD_POLICY_VERSION
+const THRESHOLD_FEATURE_POLICY_NAME = PREDICTION_THRESHOLD_POLICY.candidateRule.name
+const ENTRY_CORRELATION_THRESHOLD = Number(PREDICTION_THRESHOLD_POLICY.candidateRule.thresholdC)
+const MAX_PRE_SIGNAL_RETURN_60M_PCT = Number(PREDICTION_THRESHOLD_POLICY.candidateRule.maxPreSignalReturn60mPct)
+const MIN_TRAILING_60M_MESSAGES = Number(PREDICTION_THRESHOLD_POLICY.candidateRule.minTrailing60Messages)
+const SETUP_NEAR_THRESHOLD_BAND = Number(PREDICTION_THRESHOLD_POLICY.candidateRule.setupNearThresholdBand || 0.04)
 
 function argValue(name, fallback = '') {
   const prefix = `--${name}=`
@@ -395,7 +401,7 @@ function computeFeatures(ticker, bars, social, { windowMinutes, minObservations 
 async function main() {
   const mongoUri = process.env.MONGO_URI || process.env.MONGODB_URI || argValue('mongo', 'mongodb://localhost:27017/feedflash')
   const maxTickers = Math.max(1, Math.min(5000, Number(argValue('maxTickers', '1200')) || 1200))
-  const windowMinutes = Math.max(30, Math.min(720, Number(argValue('windowMinutes', '90')) || 90))
+  const windowMinutes = Math.max(30, Math.min(720, Number(argValue('windowMinutes', '120')) || 120))
   const minObservations = Math.max(5, Math.min(240, Number(argValue('minObservations', '30')) || 30))
   const liveCharts = !['0', 'false', 'no'].includes(String(argValue('liveCharts', '1')).toLowerCase())
   const freshMinutes = Math.max(15, Math.min(1440, Number(argValue('freshMinutes', '240')) || 240))
@@ -427,6 +433,7 @@ async function main() {
     const social = await loadSocialCounts(db, new Set(tickers), startSec, endSec)
     const updates = []
     const statuses = {}
+    const computedAt = new Date()
     for (const [ticker, bars] of normalizedBarsByTicker.entries()) {
       const features = computeFeatures(ticker, bars, social, { windowMinutes, minObservations })
       if (!features) continue
@@ -447,10 +454,28 @@ async function main() {
               threshold_setup_distance_to_entry: features.threshold_setup_distance_to_entry,
               threshold_feature_status: features.threshold_feature_status,
               threshold_feature_policy_version: THRESHOLD_FEATURE_POLICY_VERSION,
-              threshold_feature_source: 'finviz_momentum_snapshots+socials',
+              threshold_feature_policy_name: THRESHOLD_FEATURE_POLICY_NAME,
+              threshold_feature_source: PREDICTION_THRESHOLD_FEATURE_SOURCE,
+              threshold_feature_price_source: price.diagnostics?.priceSource || null,
+              threshold_feature_price_collection: price.diagnostics?.collection || 'finviz_momentum_snapshots',
+              threshold_feature_social_collection: social.diagnostics?.collection || 'socials',
               threshold_feature_snapshot_sec: features.latestMinute,
-              threshold_feature_updated_at: new Date(),
-              updated_at: new Date(),
+              threshold_feature_provenance: {
+                policy_version: THRESHOLD_FEATURE_POLICY_VERSION,
+                policy_name: THRESHOLD_FEATURE_POLICY_NAME,
+                source: PREDICTION_THRESHOLD_FEATURE_SOURCE,
+                price_source: price.diagnostics?.priceSource || null,
+                price_collection: price.diagnostics?.collection || 'finviz_momentum_snapshots',
+                social_collection: social.diagnostics?.collection || 'socials',
+                window_minutes: windowMinutes,
+                min_observations: minObservations,
+                threshold_c: ENTRY_CORRELATION_THRESHOLD,
+                max_pre_signal_return_60m_pct: MAX_PRE_SIGNAL_RETURN_60M_PCT,
+                min_trailing_60m_messages: MIN_TRAILING_60M_MESSAGES,
+                computed_at: computedAt,
+              },
+              threshold_feature_updated_at: computedAt,
+              updated_at: computedAt,
             },
           },
         },
@@ -458,6 +483,7 @@ async function main() {
     }
     if (updates.length) await db.collection('screeners').bulkWrite(updates, { ordered: false })
     await db.collection('screeners').createIndex({ threshold_feature_policy_version: 1, threshold_feature_status: 1 }).catch(() => {})
+    await db.collection('screeners').createIndex({ threshold_feature_policy_version: 1, threshold_feature_window_minutes: 1, threshold_feature_status: 1, threshold_feature_updated_at: -1 }).catch(() => {})
     console.log(JSON.stringify({
       ok: true,
       updated: updates.length,
@@ -470,6 +496,9 @@ async function main() {
       thresholdC: ENTRY_CORRELATION_THRESHOLD,
       maxPreSignalReturn60mPct: MAX_PRE_SIGNAL_RETURN_60M_PCT,
       minTrailing60Messages: MIN_TRAILING_60M_MESSAGES,
+      thresholdFeaturePolicyVersion: THRESHOLD_FEATURE_POLICY_VERSION,
+      thresholdFeaturePolicyName: THRESHOLD_FEATURE_POLICY_NAME,
+      thresholdFeatureSource: PREDICTION_THRESHOLD_FEATURE_SOURCE,
     }, null, 2))
   } finally {
     await mongoose.disconnect()

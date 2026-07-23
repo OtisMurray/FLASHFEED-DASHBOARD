@@ -1,18 +1,22 @@
+name: working_code
+
 services:
   mongo:
     image: mongo:7
     container_name: feedflash-mongo
     restart: unless-stopped
+    command: ["mongod", "--bind_ip_all", "--wiredTigerCacheSizeGB", "0.5"]
+    stop_grace_period: 60s
     ports:
       - "127.0.0.1:27017:27017"
     volumes:
       - feedflash_mongo_data:/data/db
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 10s
-      timeout: 5s
+      interval: 30s
+      timeout: 15s
       retries: 6
-      start_period: 20s
+      start_period: 30s
 
   redis:
     image: redis:7.2-alpine
@@ -106,6 +110,9 @@ services:
       FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-${FINVIZ_TOKEN:-}}
       FINVIZ_TOKEN: ${FINVIZ_TOKEN:-${FINVIZ_AUTH_TOKEN:-}}
       FINVIZ_COOKIE: ${FINVIZ_COOKIE:-}
+      FINVIZ_LOGIN: ${FINVIZ_LOGIN:-}
+      FINVIZ_PASSWORD: ${FINVIZ_PASSWORD:-}
+      VAR_ROOT: /var/lib/flashfeed-auth
       TRADINGVIEW_SCREENER_LIMIT: ${TRADINGVIEW_SCREENER_LIMIT:-10000}
       BENZINGA_API_KEY: ${BENZINGA_API_KEY:-}
       DOW_JONES_API_KEY: ${DOW_JONES_API_KEY:-}
@@ -142,6 +149,10 @@ services:
       UNSTRUCTURED_MAX_PER_SOURCE: ${UNSTRUCTURED_MAX_PER_SOURCE:-0}
       FAST_UNSTRUCTURED_SOURCE_FILTER: ${FAST_UNSTRUCTURED_SOURCE_FILTER:-Finviz News Flow,TradingView News}
       DEFAULT_FETCH_MODE: ${DEFAULT_FETCH_MODE:-fast}
+      PREDICTION_MAINTENANCE_INTERVAL_MS: ${PREDICTION_MAINTENANCE_INTERVAL_MS:-300000}
+      OHLCV_HYDRATION_INTERVAL_MS: ${OHLCV_HYDRATION_INTERVAL_MS:-300000}
+      OHLCV_HYDRATION_LIMIT: ${OHLCV_HYDRATION_LIMIT:-40}
+      OHLCV_HYDRATION_CONCURRENCY: ${OHLCV_HYDRATION_CONCURRENCY:-6}
       ENABLE_QUOTE_FETCH: ${ENABLE_QUOTE_FETCH:-0}
       QUOTE_MAX_TICKERS: ${QUOTE_MAX_TICKERS:-100}
       FETCH_MIN_INTERVAL_MS: ${FETCH_MIN_INTERVAL_MS:-10000}
@@ -149,7 +160,11 @@ services:
       API_TOKEN: ${API_TOKEN:-}
       API_TOKEN_SCOPE: ${API_TOKEN_SCOPE:-write}
       AUTO_REFRESH_ENABLED: ${AUTO_REFRESH_ENABLED:-true}
+      AUTO_GRAB_RUN_FETCH: ${AUTO_GRAB_RUN_FETCH:-true}
+      ONSITE_FETCH_ENABLED: ${ONSITE_FETCH_ENABLED:-true}
       NODE_ENV: development
+    volumes:
+      - finviz_auth_data:/var/lib/flashfeed-auth
     depends_on:
       mongo:
         condition: service_healthy
@@ -163,6 +178,26 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  frontend:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: feedflash-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+      chart-service:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/overview || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   kafka-consumer:
     build:
@@ -295,7 +330,10 @@ services:
     restart: unless-stopped
     environment:
       BACKEND_URL: http://backend:3001
-      AUTO_REFRESH_ENABLED: ${AUTO_REFRESH_ENABLED:-true}
+      # The backend's presence-aware one-minute scheduler is authoritative.
+      # Keep this legacy external loop available, but disabled to prevent two
+      # independent schedulers from competing for the refresh lock.
+      AUTO_REFRESH_ENABLED: ${EXTERNAL_AUTO_REFRESH_ENABLED:-false}
       AUTO_REFRESH_MODE: ${AUTO_REFRESH_MODE:-auto}
       AUTO_REFRESH_INTERVAL_SECONDS: ${AUTO_REFRESH_INTERVAL_SECONDS:-60}
       AUTO_REFRESH_TIMEOUT_SECONDS: ${AUTO_REFRESH_TIMEOUT_SECONDS:-55}
@@ -333,11 +371,10 @@ services:
     environment:
       PORT: 5050
       FINVIZ_TOKEN: ${FINVIZ_TOKEN:-}
-      # Self-healing Finviz Elite auth: the service logs in with these and uses
-      # the session cookie (which overrides the rotating export token), re-logging
-      # in automatically on a 401. Set these instead of chasing FINVIZ_TOKEN.
+      FINVIZ_AUTH_TOKEN: ${FINVIZ_AUTH_TOKEN:-}
       FINVIZ_LOGIN: ${FINVIZ_LOGIN:-}
       FINVIZ_PASSWORD: ${FINVIZ_PASSWORD:-}
+      VAR_ROOT: /var/lib/flashfeed-auth
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       # Target this compose's mongo service (not localhost, which would fall
       # back to in-memory). Use chart-service's OWN db/collection so it stays
@@ -350,6 +387,8 @@ services:
       # chart falls back to the dashed prior-close carry overnight.
       TV_USERNAME: ${TV_USERNAME:-}
       TV_PASSWORD: ${TV_PASSWORD:-}
+    volumes:
+      - finviz_auth_data:/var/lib/flashfeed-auth
     depends_on:
       mongo:
         condition: service_healthy
@@ -359,3 +398,4 @@ volumes:
   hf_sentiment_cache:
   feedflash_mongo_data:
   feedflash_redis_data:
+  finviz_auth_data:

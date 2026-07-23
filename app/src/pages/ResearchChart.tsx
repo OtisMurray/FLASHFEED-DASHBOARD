@@ -218,9 +218,9 @@ const TITLES: Record<ResearchMode, string> = {
   ds: 'Message Density vs Sentiment Score',
 }
 
-// Price+Density rolling window. The slider intentionally reaches 480 minutes
-// so the active Charts page matches the Aman/sentchart research view.
-const WIN_MIN = 1, WIN_MAX = 480, WIN_DEFAULT = 3
+// Price+Density rolling window. Keep the visible control to the intraday
+// range used by Mirror so 24h history is not mistaken for a rolling signal.
+const WIN_MIN = 1, WIN_MAX = 360, WIN_DEFAULT = 3
 const SOCIAL_LOOKBACKS = [
   { minutes: 1440, label: '24h' },
   { minutes: 4320, label: '72h' },

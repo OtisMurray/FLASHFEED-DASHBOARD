@@ -99,7 +99,7 @@ export function OverviewPage() {
   const targetLanguage = useTargetLanguage()
   const { data: stats } = useSWR('/api/stats?days=3', fetcher, livePanelSWR)
   const { data: status } = useSWR('/api/status', fetcher, livePanelSWR)
-  const { data: articlesData } = useSWR('/api/articles?limit=30&ticker_only=1&recent_days=3', fetcher, livePanelSWR)
+  const { data: articlesData } = useSWR('/api/articles/recent-lite?limit=30&ticker_only=1&recent_days=3', fetcher, livePanelSWR)
   const { data: socialData } = useSWR('/api/social/rolling?window_minutes=1440&limit=80&ranked=1', fetcher, livePanelSWR)
   const { data: socialStats } = useSWR('/api/social/rolling/stats?window_minutes=1440', fetcher, livePanelSWR)
   const { data: correlationData } = useSWR('/api/correlation', fetcher, slowerPanelSWR)
@@ -125,11 +125,11 @@ export function OverviewPage() {
     .filter(([phrase]) => Boolean(phrase))
 
 
-  const bullishArticles = stats?.sentiment?.bullish ?? 0
-  const bearishArticles = stats?.sentiment?.bearish ?? 0
-  const trackedMarkets = compact(stats?.tracked_market_ticker_count ?? stats?.tracked_ticker_count)
-  const totalArticleCount = stats?.total ?? status?.database?.recent_articles ?? articlesData?.total ?? 0
-  const socialTotal = socialStats?.total ?? socialData?.count ?? socialPosts.length
+  const bullishArticles = stats ? (stats?.sentiment?.bullish ?? 0) : null
+  const bearishArticles = stats ? (stats?.sentiment?.bearish ?? 0) : null
+  const trackedMarkets = compact(stats ? (stats?.tracked_market_ticker_count ?? stats?.tracked_ticker_count) : null)
+  const totalArticleCount = stats?.total ?? status?.database?.recent_articles ?? null
+  const socialTotal = socialStats?.total ?? null
   const pearsonR = correlationData?.summary?.pearson_correlation ?? null
 
   return (
@@ -151,20 +151,22 @@ export function OverviewPage() {
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.9fr)_minmax(300px,0.8fr)] gap-4">
-        <section className="min-w-0 bg-surface border border-border rounded-lg overflow-hidden">
-          <SectionTitle title="Ticker-Matched News" meta={`${articles.length} latest 30 · 3d`} />
-          <div className="divide-y divide-slate-700/30 max-h-[640px] overflow-y-auto">
+        <section className="overview-news-column min-w-0 bg-surface border border-border rounded-lg overflow-hidden">
+          <SectionTitle title="Ticker-Matched News" meta={articlesData ? `${articles.length} latest 30 · 3d` : 'loading'} />
+          <div className="overview-column-scroll divide-y divide-slate-700/30 overflow-y-auto">
             {articles.length ? articles.map(article => (
               <OverviewArticleRow key={article.id || article.article_id || article.url || article.title} article={article} targetLanguage={targetLanguage} />
             )) : (
-              <div className="px-3 py-8 text-center text-neutral text-sm">No recent headlines. Run a fetch to fill this section.</div>
+              <div className="px-3 py-8 text-center text-neutral text-sm">
+                {articlesData ? 'No recent ticker-matched headlines in this window.' : 'Loading recent ticker-matched headlines...'}
+              </div>
             )}
           </div>
         </section>
 
-        <section className="min-w-0 bg-surface border border-border rounded-lg overflow-hidden">
-          <SectionTitle title="Social Sentiment" meta={`${socialTotal} posts`} />
-          <div className="divide-y divide-slate-700/30 max-h-[360px] overflow-y-auto">
+        <section className="overview-social-column min-w-0 bg-surface border border-border rounded-lg overflow-hidden">
+          <SectionTitle title="Social Sentiment" meta={socialTotal == null ? 'loading' : `${compact(socialTotal)} posts`} />
+          <div className="overview-social-scroll divide-y divide-slate-700/30 overflow-y-auto">
             {socialPosts.length ? socialPosts.map((post, idx) => {
               const ticker = post.ticker || post.symbol
               return (
@@ -181,19 +183,23 @@ export function OverviewPage() {
                 </div>
               )
             }) : (
-              <div className="px-3 py-8 text-center text-neutral text-sm">No social posts in the current window.</div>
+              <div className="px-3 py-8 text-center text-neutral text-sm">
+                {socialData ? 'No social posts in the current window.' : 'Loading current social posts...'}
+              </div>
             )}
           </div>
 
-          <SectionTitle title="Trending Phrases" meta={phrases.length ? '24h window' : 'waiting'} />
-          <div className="p-3 flex flex-wrap gap-2">
-            {phrases.length ? phrases.map(([phrase, count]) => (
-              <span key={phrase} className="rounded-full border border-border bg-bg px-2.5 py-1 text-xs text-slate-200">
-                {phrase} <span className="text-neutral">x{count}</span>
-              </span>
-            )) : (
-              <span className="text-sm text-neutral">Phrases appear after social posts include keywords.</span>
-            )}
+          <div className="overview-trending-footer">
+            <SectionTitle title="Trending Phrases" meta={phrases.length ? '24h window' : 'waiting'} />
+            <div className="overview-trending-scroll p-3 flex flex-wrap content-start gap-2 overflow-y-auto">
+              {phrases.length ? phrases.map(([phrase, count]) => (
+                <span key={phrase} className="rounded-full border border-border bg-bg px-2.5 py-1 text-xs text-slate-200">
+                  {phrase} <span className="text-neutral">x{count}</span>
+                </span>
+              )) : (
+                <span className="text-sm text-neutral">Phrases appear after social posts include keywords.</span>
+              )}
+            </div>
           </div>
         </section>
 

@@ -655,12 +655,18 @@ function mapLightweightArticle(article = {}, moverTickers = []) {
   }
 }
 
-function dateFilterFromRequest({ from, to, feed, today, recent_days, days }, { filingFacet = false } = {}) {
+function dateFilterFromRequest({ from, to, feed, today, recent_days, days, window_minutes }, { filingFacet = false } = {}) {
   if (from || to) {
     const dateRange = {}
     if (from) dateRange.$gte = Number(from)
     if (to) dateRange.$lte = Number(to)
     return { publish_date: dateRange }
+  }
+
+  const rollingMinutes = Number(window_minutes)
+  if (Number.isFinite(rollingMinutes) && rollingMinutes > 0) {
+    const boundedMinutes = Math.max(5, Math.min(7 * 24 * 60, Math.round(rollingMinutes)))
+    return articleWindowFilter(Date.now() - boundedMinutes * 60 * 1000)
   }
 
   const todayOnly = feed === 'today' || today === '1' || today === 'true' || (!recent_days && !days)
@@ -672,7 +678,8 @@ function dateFilterFromRequest({ from, to, feed, today, recent_days, days }, { f
 }
 
 // GET /api/articles
-// Query params: sentiment, source, ticker, ticker_only, from, to, recent_days, limit, skip, offset
+// Query params: sentiment, source, ticker, ticker_only, from, to,
+// window_minutes, recent_days, limit, skip, offset
 router.get('/recent-lite', async (req, res) => {
   try {
     const {
@@ -681,6 +688,7 @@ router.get('/recent-lite', async (req, res) => {
       mover_source,
       recent_days,
       days,
+      ticker_only,
       limit = 24,
     } = req.query
     const pageLimit = Math.max(1, Math.min(100, Number(limit || 24) || 24))
@@ -701,10 +709,12 @@ router.get('/recent-lite', async (req, res) => {
       .maxTimeMS(8_000)
       .toArray()
     const requestedKind = String(article_kind || '').toLowerCase()
+    const tickerOnly = ticker_only === '1' || ticker_only === 'true'
     const articles = rawRows
       .map(row => mapLightweightArticle(row, moverTickers))
       .filter(row => {
         if (requestedKind && requestedKind !== 'all' && row.article_kind !== requestedKind) return false
+        if (tickerOnly && !row.tickers.length) return false
         if (moverTickers.length && !row.matched_mover_tickers.length) return false
         return true
       })
@@ -721,6 +731,7 @@ router.get('/recent-lite', async (req, res) => {
       facets_included: false,
       post_ticker_verification: false,
       lightweight: true,
+      ticker_only: tickerOnly,
       window_days: windowDays,
       market_window_start: responseWindowStart.toISOString(),
       market_window_end: new Date().toISOString(),
@@ -750,6 +761,7 @@ router.get('/', async (req, res) => {
       mover_source,
       from,
       to,
+      window_minutes,
       recent_days,
       days,
       today,
@@ -826,7 +838,7 @@ router.get('/', async (req, res) => {
     }
 
     Object.assign(filter, dateFilterFromRequest(
-      { from, to, feed, today, recent_days, days },
+      { from, to, feed, today, recent_days, days, window_minutes },
       { filingFacet: explicitFilingRequest && includeFilings }
     ))
 
@@ -840,7 +852,7 @@ router.get('/', async (req, res) => {
     const filingFacetFilter = {
       ...(sentiment ? { sentiment } : {}),
       suppress_from_main_news: { $ne: '__never_exclude_filings_facet__' },
-      ...dateFilterFromRequest({ from, to, feed, today, recent_days, days }, { filingFacet: true }),
+      ...dateFilterFromRequest({ from, to, feed, today, recent_days, days, window_minutes }, { filingFacet: true }),
       $and: [
         ...((filter.$and || []).filter(part => part !== kindFilter)),
         filingKindFilter(),
@@ -964,14 +976,19 @@ router.get('/', async (req, res) => {
       responseArticles = pageArticles.map(mapArticle)
     }
 
-    const responseTodayOnly = !explicitFilingRequest && (feed === 'today' || today === '1' || today === 'true' || (!recent_days && !days))
+    const responseRollingMinutes = Number.isFinite(Number(window_minutes)) && Number(window_minutes) > 0
+      ? Math.max(5, Math.min(7 * 24 * 60, Math.round(Number(window_minutes))))
+      : null
+    const responseTodayOnly = responseRollingMinutes == null && !explicitFilingRequest && (feed === 'today' || today === '1' || today === 'true' || (!recent_days && !days))
     const responseParts = easternParts(new Date())
     const responseWindowDays = explicitFilingRequest
       ? Math.max(7, Math.floor(Number(recent_days || days || 7) || 7))
       : Math.max(1, Math.floor(Number(recent_days || days || 3) || 3))
-    const responseWindowStart = responseTodayOnly
-      ? easternLocalToUtc(responseParts.year, responseParts.month, responseParts.day, 0)
-      : new Date(calendarWindowStart(responseWindowDays))
+    const responseWindowStart = responseRollingMinutes != null
+      ? new Date(Date.now() - responseRollingMinutes * 60 * 1000)
+      : responseTodayOnly
+        ? easternLocalToUtc(responseParts.year, responseParts.month, responseParts.day, 0)
+        : new Date(calendarWindowStart(responseWindowDays))
     const responseTomorrow = shiftLocalDate(responseParts.year, responseParts.month, responseParts.day, 1)
     const responseWindowEnd = responseTodayOnly
       ? new Date(easternLocalToUtc(responseTomorrow.year, responseTomorrow.month, responseTomorrow.day, 0).getTime() - 1)
@@ -995,7 +1012,8 @@ router.get('/', async (req, res) => {
       market_window_start: responseWindowStart.toISOString(),
       market_window_end: responseWindowEnd.toISOString(),
       market_window_timezone: MARKET_WINDOW_TIME_ZONE,
-      window_mode: responseTodayOnly ? 'today' : 'calendar_days_et',
+      window_mode: responseRollingMinutes != null ? 'rolling_minutes' : responseTodayOnly ? 'today' : 'calendar_days_et',
+      window_minutes: responseRollingMinutes,
       window_days: responseTodayOnly ? 1 : responseWindowDays,
       window_date: responseTodayOnly
         ? `${String(responseParts.year).padStart(4, '0')}-${String(responseParts.month).padStart(2, '0')}-${String(responseParts.day).padStart(2, '0')}`

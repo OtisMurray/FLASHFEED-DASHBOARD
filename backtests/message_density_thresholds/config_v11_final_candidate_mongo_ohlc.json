@@ -1,0 +1,36 @@
+{
+  "extends": "config_v6_old_anchor_mongo_ohlc.json",
+  "outputDir": "backtests/message_density_thresholds/outputs_v11_final_candidate_mongo_ohlc",
+  "v6WinRateQualityGrid": {
+    "enabled": true,
+    "baseRules": [
+      { "name": "current_live_w180_c036_msg8_trail7", "windowMinutes": 180, "thresholdC": 0.36, "trailingStopPct": 7, "protectiveStopPct": 3, "maxPre60Pct": 1, "minTrailing60Messages": 8 },
+      { "name": "current_live_w180_c036_msg8_runner", "windowMinutes": 180, "thresholdC": 0.36, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 1, "minTrailing60Messages": 8 },
+      { "name": "robust_w120_c038_msg3_runner", "windowMinutes": 120, "thresholdC": 0.38, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 1, "minTrailing60Messages": 3 },
+      { "name": "robust_w120_c038_msg3_trail10", "windowMinutes": 120, "thresholdC": 0.38, "trailingStopPct": 10, "protectiveStopPct": 3, "maxPre60Pct": 1, "minTrailing60Messages": 3 },
+      { "name": "strict_w120_c040_msg3_runner", "windowMinutes": 120, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 1, "minTrailing60Messages": 3 },
+      { "name": "broad_w120_c038_pre4_msg3_runner", "windowMinutes": 120, "thresholdC": 0.38, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 3 }
+    ],
+    "dashboardScores": [0],
+    "rankMax": [null],
+    "relVolumeMin": [null],
+    "changeBands": [
+      { "name": "anymom", "min": null, "max": null },
+      { "name": "mom0to12", "min": 0, "max": 12 }
+    ],
+    "exitOverlays": [
+      { "name": "eodtrail", "overlay": {} },
+      { "name": "gb5_a5", "overlay": { "profitGivebackPct": 5, "profitGivebackActivationPct": 5 } },
+      { "name": "gb5_a10", "overlay": { "profitGivebackPct": 5, "profitGivebackActivationPct": 10 } },
+      { "name": "gb10_a10", "overlay": { "profitGivebackPct": 10, "profitGivebackActivationPct": 10 } },
+      { "name": "partial50_pt5_gb5a10", "overlay": { "partialExitFraction": 0.5, "partialProfitTargetPct": 5, "profitGivebackPct": 5, "profitGivebackActivationPct": 10 } },
+      { "name": "partial50_pt5_gb10a10", "overlay": { "partialExitFraction": 0.5, "partialProfitTargetPct": 5, "profitGivebackPct": 10, "profitGivebackActivationPct": 10 } }
+    ],
+    "dashboardScore": {
+      "enabledChecks": ["correlation"]
+    },
+    "minWinRateTrades": 20,
+    "targetWinRate": 0.35,
+    "maxVariants": 72
+  }
+}

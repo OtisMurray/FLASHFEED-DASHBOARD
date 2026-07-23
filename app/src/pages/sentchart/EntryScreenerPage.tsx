@@ -36,7 +36,7 @@ function fmtCompact(n: number | undefined | null): string {
 }
 
 export function EntryScreenerPage() {
-  const [threshold, setThreshold] = useState(0.5)
+  const [threshold, setThreshold] = useState(0.1)
   const [orderBy, setOrderBy] = useState<string>('entry_score')
   const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('desc')
 
@@ -99,6 +99,10 @@ export function EntryScreenerPage() {
           </span>
         </div>
         <div className="text-[10px] text-slate-500 mt-2">
+          <span className="text-slate-400 italic">
+            Default 0.1 is the sweep-optimal value from the professor sweep analysis; provisional, pending validation against the corrected backtest.
+          </span>
+          <br />
           Rolling Pearson correlation of price vs per-minute StockTwits message density (same math as the
           Charts strategy signals). Entry Score = correlation × evidence weight — a display ranking, not a
           predictive signal. Rows below the threshold are dimmed.

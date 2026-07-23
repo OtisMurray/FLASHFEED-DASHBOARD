@@ -1,4 +1,4 @@
-# FlashFeed — Real-Time Stock Market Dashboard
+# Project
 
 FlashFeed aggregates news, social sentiment, screener data, and momentum signals using Docker, MongoDB, Redis, Kafka, and a React frontend.
 

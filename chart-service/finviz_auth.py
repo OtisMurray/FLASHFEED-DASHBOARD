@@ -156,11 +156,12 @@ def _cookie_session_works(session) -> bool:
     """One tiny authenticated export to confirm the cookie is accepted."""
     try:
         r = session.get(
-            "https://elite.finviz.com/quote_export?t=AAPL&p=i1",
+            "https://elite.finviz.com/export.ashx?v=111&t=AAPL",
             headers=_HEADERS, impersonate="chrome124", timeout=20)
     except Exception:
         return False
-    return r.status_code == 200 and (r.text or "").lstrip().startswith("Date,")
+    first_line = (r.text or "").lstrip().splitlines()[0] if (r.text or "").strip() else ""
+    return r.status_code == 200 and '"Ticker"' in first_line and len((r.text or "").splitlines()) >= 2
 
 
 # ─── cookie persistence ───────────────────────────────────────────────────────
@@ -224,6 +225,7 @@ def refresh(force: bool = False) -> dict:
     """Log in and persist fresh session cookies. Collapses concurrent callers via
     a file lock + debounce. Returns the cookie payload. Raises FinvizAuthError if
     a session cannot be established."""
+    requested_at = time.time()
     if not force and have_fresh_cookies():
         p = _load_payload()
         if p and time.time() - p.get("saved", 0) < REFRESH_DEBOUNCE_S:
@@ -244,11 +246,13 @@ def refresh(force: bool = False) -> dict:
                 time.sleep(0.5)
 
         # A peer may have just logged in while we waited — adopt it.
-        if not force:
-            p = _load_payload()
-            if p and p.get("cookies", {}).get(_AUTH_COOKIE) \
-                    and time.time() - p.get("saved", 0) < REFRESH_DEBOUNCE_S:
-                return p
+        p = _load_payload()
+        peer_just_refreshed = p and p.get("cookies", {}).get(_AUTH_COOKIE) \
+            and float(p.get("saved", 0)) >= requested_at
+        recently_refreshed = p and p.get("cookies", {}).get(_AUTH_COOKIE) \
+            and time.time() - float(p.get("saved", 0)) < REFRESH_DEBOUNCE_S
+        if peer_just_refreshed or (not force and recently_refreshed):
+            return p
 
         payload = _login()                # may raise FinvizAuthError
         _persist_cookies(payload)
@@ -290,9 +294,14 @@ def _cli_check():
         print("No Finviz session available (login not configured or failed).",
               file=sys.stderr)
         return 1
-    r = s.get("https://elite.finviz.com/quote_export?t=AAPL&p=i1",
-              headers=_HEADERS, impersonate="chrome124", timeout=20)
-    ok = r.status_code == 200 and (r.text or "").lstrip().startswith("Date,")
+    try:
+        r = s.get("https://elite.finviz.com/export.ashx?v=111&t=AAPL",
+                  headers=_HEADERS, impersonate="chrome124", timeout=20)
+    except Exception as exc:
+        print(f"Cookie check failed: {exc.__class__.__name__}", file=sys.stderr)
+        return 1
+    first_line = (r.text or "").lstrip().splitlines()[0] if (r.text or "").strip() else ""
+    ok = r.status_code == 200 and '"Ticker"' in first_line and len((r.text or "").splitlines()) >= 2
     rows = max(0, len((r.text or "").strip().splitlines()) - 1)
     print(f"cookie session: {'WORKS' if ok else 'FAILED'} (HTTP {r.status_code}, {rows} rows)")
     return 0 if ok else 1

@@ -13,11 +13,15 @@ import articlesRouter    from './routes/articles.js'
 import screenerRouter    from './routes/screener.js'
 import entryScreenerRouter from './routes/entryScreener.js'
 import exitScreenerRouter from './routes/exitScreener.js'
+import v11ScreenerRouter from './routes/v11Screener.js'
 import socialRouter      from './routes/social.js'
 import correlationRouter from './routes/correlation.js'
 import settingsRouter    from './routes/settings.js'
 import decisionMapRouter from './routes/decisionMap.js'
 import { approvedNewsSourceMongoFilter } from './sourceFilter.js'
+import { dedupeWatcherSeries, loadWatcherFeatureMap, persistWatcherSnapshot } from './lib/watcherSnapshots.js'
+import { normalizeRollingWindowMinutes, recordIsInsideRollingWindow, sliceCandlesToRollingWindow } from './lib/rollingWindow.js'
+import * as predictionThresholdPolicy from './lib/predictionThresholdPolicy.js'
 
 const app  = express()
 const PORT = process.env.PORT || 3001
@@ -70,6 +74,8 @@ const WATCHER_SNAPSHOT_MIN_TICKER_INTERVAL_SEC = Math.max(5 * 60, Number(process
 const WATCHER_SNAPSHOT_BATCH_SIZE = Math.max(1, Math.min(75, Number(process.env.WATCHER_SNAPSHOT_BATCH_SIZE || 25)))
 const WATCHER_SNAPSHOT_REQUEST_DELAY_MS = Math.max(0, Number(process.env.WATCHER_SNAPSHOT_REQUEST_DELAY_MS || 650))
 const WATCHER_SNAPSHOT_TOP_MOVER_POOL = Math.max(WATCHER_SNAPSHOT_BATCH_SIZE, Math.min(250, Number(process.env.WATCHER_SNAPSHOT_TOP_MOVER_POOL || 100)))
+const WATCHER_SNAPSHOT_MAX_AGE_SECONDS = Math.max(3600, Number(process.env.WATCHER_SNAPSHOT_MAX_AGE_SECONDS || 72 * 60 * 60))
+const WATCHER_GROWTH_WINDOW_SECONDS = Math.max(3600, Number(process.env.WATCHER_GROWTH_WINDOW_SECONDS || 24 * 60 * 60))
 const watcherSnapshotStatus = {
   enabled: WATCHER_SNAPSHOT_ENABLED,
   running: false,
@@ -129,18 +135,28 @@ const CACHE_RULES = [
   { match: (p) => p === '/api/correlation',     ttl: Number(process.env.CACHE_TTL_CORRELATION || 30) },
   { match: (p) => p === '/api/articles',        ttl: Number(process.env.CACHE_TTL_ARTICLES || 15) },
   { match: (p) => p.startsWith('/api/ai/'),     ttl: Number(process.env.CACHE_TTL_AI || 60) },
+  { match: (p) => p === '/api/prediction/features', ttl: Number(process.env.CACHE_TTL_PREDICTION_FEATURES || 20) },
+  { match: (p) => p === '/api/prediction/signals',  ttl: Number(process.env.CACHE_TTL_PREDICTION_SIGNALS || 20) },
+  { match: (p) => p === '/api/prediction/active-context', ttl: Number(process.env.CACHE_TTL_PREDICTION_ACTIVE_CONTEXT || 20) },
+  { match: (p) => p === '/api/prediction/audit',    ttl: Number(process.env.CACHE_TTL_PREDICTION_AUDIT || 45) },
+  { match: (p) => p === '/api/prediction/model',    ttl: Number(process.env.CACHE_TTL_PREDICTION_MODEL || 120) },
+  { match: (p) => p === '/api/prediction/replay',   ttl: Number(process.env.CACHE_TTL_PREDICTION_REPLAY || 120) },
 ]
 const cacheTtlFor = (p) => { const r = CACHE_RULES.find((rule) => rule.match(p)); return r ? r.ttl : 0 }
+const responseCacheNamespace = (path) => path.startsWith('/api/prediction/')
+  ? predictionThresholdPolicy.predictionPolicyCacheNamespace()
+  : 'default'
 app.use(async (req, res, next) => {
   if (req.method !== 'GET' || !redisReady()) return next()
   if (req.query?.fresh === '1') return next()
   const ttl = cacheTtlFor(req.path)
   if (!ttl) return next()
-  const key = 'cache:' + req.originalUrl
+  const key = `cache:${responseCacheNamespace(req.path)}:${req.originalUrl}`
   try {
     const hit = await redis.get(key)
     if (hit) {
       res.set('X-Cache', 'HIT')
+      res.set('X-Cache-Namespace', responseCacheNamespace(req.path))
       if (req.path === '/api/momentum') {
         try {
           const parsed = JSON.parse(hit)
@@ -161,10 +177,32 @@ app.use(async (req, res, next) => {
   res.json = (body) => {
     if (res.statusCode === 200) {
       res.set('X-Cache', 'MISS')
+      res.set('X-Cache-Namespace', responseCacheNamespace(req.path))
       try { redis.set(key, JSON.stringify(body), 'EX', ttl).catch(() => {}) } catch (_) {}
     }
     return sendJson(body)
   }
+  next()
+})
+
+const ENDPOINT_TIMING_LOG_MS = Math.max(50, Number(process.env.ENDPOINT_TIMING_LOG_MS || 750))
+app.use((req, res, next) => {
+  const start = process.hrtime.bigint()
+  res.on('finish', () => {
+    if (!req.path.startsWith('/api/')) return
+    const durationMs = Number(process.hrtime.bigint() - start) / 1e6
+    if (durationMs < ENDPOINT_TIMING_LOG_MS && res.statusCode < 500) return
+    console.log(JSON.stringify({
+      type: 'endpoint_timing',
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      duration_ms: Number(durationMs.toFixed(1)),
+      cache: res.getHeader('X-Cache') || null,
+      cache_namespace: res.getHeader('X-Cache-Namespace') || null,
+      policy_version: req.path.startsWith('/api/prediction/') ? PREDICTION_THRESHOLD_POLICY_VERSION : null,
+    }))
+  })
   next()
 })
 
@@ -217,6 +255,18 @@ function aiArticleTimeMs(a) {
   return aiTimestampMs(a.publish_date) || aiTimestampMs(a.published_at) || aiTimestampMs(a.fetched_date) ||
     aiTimestampMs(a.detected_at) || aiTimestampMs(a.createdAt) || aiTimestampMs(a.updatedAt)
 }
+
+function aiTickerTaggedArticleMatch() {
+  return {
+    $or: [
+      { ticker: { $exists: true, $nin: ["", null] } },
+      { tickers: { $exists: true, $nin: [[], "", null] } },
+      { symbol: { $exists: true, $nin: ["", null] } },
+      { symbols: { $exists: true, $nin: [[], "", null] } },
+    ],
+  }
+}
+
 async function aiRecentArticles(db, days) {
   const cutoffMs = Date.now() - Math.max(1, days) * 86_400_000
   const projection = {
@@ -225,21 +275,28 @@ async function aiRecentArticles(db, days) {
     ml_confidence: 1, title: 1, source: 1,
     publish_date: 1, published_at: 1, fetched_date: 1, detected_at: 1, createdAt: 1, updatedAt: 1,
   }
-  const docs = await db.collection(AI_ARTICLES_COLLECTION)
-    .find({}, { projection })
+  const tickerTagged = aiTickerTaggedArticleMatch()
+  const recentDocs = await db.collection(AI_ARTICLES_COLLECTION)
+    .find({ $and: [recentArticleMatch(days), tickerTagged] }, { projection })
     .sort({ _id: -1 })
-    .limit(10000)
+    .limit(8000)
     .toArray()
 
-  const usable = docs.filter(a => aiTickers(a).length && aiSentiment(a) !== null)
+  const usable = recentDocs.filter(a => aiTickers(a).length && aiSentiment(a) !== null)
   const recent = usable.filter(a => {
     const ts = aiArticleTimeMs(a)
     return ts > 0 && ts >= cutoffMs
   })
+  if (recent.length) return recent.slice(0, 8000)
 
   // If the stored timestamps are older/malformed, still show the latest real
   // ticker-tagged rows instead of a dead 0-count AI panel.
-  return (recent.length ? recent : usable).slice(0, 8000)
+  const fallbackDocs = await db.collection(AI_ARTICLES_COLLECTION)
+    .find(tickerTagged, { projection })
+    .sort({ _id: -1 })
+    .limit(5000)
+    .toArray()
+  return fallbackDocs.filter(a => aiTickers(a).length && aiSentiment(a) !== null).slice(0, 5000)
 }
 function aiSentiment(a) {
   let v = a.sentiment_score ?? a.finbert_score ?? a.vader_score ?? a.gemini_sentiment
@@ -1473,9 +1530,16 @@ function normalizeScreenerDoc(doc = {}) {
     eps_growth_this_y: nullableNumber(doc.eps_growth_this_y),
     eps_growth_next_y: nullableNumber(doc.eps_growth_next_y),
     sales_growth: nullableNumber(doc.sales_growth),
+    sales_growth_past_5y: nullableNumber(doc.sales_growth_past_5y),
     gross_margin: nullableNumber(doc.gross_margin),
     operating_margin: nullableNumber(doc.operating_margin),
+    profit_margin: nullableNumber(doc.profit_margin),
+    roa: nullableNumber(doc.roa),
     roe: nullableNumber(doc.roe),
+    roi: nullableNumber(doc.roi),
+    current_ratio: nullableNumber(doc.current_ratio),
+    quick_ratio: nullableNumber(doc.quick_ratio),
+    lt_debt_equity: nullableNumber(doc.lt_debt_equity),
     debt_equity: nullableNumber(doc.debt_equity),
     beta: nullableNumber(doc.beta),
     rsi: nullableNumber(doc.rsi),
@@ -1494,7 +1558,39 @@ function normalizeScreenerDoc(doc = {}) {
     target_price: nullableFixed(doc.target_price, 2),
     inst_own: nullableNumber(doc.inst_own),
     insider_own: nullableNumber(doc.insider_own),
+    insider_transactions: nullableNumber(doc.insider_transactions),
+    inst_transactions: nullableNumber(doc.inst_transactions),
     float_short: nullableNumber(doc.float_short),
+    shares_outstanding: nullableNumber(doc.shares_outstanding),
+    shares_float: nullableNumber(doc.shares_float),
+    short_ratio: nullableNumber(doc.short_ratio),
+    short_interest: nullableNumber(doc.short_interest),
+    float_percent: nullableNumber(doc.float_percent),
+    payout_ratio: nullableNumber(doc.payout_ratio),
+    eps_ttm: nullableNumber(doc.eps_ttm),
+    eps_growth_qoq: nullableNumber(doc.eps_growth_qoq),
+    eps_growth_past_5y: nullableNumber(doc.eps_growth_past_5y),
+    eps_growth_next_5y: nullableNumber(doc.eps_growth_next_5y),
+    price_to_cash: nullableNumber(doc.price_to_cash),
+    price_to_free_cash_flow: nullableNumber(doc.price_to_free_cash_flow),
+    book_per_share: nullableNumber(doc.book_per_share),
+    cash_per_share: nullableNumber(doc.cash_per_share),
+    dividend: nullableNumber(doc.dividend),
+    employees: nullableNumber(doc.employees),
+    income: nullableNumber(doc.income),
+    sales: nullableNumber(doc.sales),
+    after_hours_close: nullableFixed(doc.after_hours_close, 4),
+    after_hours_change: nullableNumber(doc.after_hours_change),
+    change_from_open: nullableNumber(doc.change_from_open),
+    volatility_week: nullableNumber(doc.volatility_week),
+    volatility_month: nullableNumber(doc.volatility_month),
+    open: nullableFixed(doc.open, 4),
+    high: nullableFixed(doc.high, 4),
+    low: nullableFixed(doc.low, 4),
+    trades: nullableNumber(doc.trades),
+    optionable: doc.optionable || null,
+    shortable: doc.shortable || null,
+    ipo_date: doc.ipo_date || null,
     earnings_date: doc.earnings_date || null,
     price_density_correlation: nullableNumber(doc.price_density_correlation),
     previous_price_density_correlation: nullableNumber(doc.previous_price_density_correlation),
@@ -2001,30 +2097,12 @@ function mergeMoverContext(row, articleRow, socialRow) {
   }
 }
 
-async function loadLatestMoverWatcherSnapshots(db, tickers = []) {
+async function loadLatestMoverWatcherSnapshots(db, tickers = [], growthWindowMinutes = 1440) {
   if (!db || !Array.isArray(tickers) || !tickers.length) return new Map()
-  const nowSec = Math.floor(Date.now() / 1000)
-  const sinceSec = nowSec - 72 * 60 * 60
-  try {
-    const docs = await db.collection('stocktwits_watcher_snapshots')
-      .find({
-        ticker: { $in: tickers },
-        fetched_sec: { $gte: sinceSec },
-      }, {
-        projection: { _id: 0, ticker: 1, fetched_sec: 1, watcher_count: 1, source: 1 },
-      })
-      .sort({ fetched_sec: -1 })
-      .toArray()
-    const latest = new Map()
-    for (const doc of docs) {
-      const ticker = String(doc.ticker || '').toUpperCase()
-      if (!ticker || latest.has(ticker)) continue
-      latest.set(ticker, doc)
-    }
-    return latest
-  } catch (_) {
-    return new Map()
-  }
+  return loadWatcherFeatureMap(db, tickers, {
+    maxAgeSeconds: WATCHER_SNAPSHOT_MAX_AGE_SECONDS,
+    growthWindowSeconds: normalizeRollingWindowMinutes(growthWindowMinutes) * 60,
+  })
 }
 
 function isoFromSec(sec) {
@@ -2370,260 +2448,58 @@ const PREDICTION_FEATURE_KEYS = [
   "agreement",
 ]
 
-const PREDICTION_THRESHOLD_POLICY_VERSION = "density_corr_partner_tier_thresholds_v8"
-const V7_PAYOFF_CAPTURE_EXIT = {
-  exitStrategy: "partial_profit_then_profit_giveback_runner",
-  partialExitFraction: 0.5,
-  partialProfitTargetPct: 5,
-  profitGivebackPct: 5,
-  profitGivebackActivationPct: 10,
-  runnerTrailingStopPct: 99,
-  legacyFallbackTrailingStopPct: 10,
-  trailingStopPct: 10,
-  protectiveStopPct: 3,
-  exitPlan: "sell 50% at +5%; hold the runner until it gives back 5% after reaching +10%; keep the 3% protective stop and flatten by end of day",
-}
-const V7_NANO_HIGH_WIN_EXIT = {
-  exitStrategy: "profit_giveback_runner",
-  profitGivebackPct: 5,
-  profitGivebackActivationPct: 1,
-  runnerTrailingStopPct: 99,
-  legacyFallbackTrailingStopPct: 7,
-  trailingStopPct: 7,
-  protectiveStopPct: 3,
-  exitPlan: "nano research profile: hold until open profit gives back 5% after reaching +1%; keep the 3% protective stop and flatten by end of day",
-}
-const PREDICTION_THRESHOLD_POLICY = {
-  version: PREDICTION_THRESHOLD_POLICY_VERSION,
-  status: "partner_tiered_corr_thresholds_requires_validated_evidence",
-  mechanics: {
-    entry_execution: "signal at end of minute t; execute at close of next real bar (t+1)",
-    exit_rule: "first intrabar hit using real OHLC high/low: tier-specific trailing stop, protective stop from entry, or end-of-day flatten",
-    correlation_definition: "causal rolling Pearson corr(price, trailing-smoothed message density), evaluated with the selected market-cap tier profile",
-    late_entry_gate: "reject entries when the ticker already moved beyond the tier-specific 60-minute pre-signal limit",
-    validation_gate: "current move alone is never enough; require recognized catalyst, verified squeeze/social-interest evidence, or a real message-density setup",
-    session_gate: "premarket/weekend catalysts can queue candidates, but live trading entries require market-session confirmation unless explicitly shown as watch-only",
-    ohlc_note: "v8 uses partner-provided market-cap tier rolling correlation thresholds while preserving real Mongo OHLC/high/low execution and existing evidence gates",
-  },
-  candidateRule: {
-    name: "partner_mid_positive_train_test_reference_w60_c0.30_trail2_v8",
-    entrySignal: "corr_crosses_above_with_intrabar_ohlc_pre_move_gate_and_partner_tier_trailing_exit",
-    windowMinutes: 60,
-    smoothingMinutes: 60,
-    thresholdC: 0.3,
-    setupNearThresholdBand: 0.05,
-    maxPreSignalReturn60mPct: 1,
-    minTrailing60Messages: 3,
-    exitStrategy: "tier_fixed_trailing_stop",
-    trailingStopPct: 2,
-    protectiveStopPct: 3,
-    exitPlan: "enter on the next real bar after the tier correlation cross; use the tier trailing stop, 3% protective stop, and end-of-day flatten",
-    sourceBacktest: "partner_threshold_research_2026_07_15",
-    backtestSummary: {
-      caveat: "partner supplied tier-specific windows, correlation thresholds, and trailing stops; mid-cap W=60/C=0.3 was reported as the only tier positive on both train and test",
-    },
-  },
-  tierRules: {
-    Mega: {
-      tier: "Mega",
-      name: "tier_mega_partner_w240_c0.10_pre60le1_msg3_trail3",
-      entrySignal: "corr_crosses_above_with_news_validation_and_partner_trailing_exit",
-      windowMinutes: 240,
-      smoothingMinutes: 240,
-      thresholdC: 0.1,
-      setupNearThresholdBand: 0.05,
-      maxPreSignalReturn60mPct: 1,
-      minTrailing60Messages: 3,
-      exitStrategy: "tier_fixed_trailing_stop",
-      trailingStopPct: 3,
-      protectiveStopPct: 3,
-      rationale: "partner threshold table: mega uses a 240m rolling price-density correlation cross above 0.10 with a 3% trailing stop",
-    },
-    Large: {
-      tier: "Large",
-      name: "tier_large_partner_w480_c0.10_pre60le1_msg3_trail2",
-      entrySignal: "corr_crosses_above_with_news_validation_and_partner_trailing_exit",
-      windowMinutes: 480,
-      smoothingMinutes: 480,
-      thresholdC: 0.1,
-      setupNearThresholdBand: 0.05,
-      maxPreSignalReturn60mPct: 1,
-      minTrailing60Messages: 3,
-      exitStrategy: "tier_fixed_trailing_stop",
-      trailingStopPct: 2,
-      protectiveStopPct: 3,
-      rationale: "partner threshold table: large uses a 480m rolling price-density correlation cross above 0.10 with a 2% trailing stop",
-    },
-    Mid: {
-      tier: "Mid",
-      name: "tier_mid_partner_positive_train_test_w60_c0.30_pre60le1_msg3_trail2",
-      entrySignal: "corr_crosses_above_with_catalyst_or_density_validation_and_partner_trailing_exit",
-      windowMinutes: 60,
-      smoothingMinutes: 60,
-      thresholdC: 0.3,
-      setupNearThresholdBand: 0.05,
-      maxPreSignalReturn60mPct: 1,
-      minTrailing60Messages: 3,
-      exitStrategy: "tier_fixed_trailing_stop",
-      trailingStopPct: 2,
-      protectiveStopPct: 3,
-      rationale: "partner threshold table: mid uses a 60m correlation cross above 0.30 with a 2% trailing stop; reported as positive on both train and test",
-    },
-    Small: {
-      tier: "Small",
-      name: "tier_small_partner_w240_c0.10_pre60le1_msg3_trail2",
-      entrySignal: "corr_crosses_above_with_catalyst_or_squeeze_validation_and_partner_trailing_exit",
-      windowMinutes: 240,
-      smoothingMinutes: 240,
-      thresholdC: 0.1,
-      setupNearThresholdBand: 0.05,
-      maxPreSignalReturn60mPct: 1,
-      minTrailing60Messages: 3,
-      exitStrategy: "tier_fixed_trailing_stop",
-      trailingStopPct: 2,
-      protectiveStopPct: 3,
-      rationale: "partner threshold table: small uses a 240m rolling price-density correlation cross above 0.10 with a 2% trailing stop",
-    },
-    Nano: {
-      tier: "Nano",
-      name: "tier_nano_partner_w60_c0.10_pre60le1_msg3_trail5",
-      entrySignal: "corr_crosses_above_plus_message_squeeze_gate_and_partner_trailing_exit",
-      windowMinutes: 60,
-      smoothingMinutes: 60,
-      thresholdC: 0.1,
-      setupNearThresholdBand: 0.05,
-      maxPreSignalReturn60mPct: 1,
-      minTrailing60Messages: 3,
-      exitStrategy: "tier_fixed_trailing_stop",
-      trailingStopPct: 5,
-      protectiveStopPct: 3,
-      backtestSummary: {
-        sourceBacktest: "partner_threshold_research_2026_07_15",
-        caveat: "partner marked nano as untestable because there were no test days; keep evidence gates active and review live/postmortem outcomes before promotion beyond candidate status",
-      },
-      rationale: "partner threshold table: nano uses a 60m rolling price-density correlation cross above 0.10 with a 5% trailing stop",
-    },
-    Unknown: {
-      tier: "Unknown",
-      name: "tier_unknown_partner_small_fallback_w240_c0.10_pre60le1_msg3_trail2",
-      entrySignal: "corr_crosses_above_with_conservative_missing_cap_gate_and_partner_trailing_exit",
-      windowMinutes: 240,
-      smoothingMinutes: 240,
-      thresholdC: 0.1,
-      setupNearThresholdBand: 0.05,
-      maxPreSignalReturn60mPct: 1,
-      minTrailing60Messages: 3,
-      exitStrategy: "tier_fixed_trailing_stop",
-      trailingStopPct: 2,
-      protectiveStopPct: 3,
-      rationale: "missing market cap cannot be tiered honestly, so use the small-cap fallback and preserve the missing-cap label",
-    },
-  },
-  submittedBaseline: {
-    Mega: { tier: "Mega", entrySignal: "corr_crosses_above", windowMinutes: 240, smoothingMinutes: 240, thresholdC: 0.1, trailingStopPct: 3, protectiveStopPct: 3 },
-    Large: { tier: "Large", entrySignal: "corr_crosses_above", windowMinutes: 480, smoothingMinutes: 480, thresholdC: 0.1, trailingStopPct: 2, protectiveStopPct: 3 },
-    Mid: { tier: "Mid", entrySignal: "corr_crosses_above", windowMinutes: 60, smoothingMinutes: 60, thresholdC: 0.3, trailingStopPct: 2, protectiveStopPct: 3 },
-    Small: { tier: "Small", entrySignal: "corr_crosses_above", windowMinutes: 240, smoothingMinutes: 240, thresholdC: 0.1, trailingStopPct: 2, protectiveStopPct: 3 },
-    Nano: { tier: "Nano", entrySignal: "corr_crosses_above", windowMinutes: 60, smoothingMinutes: 60, thresholdC: 0.1, trailingStopPct: 5, protectiveStopPct: 3 },
-  },
-  pooledWindows: [
-    { tier: "Mega", windowMinutes: 240, thresholdC: 0.1, trailingStopPct: 3, maxPreSignalReturn60mPct: 1, minTrailing60Messages: 3, status: "partner_mega_w240_c0.10_trail3" },
-    { tier: "Large", windowMinutes: 480, thresholdC: 0.1, trailingStopPct: 2, maxPreSignalReturn60mPct: 1, minTrailing60Messages: 3, status: "partner_large_w480_c0.10_trail2" },
-    { tier: "Mid", windowMinutes: 60, thresholdC: 0.3, trailingStopPct: 2, maxPreSignalReturn60mPct: 1, minTrailing60Messages: 3, status: "partner_mid_w60_c0.30_trail2_positive_train_test" },
-    { tier: "Small", windowMinutes: 240, thresholdC: 0.1, trailingStopPct: 2, maxPreSignalReturn60mPct: 1, minTrailing60Messages: 3, status: "partner_small_w240_c0.10_trail2" },
-    { tier: "Nano", windowMinutes: 60, thresholdC: 0.1, trailingStopPct: 5, maxPreSignalReturn60mPct: 1, minTrailing60Messages: 3, status: "partner_nano_w60_c0.10_trail5_untestable_no_test_days" },
-  ],
-}
+const PREDICTION_THRESHOLD_POLICY_VERSION = predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY_VERSION
+const PREDICTION_THRESHOLD_POLICY = predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY
 
 function predictionMarketCapTier(row = {}) {
-  const explicit = String(row.market_cap_tier || row.finviz_market_cap_tier || "").trim().toLowerCase()
-  const bucket = String(row.market_cap_bucket || marketCapBucket(row.market_cap)).trim().toLowerCase()
-  if (explicit === "mega" || bucket === "mega") return "Mega"
-  if (explicit === "large" || bucket === "large") return "Large"
-  if (explicit === "mid" || bucket === "mid") return "Mid"
-  if (explicit === "small" || bucket === "small") return "Small"
-  if (explicit === "nano" || explicit === "micro" || bucket === "nano" || bucket === "micro") return "Nano"
-  return "Unknown"
+  return predictionThresholdPolicy.predictionMarketCapTier(row)
 }
 
 function clonePlain(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function normalizedSharesFloat(row = {}) {
+  const value = nullableNumber(row.shares_float ?? row.float ?? row.float_shares)
+  return value != null && value > 0 ? value : null
+}
+
+function predictionFloatBucket(row = {}) {
+  return predictionThresholdPolicy.predictionFloatBucket(row)
+}
+
+function floatBucketLabel(bucket = "unknown") {
+  if (bucket === "ultra_low") return "ultra-low float"
+  if (bucket === "low") return "low float"
+  if (bucket === "mid") return "mid float"
+  if (bucket === "high") return "high float"
+  if (bucket === "very_high") return "very high float"
+  return "unknown float"
+}
+
+function socialBullBearDelta(row = {}) {
+  return Number(row.bullish_count || 0) - Number(row.bearish_count || 0)
+}
+
+function catalystCount(row = {}) {
+  return Number(row.article_count ?? row.news_article_count ?? 0)
+}
+
+function positiveSocialSupport(row = {}, minDelta = 1) {
+  return Number(row.message_count || 0) > 0 &&
+    (socialBullBearDelta(row) >= minDelta || Number(row.social_sentiment || row.sentiment || 0) >= 0.12)
+}
+
+function thresholdGuardEvaluation(row = {}, profile = {}, baseMinTrailing60Messages = 0) {
+  return predictionThresholdPolicy.thresholdGuardEvaluation(row, profile, baseMinTrailing60Messages)
+}
+
 function predictionThresholdProfile(row = {}) {
-  const tier = predictionMarketCapTier(row)
-  const profile = PREDICTION_THRESHOLD_POLICY.tierRules?.[tier] || PREDICTION_THRESHOLD_POLICY.candidateRule
-  return {
-    policyVersion: PREDICTION_THRESHOLD_POLICY_VERSION,
-    tier,
-    profile: clonePlain(profile),
-    pooledBacktestProfile: clonePlain(PREDICTION_THRESHOLD_POLICY.candidateRule),
-    tierRules: clonePlain(PREDICTION_THRESHOLD_POLICY.tierRules),
-    pooledWindows: clonePlain(PREDICTION_THRESHOLD_POLICY.pooledWindows),
-    submittedBaseline: clonePlain(PREDICTION_THRESHOLD_POLICY.submittedBaseline),
-    mechanics: clonePlain(PREDICTION_THRESHOLD_POLICY.mechanics),
-  }
+  return predictionThresholdPolicy.predictionThresholdProfile(row)
 }
 
 function evaluatePredictionEntryThreshold(row = {}, features = {}) {
-  const threshold = predictionThresholdProfile(row)
-  const profile = threshold.profile
-  const rawCorr = row.price_density_correlation ?? row.priceDensityCorrelation ?? features.price_density_correlation
-  const rawPrevCorr = row.previous_price_density_correlation ?? row.prevPriceDensityCorrelation ?? features.previous_price_density_correlation
-  const rawPre60 = row.threshold_pre_return_60m_pct ?? row.pre_signal_return_60m_pct ?? row.pre_return_60m_pct ?? features.threshold_pre_return_60m_pct
-  const rawTrailing60Messages = row.threshold_trailing_60m_messages ?? row.trailing_60m_messages ?? row.trailing60Messages ?? features.threshold_trailing_60m_messages
-  const corr = rawCorr == null || rawCorr === "" ? NaN : clamp(Number(rawCorr), -1, 1)
-  const prevCorr = rawPrevCorr == null || rawPrevCorr === "" ? NaN : clamp(Number(rawPrevCorr), -1, 1)
-  const pre60 = rawPre60 == null || rawPre60 === "" ? NaN : Number(rawPre60)
-  const trailing60Messages = rawTrailing60Messages == null || rawTrailing60Messages === "" ? NaN : Number(rawTrailing60Messages)
-  const hasCorr = Number.isFinite(corr)
-  const hasPrev = Number.isFinite(prevCorr)
-  const hasPre60 = Number.isFinite(pre60)
-  const hasTrailing60Messages = Number.isFinite(trailing60Messages)
-  const crossed = hasCorr && hasPrev && prevCorr <= profile.thresholdC && corr > profile.thresholdC
-  const preMoveOk = hasPre60 && pre60 <= profile.maxPreSignalReturn60mPct
-  const minTrailing60Messages = Number(profile.minTrailing60Messages || 0)
-  const messagesOk = minTrailing60Messages <= 0 || (hasTrailing60Messages && trailing60Messages >= minTrailing60Messages)
-  const passed = crossed && preMoveOk && messagesOk
-  const status = !hasCorr || !hasPrev
-    ? "missing_price_density_correlation_history"
-    : !hasPre60
-      ? "missing_pre_signal_60m_return"
-      : minTrailing60Messages > 0 && !hasTrailing60Messages
-        ? "missing_trailing_60m_message_count"
-      : crossed && !preMoveOk
-        ? "late_entry_rejected"
-        : crossed && !messagesOk
-          ? "low_message_density_rejected"
-        : passed
-          ? "entry_passed"
-          : "entry_not_crossed"
-  return {
-    ...threshold,
-    applied: true,
-    passed,
-    status,
-    correlation: hasCorr ? Number(corr.toFixed(3)) : null,
-    previousCorrelation: hasPrev ? Number(prevCorr.toFixed(3)) : null,
-    preSignalReturn60mPct: hasPre60 ? Number(pre60.toFixed(3)) : null,
-    trailing60Messages: hasTrailing60Messages ? trailing60Messages : null,
-    thresholdC: profile.thresholdC,
-    minTrailing60Messages,
-    maxPreSignalReturn60mPct: profile.maxPreSignalReturn60mPct,
-    exitStrategy: profile.exitStrategy || null,
-    exitPlan: profile.exitPlan || null,
-    partialExitFraction: profile.partialExitFraction ?? null,
-    partialProfitTargetPct: profile.partialProfitTargetPct ?? null,
-    profitGivebackPct: profile.profitGivebackPct ?? null,
-    profitGivebackActivationPct: profile.profitGivebackActivationPct ?? null,
-    runnerTrailingStopPct: profile.runnerTrailingStopPct ?? null,
-    legacyFallbackTrailingStopPct: profile.legacyFallbackTrailingStopPct ?? null,
-    trailingStopPct: profile.trailingStopPct,
-    protectiveStopPct: profile.protectiveStopPct,
-    reason: hasCorr && hasPrev && hasPre60
-      ? `${profile.windowMinutes}m corr(price,density) ${prevCorr.toFixed(3)} -> ${corr.toFixed(3)}; required cross above ${profile.thresholdC}; prior 60m move ${pre60.toFixed(2)}% must be <= ${profile.maxPreSignalReturn60mPct}%; trailing 60m messages ${hasTrailing60Messages ? trailing60Messages : "missing"} must be >= ${minTrailing60Messages}.`
-      : "Candidate threshold requires current/previous rolling corr(price,density), prior 60m price return, and trailing 60m message count; one or more inputs are unavailable.",
-  }
+  return predictionThresholdPolicy.evaluatePredictionEntryThreshold(row, features)
 }
 
 function predictionFeaturesFromMover(row, socialWindowMinutes = 60) {
@@ -2644,11 +2520,20 @@ function predictionFeaturesFromMover(row, socialWindowMinutes = 60) {
     market_cap: Number(row.market_cap || 0),
     market_cap_bucket: row.market_cap_bucket || "Unknown",
     market_cap_tier: predictionMarketCapTier(row),
+    shares_float: row.shares_float ?? null,
+    float_bucket: predictionFloatBucket(row),
+    float_short: row.float_short ?? null,
+    short_interest: row.short_interest ?? null,
     price_density_correlation: row.price_density_correlation ?? null,
     previous_price_density_correlation: row.previous_price_density_correlation ?? null,
     threshold_pre_return_60m_pct: row.threshold_pre_return_60m_pct ?? null,
     threshold_trailing_60m_messages: row.threshold_trailing_60m_messages ?? null,
+    threshold_feature_policy_version: row.threshold_feature_policy_version ?? PREDICTION_THRESHOLD_POLICY_VERSION,
+    threshold_feature_policy_name: row.threshold_feature_policy_name ?? predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY.candidateRule.name,
+    threshold_feature_source: row.threshold_feature_source ?? predictionThresholdPolicy.PREDICTION_THRESHOLD_FEATURE_SOURCE,
     threshold_feature_window_minutes: row.threshold_feature_window_minutes ?? null,
+    threshold_feature_updated_at: row.threshold_feature_updated_at ?? null,
+    threshold_feature_provenance: row.threshold_feature_provenance ?? null,
     rsi: row.rsi ?? null,
     gap: row.gap ?? null,
     perf_week: row.perf_week ?? null,
@@ -2703,7 +2588,7 @@ function baselinePredictionFromMover(row, thresholdEntry = null) {
 function thresholdRulePredictionFromEntry(row, thresholdEntry = null) {
   const entryReady = Boolean(thresholdEntry?.passed)
   if (!entryReady) return null
-  const backtest = PREDICTION_THRESHOLD_POLICY.candidateRule?.backtestSummary || {}
+  const backtest = predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY.candidateRule?.backtestSummary || {}
   const expectedReturn = Number(backtest.meanNetReturnPct)
   const winRate = Number(backtest.winRate)
   if (!Number.isFinite(expectedReturn)) return null
@@ -2877,6 +2762,10 @@ async function captureTradeWatchPredictionSignals(db, { limit = 10, days = 2, so
           execution: thresholdEntry.mechanics?.entry_execution,
           exit_rule: thresholdEntry.mechanics?.exit_rule,
           reason: thresholdEntry.reason,
+          float_bucket: thresholdEntry.floatBucket,
+          max_signal_abs_change_pct: thresholdEntry.maxSignalAbsChangePct,
+          active_signal_abs_change_pct: thresholdEntry.activeSignalAbsChangePct,
+          rejection_reasons: thresholdEntry.rejectionReasons || [],
         },
         baseline_signal: baseline,
         threshold_rule_signal: thresholdRuleSignal,
@@ -2890,6 +2779,50 @@ async function captureTradeWatchPredictionSignals(db, { limit = 10, days = 2, so
     })
 
   if (!docs.length) return { saved: 0, rows: [] }
+  await db.collection("active_ticker_context").bulkWrite(
+    docs.map(doc => ({
+      updateOne: {
+        filter: { ticker: doc.ticker },
+        update: {
+          $set: {
+            ticker: doc.ticker,
+            company: doc.company,
+            exchange: doc.exchange,
+            sector: doc.sector,
+            source: doc.source,
+            discovery_source: doc.discovery_source,
+            signal_id: doc.signal_id,
+            signal_sec: doc.signal_sec,
+            signal_at: doc.signal_at,
+            entry_price: doc.entry_price,
+            rank: doc.rank,
+            decision: doc.decision,
+            trade_watch: doc.trade_watch,
+            features: doc.features,
+            threshold_policy: doc.threshold_policy,
+            entry_signal: doc.entry_signal,
+            baseline_signal: doc.baseline_signal,
+            model_signal: doc.model_signal,
+            threshold_policy_version: doc.entry_signal?.policy_version || PREDICTION_THRESHOLD_POLICY_VERSION,
+            feature_policy_version: doc.features?.threshold_feature_policy_version || PREDICTION_THRESHOLD_POLICY_VERSION,
+            feature_window_minutes: doc.features?.threshold_feature_window_minutes || null,
+            context_version: "active_ticker_context_v1",
+            context_provenance: {
+              source: "trade_watch_prediction_snapshot",
+              policy_version: doc.entry_signal?.policy_version || PREDICTION_THRESHOLD_POLICY_VERSION,
+              threshold_feature_source: doc.features?.threshold_feature_source || null,
+              signal_sec: doc.signal_sec,
+              materialized_at: new Date(),
+            },
+            updated_at: new Date(),
+          },
+          $setOnInsert: { created_at: new Date() },
+        },
+        upsert: true,
+      },
+    })),
+    { ordered: false },
+  ).catch(err => console.warn("active_ticker_context materialization failed:", err.message || err))
   const result = await db.collection("prediction_signals").bulkWrite(
     docs.map(doc => {
       const { _id, labels, label_status, created_at, ...refreshFields } = doc
@@ -2991,6 +2924,8 @@ async function labelMaturePredictionSignals(db, { limit = 500, relabelLegacy = t
     if (!entryPrice) continue
 
     const setFields = { updated_at: new Date() }
+    let docLabeled = false
+    let docMissingOhlc = false
     for (const horizon of PREDICTION_HORIZONS_MINUTES) {
       const key = `return_${horizon}m`
       const existing = doc.labels?.[key]
@@ -3003,6 +2938,18 @@ async function labelMaturePredictionSignals(db, { limit = 500, relabelLegacy = t
       const bar = nearestOutcomeBarAtOrAfter(bars, targetSec)
       if (!bar) {
         missingOhlc += 1
+        docMissingOhlc = true
+        setFields[`labels.${key}`] = {
+          labeled: false,
+          horizon_minutes: horizon,
+          entry_price: Number(entryPrice.toFixed(4)),
+          target_sec: targetSec,
+          labeled_at: new Date(),
+          label_source: "missing_ohlc",
+          attempted_label_source: "mongo_ohlcv_bars",
+          missing_reason: "missing_ohlc_bar_at_or_after_target",
+          outcome_label_version: "ohlc_horizon_close_v1",
+        }
         continue
       }
 
@@ -3033,12 +2980,18 @@ async function labelMaturePredictionSignals(db, { limit = 500, relabelLegacy = t
         direction_correct: direction === "up" ? returnPct > 0 : direction === "down" ? returnPct < 0 : null,
       }
       labeled += 1
+      docLabeled = true
     }
 
     if (Object.keys(setFields).length > 1) {
-      setFields.label_status = "partially_labeled"
-      if (PREDICTION_HORIZONS_MINUTES.every(h => setFields[`labels.return_${h}m`] || doc.labels?.[`return_${h}m`]?.labeled)) {
+      if (PREDICTION_HORIZONS_MINUTES.every(h => setFields[`labels.return_${h}m`]?.labeled || doc.labels?.[`return_${h}m`]?.labeled)) {
         setFields.label_status = "complete"
+      } else if (docLabeled) {
+        setFields.label_status = "partially_labeled"
+      } else if (docMissingOhlc) {
+        setFields.label_status = "missing_ohlc"
+      } else {
+        setFields.label_status = doc.label_status || "pending"
       }
       updates.push({ updateOne: { filter: { _id: doc._id }, update: { $set: setFields } } })
     }
@@ -3254,6 +3207,7 @@ app.use('/api/articles',    articlesRouter)
 app.use('/api/screener',    screenerRouter)
 app.use('/api/entry-screener', entryScreenerRouter)
 app.use('/api/exit-screener', exitScreenerRouter)
+app.use('/api/v11-screener', v11ScreenerRouter)
 
 app.get("/api/momentum/trending", async (req, res) => {
   try {
@@ -3909,11 +3863,12 @@ app.get("/api/finviz/movers", async (req, res) => {
     if (!db) return res.status(503).json({ ok: false, tickers: [], error: "MongoDB is not connected" })
 
     const limit = Math.max(1, Math.min(100, Number(req.query.limit || 30)))
+    const selectedWindowMinutes = normalizeRollingWindowMinutes(req.query.window_minutes, 1440)
     const movers = await loadPositiveFinvizMoverRows(db, limit)
     const [articleMap, socialMap, watcherMap, sourceStatus] = await Promise.all([
       loadArticleStatsForTickers(db, movers.map(row => row.ticker), Number(req.query.days || 2)),
-      loadSocialStatsForTickers(db, movers.map(row => row.ticker), Number(req.query.window_minutes || 1440)),
-      loadLatestMoverWatcherSnapshots(db, movers.map(row => row.ticker)),
+      loadSocialStatsForTickers(db, movers.map(row => row.ticker), selectedWindowMinutes),
+      loadLatestMoverWatcherSnapshots(db, movers.map(row => row.ticker), selectedWindowMinutes),
       db.collection('source_status').findOne(
         { source: 'Finviz Elite Screener' },
         { projection: { _id: 0, source: 1, status: 1, detail: 1, count: 1, last_checked_at: 1, last_success_at: 1, source_type: 1 } },
@@ -3942,13 +3897,15 @@ app.get("/api/finviz/movers", async (req, res) => {
         stocktwits_watcher_count: Number(watcher.watcher_count),
         watcher_snapshot_age_seconds: Math.max(0, Math.floor(Date.now() / 1000) - snapshotSec),
         watcher_snapshot_source: watcher.source || 'stocktwits_watcher_snapshots',
-        watcher_feature: {
+        watcher_feature: watcher.watcher_feature || {
           status: 'fresh',
           source: watcher.source || 'stocktwits_watcher_snapshots',
           snapshot_sec: snapshotSec,
           age_seconds: Math.max(0, Math.floor(Date.now() / 1000) - snapshotSec),
-          definition: 'current StockTwits watchlist-count snapshot; not watcher growth',
-          missing_behavior: 'not used as a score or catalyst',
+          definition: 'current StockTwits watchlist count; growth unavailable',
+          score_points: 0,
+          max_rank_points: 2,
+          missing_behavior: 'zero rank points; never creates or rejects a candidate',
         },
       }
     })
@@ -3959,6 +3916,8 @@ app.get("/api/finviz/movers", async (req, res) => {
       finviz_status: sourceStatus || null,
       tickers,
       count: tickers.length,
+      social_window_minutes: selectedWindowMinutes,
+      watcher_growth_window_minutes: selectedWindowMinutes,
     })
   } catch (err) {
     res.status(500).json({ ok: false, tickers: [], error: String(err.message || err) })
@@ -4419,6 +4378,74 @@ async function fetchYahooCandles(ticker, range, interval, opts = {}) {
   return { candles, provider_range: yahooRange, provider_interval: yahooInterval }
 }
 
+async function hydrateCurrentOhlcvBars(db, tickers = [], { limit = 40, concurrency = 6 } = {}) {
+  const symbols = normalizeTickerList(tickers, Math.max(1, Math.min(100, Number(limit || 40))), { ensurePrivate: false })
+  if (!db || !symbols.length) return { attempted_tickers: 0, fetched_tickers: 0, fetched_bars: 0, persisted_bars: 0, errors: [] }
+
+  const errors = []
+  const allCandles = []
+  let cursor = 0
+  let fetchedTickers = 0
+  const workers = Array.from({ length: Math.max(1, Math.min(10, Number(concurrency || 6))) }, async () => {
+    while (cursor < symbols.length) {
+      const ticker = symbols[cursor++]
+      try {
+        const result = await fetchYahooCandles(ticker, '1d', '1m', { raw: true })
+        const rows = Array.isArray(result.candles) ? result.candles : []
+        if (rows.length) fetchedTickers += 1
+        for (const candle of rows) {
+          const minute = Math.floor(Number(candle.time || 0) / 60) * 60
+          if (!minute || ![candle.open, candle.high, candle.low, candle.close].every(value => Number.isFinite(Number(value)) && Number(value) > 0)) continue
+          allCandles.push({ ticker, minute, ...candle })
+        }
+      } catch (err) {
+        if (errors.length < 12) errors.push({ ticker, error: String(err.message || err) })
+      }
+    }
+  })
+  await Promise.all(workers)
+
+  let persistedBars = 0
+  if (allCandles.length) {
+    const now = new Date()
+    const operations = allCandles.map(candle => ({
+      updateOne: {
+        filter: { source: 'yahoo_chart_ohlcv', ticker: candle.ticker, minute: candle.minute },
+        update: {
+          $set: {
+            ticker: candle.ticker,
+            minute: candle.minute,
+            time: new Date(candle.minute * 1000),
+            open: Number(candle.open),
+            high: Number(candle.high),
+            low: Number(candle.low),
+            close: Number(candle.close),
+            price: Number(candle.close),
+            volume: Math.max(0, Number(candle.volume || 0)),
+            source: 'yahoo_chart_ohlcv',
+            providerRange: '1d',
+            providerInterval: '1m',
+            providerIntervalSec: 60,
+            updatedAt: now,
+          },
+          $setOnInsert: { createdAt: now },
+        },
+        upsert: true,
+      },
+    }))
+    const result = await db.collection('ohlcv_bars').bulkWrite(operations, { ordered: false })
+    persistedBars = Number(result.upsertedCount || 0) + Number(result.modifiedCount || 0)
+  }
+
+  return {
+    attempted_tickers: symbols.length,
+    fetched_tickers: fetchedTickers,
+    fetched_bars: allCandles.length,
+    persisted_bars: persistedBars,
+    errors,
+  }
+}
+
 app.get("/api/market-quote/:ticker", async (req, res) => {
   try {
     const ticker = normalizeTickerList([req.params.ticker], 1, { ensurePrivate: false })[0] || ""
@@ -4560,7 +4587,9 @@ function timestampSeconds(value) {
 }
 
 async function chartNewsEvents(db, ticker, windowMinutes = 1440) {
-  const days = Math.max(2, Math.ceil(Number(windowMinutes || 1440) / 1440))
+  const exactWindowMinutes = normalizeRollingWindowMinutes(windowMinutes, 1440)
+  const days = Math.max(2, Math.ceil(exactWindowMinutes / 1440))
+  const nowSec = Math.floor(Date.now() / 1000)
   const regex = `(^|,\\s*)${escapeRegExp(ticker)}(\\s*,|$)`
   const docs = await db.collection("articles").find(
     {
@@ -4591,7 +4620,7 @@ async function chartNewsEvents(db, ticker, windowMinutes = 1440) {
         url: article.url || "",
       }
     })
-    .filter(event => event.time > 0)
+    .filter(event => event.time > 0 && recordIsInsideRollingWindow(event.time, exactWindowMinutes, nowSec))
     .sort((a, b) => a.time - b.time)
 }
 
@@ -4620,7 +4649,7 @@ function chartSocialEvents(socialRows = []) {
 }
 
 async function chartPredictionEvents(db, ticker, windowMinutes = 1440) {
-  const sinceSec = Math.floor(Date.now() / 1000) - Math.max(60, Number(windowMinutes || 1440)) * 60
+  const sinceSec = Math.floor(Date.now() / 1000) - normalizeRollingWindowMinutes(windowMinutes, 1440) * 60
   const docs = await db.collection("prediction_signals").find(
     {
       ticker,
@@ -4735,27 +4764,22 @@ async function fetchStocktwitsWatcherCount(ticker) {
 async function chartWatcherSeries(db, ticker, windowMinutes, options = {}) {
   const requestedStart = timestampSeconds(options.startSec || options.start_sec)
   const requestedEnd = timestampSeconds(options.endSec || options.end_sec)
-  const sinceSec = requestedStart || (Math.floor(Date.now() / 1000) - Math.max(60, Number(windowMinutes || 1440)) * 60)
+  const sinceSec = requestedStart || (Math.floor(Date.now() / 1000) - normalizeRollingWindowMinutes(windowMinutes, 1440) * 60)
   const endSec = requestedEnd || 0
   const collection = db.collection("stocktwits_watcher_snapshots")
   let sourceStatus = "history_missing"
   let current = null
 
   try {
-    const latest = await collection.findOne({ ticker }, { sort: { fetched_sec: -1 } })
     const nowSec = Math.floor(Date.now() / 1000)
+    const latest = await collection.findOne({ ticker, fetched_sec: { $lte: nowSec } }, { sort: { fetched_sec: -1 } })
     if (latest && nowSec - Number(latest.fetched_sec || 0) < 15 * 60) {
       current = latest
       sourceStatus = "cached_snapshot"
     } else {
       const fetched = await fetchStocktwitsWatcherCount(ticker)
       if (fetched) {
-        current = {
-          ...fetched,
-          fetched_at: new Date(nowSec * 1000),
-          fetched_sec: nowSec,
-        }
-        await collection.insertOne(current)
+        current = await persistWatcherSnapshot(db, fetched, { collector: 'chart_request' })
         sourceStatus = "stocktwits_live_snapshot"
       }
     }
@@ -4765,9 +4789,11 @@ async function chartWatcherSeries(db, ticker, windowMinutes, options = {}) {
 
   const match = { ticker, fetched_sec: { $gte: sinceSec } }
   if (endSec) match.fetched_sec.$lte = endSec
-  const rows = await collection.find(match, {
-    projection: { _id: 0, ticker: 1, fetched_sec: 1, watcher_count: 1, source: 1 },
+  match.fetched_sec.$lte = Math.min(endSec || Math.floor(Date.now() / 1000), Math.floor(Date.now() / 1000))
+  const rawRows = await collection.find(match, {
+    projection: { _id: 0, ticker: 1, fetched_sec: 1, snapshot_minute: 1, watcher_count: 1, source: 1 },
   }).sort({ fetched_sec: 1 }).limit(2000).toArray()
+  const rows = dedupeWatcherSeries(rawRows, { startSec: sinceSec, endSec: match.fetched_sec.$lte })
 
   return {
     status: sourceStatus,
@@ -4855,11 +4881,7 @@ async function runWatcherSnapshotCycle(reason = 'scheduled') {
       try {
         const fetched = await fetchStocktwitsWatcherCount(ticker)
         if (fetched?.watcher_count != null) {
-          const nowSec = Math.floor(Date.now() / 1000)
-          await db.collection('stocktwits_watcher_snapshots').insertOne({
-            ...fetched,
-            fetched_at: new Date(nowSec * 1000),
-            fetched_sec: nowSec,
+          await persistWatcherSnapshot(db, fetched, {
             collector: 'server_active_mover_watcher_sampler_v1',
             reason,
           })
@@ -5032,7 +5054,10 @@ app.get("/api/charts/:ticker", async (req, res) => {
       range = String(req.query.range || "3mo"); interval = yahooIntervalFor(req.query.interval || "1d")
     }
     const isMinute = interval.endsWith("m")
-    const socialWindow = Math.max(60, Math.min(10080, Number(req.query.window_minutes || (isMinute ? 1440 : 4320))))
+    const socialWindow = normalizeRollingWindowMinutes(req.query.window_minutes, isMinute ? 1440 : 4320)
+    const requestedViewWindow = req.query.view_window_minutes == null || req.query.view_window_minutes === ''
+      ? null
+      : normalizeRollingWindowMinutes(req.query.view_window_minutes, socialWindow)
     const socialBucket = Math.max(1, Math.min(60, Number(req.query.bucket_minutes || (interval === "1m" ? 1 : 5))))
 
     let candleResult = { candles: [], provider_range: null, provider_interval: null }
@@ -5067,6 +5092,9 @@ app.get("/api/charts/:ticker", async (req, res) => {
       const spanSec = (windowParam === "2h" ? 2 : 1) * 3600
       viewCandles = candles.filter(c => Number(c.time || 0) >= lastTime - spanSec)
     }
+    if (requestedViewWindow != null && viewCandles.length) {
+      viewCandles = sliceCandlesToRollingWindow(viewCandles, requestedViewWindow)
+    }
     // Session date (YYYY-MM-DD, ET) used by Aman's charts header + research views.
     let sessionDate = ""
     try {
@@ -5085,6 +5113,10 @@ app.get("/api/charts/:ticker", async (req, res) => {
       interval,
       tf: tfParam || undefined,
       window: windowParam || undefined,
+      view_window_minutes: requestedViewWindow,
+      social_window_minutes: socialWindow,
+      news_window_minutes: socialWindow,
+      watcher_window_minutes: socialWindow,
       date: sessionDate,
       n: viewCandles.length,
       candles: viewCandles,
@@ -5176,7 +5208,7 @@ app.get("/api/chart/social", async (req, res) => {
     const db = mongoose.connection.db
     const ticker = normalizeTickerList([req.query.ticker], 1, { ensurePrivate: false })[0] || ""
     if (!ticker) return res.status(400).json({ error: "ticker is required" })
-    const windowMinutes = Math.max(60, Math.min(10080, Number(req.query.window_minutes || 1440)))
+    const windowMinutes = normalizeRollingWindowMinutes(req.query.window_minutes, 1440)
     const bucketMinutes = Math.max(1, Math.min(60, Number(req.query.bucket_minutes || 1)))
     const startSec = timestampSeconds(req.query.start_sec)
     const endSec = timestampSeconds(req.query.end_sec)
@@ -5216,7 +5248,7 @@ app.get("/api/chart/watchers", async (req, res) => {
     const ticker = normalizeTickerList([req.query.ticker], 1, { ensurePrivate: false })[0] || ""
     if (!ticker) return res.status(400).json({ error: "ticker is required" })
     if (!db) return res.status(503).json({ error: "MongoDB is not connected" })
-    const windowMinutes = Math.max(60, Math.min(10080, Number(req.query.window_minutes || 1440)))
+    const windowMinutes = normalizeRollingWindowMinutes(req.query.window_minutes, 1440)
     const startSec = timestampSeconds(req.query.start_sec)
     const endSec = timestampSeconds(req.query.end_sec)
     const series = await chartWatcherSeries(db, ticker, windowMinutes, { startSec, endSec })
@@ -5234,9 +5266,10 @@ app.get("/api/chart/watchers", async (req, res) => {
 app.get("/api/chart/watchers/status", async (_req, res) => {
   try {
     const db = mongoose.connection.db
+    const nowSec = Math.floor(Date.now() / 1000)
     const latest = db
       ? await db.collection('stocktwits_watcher_snapshots')
-          .findOne({}, { sort: { fetched_sec: -1 }, projection: { _id: 0, ticker: 1, fetched_sec: 1, watcher_count: 1, collector: 1, source: 1 } })
+          .findOne({ fetched_sec: { $lte: nowSec } }, { sort: { fetched_sec: -1 }, projection: { _id: 0, ticker: 1, fetched_sec: 1, snapshot_minute: 1, watcher_count: 1, collector: 1, source: 1 } })
           .catch(() => null)
       : null
     res.json({
@@ -5921,6 +5954,10 @@ app.get("/api/prediction/features", async (req, res) => {
           volume: 1,
           avg_volume: 1,
           market_cap: 1,
+          shares_float: 1,
+          float_short: 1,
+          short_interest: 1,
+          float_percent: 1,
           rel_volume: 1,
           price_density_correlation: 1,
           previous_price_density_correlation: 1,
@@ -6055,6 +6092,11 @@ app.get("/api/prediction/features", async (req, res) => {
         market_cap: row.market_cap,
         market_cap_bucket: row.market_cap_bucket,
         market_cap_tier: predictionMarketCapTier(row),
+        shares_float: row.shares_float ?? null,
+        float_bucket: predictionFloatBucket(row),
+        float_short: row.float_short ?? null,
+        short_interest: row.short_interest ?? null,
+        float_percent: row.float_percent ?? null,
         price_density_correlation: row.price_density_correlation ?? null,
         previous_price_density_correlation: row.previous_price_density_correlation ?? null,
         threshold_pre_return_60m_pct: row.threshold_pre_return_60m_pct ?? null,
@@ -6089,6 +6131,10 @@ app.get("/api/prediction/features", async (req, res) => {
           passed: thresholdEntry.passed,
           entry_ready: Boolean(thresholdEntry.passed),
           reason: thresholdEntry.reason,
+          float_bucket: thresholdEntry.floatBucket,
+          max_signal_abs_change_pct: thresholdEntry.maxSignalAbsChangePct,
+          active_signal_abs_change_pct: thresholdEntry.activeSignalAbsChangePct,
+          rejection_reasons: thresholdEntry.rejectionReasons,
         },
         labels: {
           target_return_5m: null,
@@ -6179,7 +6225,7 @@ app.get("/api/prediction/signals", async (req, res) => {
       })),
       horizons_minutes: PREDICTION_HORIZONS_MINUTES,
       feature_version: "trade_watch_prediction_v1",
-      threshold_policy: PREDICTION_THRESHOLD_POLICY,
+      threshold_policy: predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY,
       model: model ? {
         status: model.status,
         samples: model.samples || 0,
@@ -6190,6 +6236,35 @@ app.get("/api/prediction/signals", async (req, res) => {
     })
   } catch (err) {
     console.error("GET /api/prediction/signals failed:", err)
+    res.status(500).json({ ok: false, rows: [], error: String(err.message || err) })
+  }
+})
+
+app.get("/api/prediction/active-context", async (req, res) => {
+  try {
+    const db = mongoose.connection.db
+    if (!db) return res.status(503).json({ ok: false, rows: [], error: "MongoDB is not connected" })
+    const limit = Math.max(1, Math.min(500, Number(req.query.limit || 100)))
+    const ticker = String(req.query.ticker || "").toUpperCase().replace(/[^A-Z0-9.-]/g, "")
+    const entryReady = String(req.query.entry_ready || "").toLowerCase()
+    const filter = {}
+    if (ticker) filter.ticker = ticker
+    if (entryReady === "1" || entryReady === "true") filter["entry_signal.entry_ready"] = true
+    if (entryReady === "0" || entryReady === "false") filter["entry_signal.entry_ready"] = false
+    const rows = await db.collection("active_ticker_context")
+      .find(filter)
+      .sort({ signal_sec: -1, rank: 1 })
+      .limit(limit)
+      .toArray()
+    res.json({
+      ok: true,
+      rows: rows.map(row => ({ ...row, id: String(row._id), _id: undefined })),
+      count: rows.length,
+      context_version: "active_ticker_context_v1",
+      threshold_policy_version: PREDICTION_THRESHOLD_POLICY_VERSION,
+    })
+  } catch (err) {
+    console.error("GET /api/prediction/active-context failed:", err)
     res.status(500).json({ ok: false, rows: [], error: String(err.message || err) })
   }
 })
@@ -6576,6 +6651,7 @@ app.get("/api/prediction/audit", async (req, res) => {
         model_signal: row.model_signal || null,
         threshold_rule_signal: row.threshold_rule_signal || null,
         entry_signal: row.entry_signal || null,
+        threshold_policy: row.threshold_policy || null,
         features: row.features || null,
         trade_watch: row.trade_watch || null,
         audit_quality: {
@@ -6629,11 +6705,14 @@ app.get("/api/prediction/audit", async (req, res) => {
         updated_at: model.updated_at || null,
       } : null,
       threshold_policy: {
-        version: PREDICTION_THRESHOLD_POLICY.version,
-        status: PREDICTION_THRESHOLD_POLICY.status,
-        candidate_rule: PREDICTION_THRESHOLD_POLICY.candidateRule?.name,
-        source_backtest: PREDICTION_THRESHOLD_POLICY.candidateRule?.sourceBacktest,
-        caveat: PREDICTION_THRESHOLD_POLICY.candidateRule?.backtestSummary?.caveat,
+        version: predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY.version,
+        status: predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY.status,
+        candidate_rule: predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY.candidateRule?.name,
+        mechanics: predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY.mechanics || {},
+        candidateRule: predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY.candidateRule || null,
+        pooledWindows: predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY.pooledWindows || [],
+        source_backtest: predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY.candidateRule?.sourceBacktest,
+        caveat: predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY.candidateRule?.backtestSummary?.caveat,
       },
       missed_mover_replay: missedMoverReplay,
     })
@@ -6908,16 +6987,32 @@ async function ensureRuntimeIndexes() {
     db.collection("screeners").createIndex({ exchange: 1, change_pct: -1 }),
     db.collection("screeners").createIndex({ exchange: 1, volume: -1 }),
     db.collection("screeners").createIndex({ quote_source: 1, change_pct: -1 }),
+    db.collection("screeners").createIndex({ threshold_feature_policy_version: 1, threshold_feature_status: 1 }),
+    db.collection("screeners").createIndex({ threshold_feature_policy_version: 1, threshold_feature_window_minutes: 1, threshold_feature_status: 1, threshold_feature_updated_at: -1 }),
     db.collection("prediction_signals").createIndex({ ticker: 1, signal_sec: -1 }),
     db.collection("prediction_signals").createIndex({ label_status: 1, signal_sec: -1 }),
     db.collection("prediction_signals").createIndex({ source: 1, signal_sec: -1 }),
+    db.collection("prediction_signals").createIndex({ signal_sec: -1, rank: 1 }),
     db.collection("prediction_signals").createIndex({ signal_sec: -1, ticker: 1, entry_price: 1 }),
+    db.collection("prediction_signals").createIndex({ threshold_policy_version: 1, signal_sec: -1 }),
+    db.collection("prediction_signals").createIndex({ "entry_signal.policy_version": 1, signal_sec: -1 }),
     db.collection("prediction_signals").createIndex({ "labels.return_5m.label_source": 1, signal_sec: -1 }),
     db.collection("prediction_signals").createIndex({ "labels.return_15m.label_source": 1, signal_sec: -1 }),
     db.collection("prediction_signals").createIndex({ "labels.return_60m.label_source": 1, signal_sec: -1 }),
+    db.collection("prediction_signals").createIndex({ "labels.return_5m.missing_reason": 1, signal_sec: -1 }),
     db.collection("prediction_models").createIndex({ model_id: 1, updated_at: -1 }),
+    db.collection("active_ticker_context").createIndex({ ticker: 1 }, { unique: true }),
+    db.collection("active_ticker_context").createIndex({ threshold_policy_version: 1, signal_sec: -1 }),
+    db.collection("active_ticker_context").createIndex({ "entry_signal.status": 1, signal_sec: -1 }),
+    db.collection("active_ticker_context").createIndex({ "entry_signal.entry_ready": 1, signal_sec: -1 }),
+    db.collection("ohlcv_bars").createIndex({ source: 1, ticker: 1, minute: 1 }, { unique: true }),
+    db.collection("ohlcv_bars").createIndex({ ticker: 1, minute: -1 }),
     db.collection("stocktwits_watcher_snapshots").createIndex({ ticker: 1, fetched_sec: -1 }),
     db.collection("stocktwits_watcher_snapshots").createIndex({ fetched_sec: -1 }),
+    db.collection("stocktwits_watcher_snapshots").createIndex(
+      { ticker: 1, snapshot_minute: 1 },
+      { unique: true, partialFilterExpression: { snapshot_minute: { $type: 'number' } } },
+    ),
     db.collection("source_status").createIndex({ source: 1 }, { unique: true }),
   ])
 }
@@ -6930,6 +7025,16 @@ async function start() {
   // Shared guard so the heavy data-refresh cycle never runs twice at once
   // (double Run Now clicks, or Run Now firing while the auto-grabber is mid-cycle).
   let refreshCycleInFlight = false
+  let lastPredictionMaintenanceAt = 0
+  let lastOhlcvHydrationAt = 0
+  const PREDICTION_MAINTENANCE_INTERVAL_MS = Math.max(
+    60_000,
+    Number(process.env.PREDICTION_MAINTENANCE_INTERVAL_MS || 300_000),
+  )
+  const OHLCV_HYDRATION_INTERVAL_MS = Math.max(
+    60_000,
+    Number(process.env.OHLCV_HYDRATION_INTERVAL_MS || 300_000),
+  )
   
 // Ryan frontend compatibility endpoints
 app.get("/api/status", async (req, res) => {
@@ -7471,7 +7576,10 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
     : { QUOTE_MAX_TICKERS: fastMode ? "25" : (process.env.QUOTE_MAX_TICKERS || "5000") }
 
   // All scripts run in one parallel batch — cuts total time from ~60s to ~30s
-  const [finvizElite, tradingViewScreener, quotes, structured, tradingView, benzinga, ibkrNews, schwabSignals, unstructured, social] = await Promise.all([
+  const ohlcvHydrationDue = !fastMode || (Date.now() - lastOhlcvHydrationAt) >= OHLCV_HYDRATION_INTERVAL_MS
+  if (ohlcvHydrationDue) lastOhlcvHydrationAt = Date.now()
+
+  const [finvizElite, tradingViewScreener, quotes, structured, tradingView, benzinga, ibkrNews, schwabSignals, unstructured, social, ohlcvHydration] = await Promise.all([
     runPythonScript("2_Screener/pipeline/fetch_finviz_elite_to_mongo.py", {
       timeout: fastMode ? 25000 : 90000,
       extraEnv: { FINVIZ_MAX_WORKERS: process.env.FINVIZ_MAX_WORKERS || (fastMode ? "12" : "6") },
@@ -7502,19 +7610,29 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
     fastMode
       ? Promise.resolve(skippedPythonResult("Schwab signals"))
       : runPythonScript("2_Screener/pipeline/fetch_schwab_signals_to_mongo.py", { timeout: 30000 }),
-    fastMode
-      ? Promise.resolve(skippedPythonResult("Unstructured public source sweep"))
-      : runPythonScript("1_News/pipeline/fetch_unstructured_news_titles_to_mongo.py", {
-          timeout: 90000,
-          extraEnv: {
+    runPythonScript("1_News/pipeline/fetch_unstructured_news_titles_to_mongo.py", {
+      timeout: fastMode ? 25000 : 90000,
+      extraEnv: fastMode
+        ? {
+            UNSTRUCTURED_SOURCE_FILTER: process.env.FAST_UNSTRUCTURED_SOURCE_FILTER || "Finviz News Flow",
+            UNSTRUCTURED_MAX_PER_SOURCE: process.env.FAST_UNSTRUCTURED_MAX_PER_SOURCE || "250",
+            UNSTRUCTURED_MAX_WORKERS: "1",
+          }
+        : {
             UNSTRUCTURED_MAX_PER_SOURCE: process.env.UNSTRUCTURED_MAX_PER_SOURCE || "10",
             ...(trackedMarketTickers.length ? { TRACKED_TICKERS: trackedMarketTickers.join(",") } : {}),
           },
-        }),
+    }),
     runPythonScript("1_News/pipeline/fetch_social_to_mongo.py", {
       timeout: fastMode ? 20000 : 90000,
       extraEnv: socialExtraEnv,
     }),
+    ohlcvHydrationDue
+      ? hydrateCurrentOhlcvBars(db, publicSocialTickers, {
+          limit: Number(process.env.OHLCV_HYDRATION_LIMIT || (fastMode ? 40 : 100)),
+          concurrency: Number(process.env.OHLCV_HYDRATION_CONCURRENCY || 6),
+        })
+      : Promise.resolve({ attempted_tickers: 0, fetched_tickers: 0, fetched_bars: 0, persisted_bars: 0, errors: [], skipped: true }),
   ])
 
   const afterStructuredArticles = await db.collection("articles").countDocuments()
@@ -7543,19 +7661,25 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
     ...parseSourceDebug(structured.stdout || "", ["Business Wire", "BusinessWire"]),
     attempted: true,
   }
-  const thresholdFeatures = await runNodeScript("scripts/update_prediction_threshold_features.js", {
-    timeout: fastMode ? 60000 : 180000,
-    args: [
-      "--maxTickers", process.env.THRESHOLD_FEATURE_MAX_TICKERS || (fastMode ? "800" : "1600"),
-      "--windowMinutes", process.env.THRESHOLD_FEATURE_WINDOW_MINUTES || "120",
-      "--minObservations", process.env.THRESHOLD_FEATURE_MIN_OBSERVATIONS || "8",
-      "--freshMinutes", process.env.THRESHOLD_FEATURE_FRESH_MINUTES || (fastMode ? "720" : "1440"),
-      "--chartConcurrency", process.env.THRESHOLD_FEATURE_CHART_CONCURRENCY || (fastMode ? "4" : "6"),
-      "--liveCharts", process.env.THRESHOLD_FEATURE_LIVE_CHARTS || (fastMode ? "0" : "1"),
-    ],
-  })
-  const predictionLabels = await labelMaturePredictionSignals(db)
-  const predictionModel = Number(predictionLabels.labeled || 0) > 0
+  const predictionMaintenanceDue = !fastMode || (Date.now() - lastPredictionMaintenanceAt) >= PREDICTION_MAINTENANCE_INTERVAL_MS
+  if (predictionMaintenanceDue) lastPredictionMaintenanceAt = Date.now()
+  const thresholdFeatures = predictionMaintenanceDue
+    ? await runNodeScript("scripts/update_prediction_threshold_features.js", {
+        timeout: fastMode ? 60000 : 180000,
+        args: [
+          "--maxTickers", process.env.THRESHOLD_FEATURE_MAX_TICKERS || (fastMode ? "800" : "1600"),
+          "--windowMinutes", process.env.THRESHOLD_FEATURE_WINDOW_MINUTES || "120",
+          "--minObservations", process.env.THRESHOLD_FEATURE_MIN_OBSERVATIONS || "8",
+          "--freshMinutes", process.env.THRESHOLD_FEATURE_FRESH_MINUTES || (fastMode ? "720" : "1440"),
+          "--chartConcurrency", process.env.THRESHOLD_FEATURE_CHART_CONCURRENCY || (fastMode ? "4" : "6"),
+          "--liveCharts", process.env.THRESHOLD_FEATURE_LIVE_CHARTS || (fastMode ? "0" : "1"),
+        ],
+      })
+    : skippedPythonResult("Prediction threshold maintenance", "five-minute maintenance cadence")
+  const predictionLabels = predictionMaintenanceDue
+    ? await labelMaturePredictionSignals(db)
+    : { checked: 0, labeled: 0, skipped: true }
+  const predictionModel = predictionMaintenanceDue && Number(predictionLabels.labeled || 0) > 0
     ? await trainPredictionModel(db, {
         minSamples: Number(process.env.PREDICTION_MIN_TRAINING_SAMPLES || 20),
         limit: Number(process.env.PREDICTION_TRAIN_LIMIT || 3000),
@@ -7586,6 +7710,9 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
     social_delta: Math.max(0, afterSocial - beforeSocial),
     prediction_labels_checked: predictionLabels.checked,
     prediction_labels_added: predictionLabels.labeled,
+    prediction_maintenance_ran: predictionMaintenanceDue,
+    ohlcv_hydration_ran: ohlcvHydrationDue,
+    ohlcv_hydration: ohlcvHydration,
     prediction_signals_saved: predictionSnapshot.saved,
     prediction_model_status: predictionModel.status,
     prediction_model_samples: predictionModel.samples || 0,
@@ -8685,6 +8812,12 @@ app.delete('/api/settings/keywords/:keyword', async (req, res) => {
   app.get('/api/system/health', async (req, res) => {
     const started = Date.now()
     const nowSec = Math.floor(started / 1000)
+    const now = new Date(started)
+    const marketParts = easternParts(now)
+    const marketWeekday = localWeekday(marketParts.year, marketParts.month, marketParts.day)
+    const marketMinutes = marketParts.hour * 60 + marketParts.minute
+    const extendedMarketOpen = marketWeekday >= 1 && marketWeekday <= 5 && marketMinutes >= 4 * 60 && marketMinutes < 20 * 60
+    const latestExpectedMarketCloseSec = Math.floor(latestMarketCloseCutoff(now).getTime() / 1000)
     const staleSeconds = {
       articles: 90 * 60,
       screeners: 20 * 60,
@@ -8692,7 +8825,7 @@ app.delete('/api/settings/keywords/:keyword', async (req, res) => {
       ohlcv_bars: 30 * 60,
       prediction_signals: 6 * 60 * 60,
       source_status: 90 * 60,
-      daily_prediction_snapshots: 6 * 60 * 60,
+      daily_prediction_snapshots: 30 * 60 * 60,
     }
     const warnings = []
 
@@ -8804,6 +8937,16 @@ app.delete('/api/settings/keywords/:keyword', async (req, res) => {
       const collections = {}
       const collectionRows = await Promise.all(collectionSpecs.map(spec => collectionHealth(db, spec)))
       for (const row of collectionRows) {
+        const latestSec = row.latest_at ? Math.floor(new Date(row.latest_at).getTime() / 1000) : 0
+        const hasLastMarketSession = latestSec >= latestExpectedMarketCloseSec - 15 * 60
+        if (!extendedMarketOpen && row.name === 'ohlcv_bars' && row.status === 'stale' && hasLastMarketSession) {
+          row.status = 'market_closed'
+          row.expected_freshness = 'latest_completed_market_session'
+        }
+        if (!extendedMarketOpen && row.name === 'daily_prediction_snapshots' && row.status === 'stale' && Number(row.age_seconds || Infinity) <= 72 * 60 * 60) {
+          row.status = 'market_closed'
+          row.expected_freshness = 'next_session_archive_not_due'
+        }
         collections[row.name] = row
         if (['stale', 'empty', 'error'].includes(row.status)) warnings.push(`${row.name}_${row.status}`)
       }
