@@ -11,7 +11,9 @@ RUN apt-get update \
 COPY chart-service/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# All service modules, including self-healing Finviz Elite authentication.
+# All service modules: the Flask app, the StockTwits walk + resting store, the
+# TradingView / Blue Ocean overnight price fetcher, and the self-healing Finviz
+# Elite auto-auth (logs in with FINVIZ_LOGIN/FINVIZ_PASSWORD, refreshes on 401).
 COPY chart-service/chart_service.py ./chart_service.py
 COPY chart-service/social_store.py ./social_store.py
 COPY chart-service/tv_overnight.py ./tv_overnight.py

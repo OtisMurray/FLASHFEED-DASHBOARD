@@ -15,8 +15,8 @@ valid cookie returns full data. The "remember me" cookie is long-lived (~30d).
 
 So this module logs into Finviz Elite once (curl_cffi Chrome impersonation,
 credentials from the environment), persists the session cookies, and hands them
-to every Finviz caller. Callers may omit the rotating token entirely because the
-cookie authorizes the export endpoints; on a 401 they call refresh() to silently
+to every Finviz caller. Callers keep their existing `auth=<token>` URLs untouched
+— the cookie overrides the token — and on a 401 they call refresh() to silently
 re-login. The user never has to touch a rotating token again.
 
 Credentials come from ENV VARS — the deployment mechanism on Railway/containers:
@@ -144,7 +144,7 @@ def _login() -> dict:
         if not _cookie_session_works(s):
             raise FinvizAuthError(
                 "Logged in but the session did not authorise an export")
-        return {"cookies": cookies, "expires": expires, "saved": time.time()}
+        return {"cookies": cookies, "expires": expires, "saved": int(time.time())}
     finally:
         try:
             s.close()

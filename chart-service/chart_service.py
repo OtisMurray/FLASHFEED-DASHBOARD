@@ -85,12 +85,16 @@ def has_finviz_token() -> bool:
     return bool(os.environ.get("FINVIZ_TOKEN") or os.environ.get("FINVIZ_AUTH_TOKEN"))
 
 
-# ── auto-auth: self-contained Finviz Elite login cookie ──────────────────────
+# ── auto-auth: Finviz Elite login cookie (self-contained) ─────────────────────
 # The Elite export token is dynamic and eventually 401s. Rather than chase the
 # rotating token (Finviz no longer exposes it), we authenticate with a stored
 # login *cookie*, which overrides the token on the same export endpoints. The
-# login + cookie store is vendored beside this service, so a standalone
-# deployment can refresh itself from FINVIZ_LOGIN / FINVIZ_PASSWORD.
+# login + cookie store lives in finviz_auth.py, vendored alongside this service
+# so it self-heals when deployed alone (Railway) — it logs into Finviz Elite
+# using FINVIZ_LOGIN / FINVIZ_PASSWORD from the environment, persists the cookie,
+# and re-logs in on a 401. If it can't be imported (curl_cffi missing) or no
+# login is configured, we fall back to the token-in-URL and surface the auth
+# error as before.
 _MOD_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
     if _MOD_DIR not in sys.path:
@@ -769,8 +773,7 @@ except ImportError:
 def api_health():
     return jsonify({"ok": True, "service": "chart-service", "phase": 2,
                     "finviz_token_configured": has_finviz_token(),
-                    "finviz_auto_auth": bool(_finviz_auth and _finviz_auth.have_login()),
-                    "finviz_session_cached": bool(_finviz_auth and _finviz_auth.have_fresh_cookies()),
+                    "finviz_auto_auth": _finviz_auth is not None and _finviz_auth.have_login(),
                     "social_snapshot_present": os.path.exists(SOCIAL_DB_PATH),
                     "social_mode": "live StockTwits walk + Mongo store, SQLite seed fallback (phase 2b)",
                     "mongo_available": social_store.collection() is not None})
