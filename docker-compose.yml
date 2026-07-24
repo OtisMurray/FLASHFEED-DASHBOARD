@@ -160,8 +160,10 @@ services:
       API_TOKEN: ${API_TOKEN:-}
       API_TOKEN_SCOPE: ${API_TOKEN_SCOPE:-write}
       AUTO_REFRESH_ENABLED: ${AUTO_REFRESH_ENABLED:-true}
-      AUTO_GRAB_RUN_FETCH: ${AUTO_GRAB_RUN_FETCH:-true}
       ONSITE_FETCH_ENABLED: ${ONSITE_FETCH_ENABLED:-true}
+      ONSITE_FETCH_INTERVAL_MS: ${ONSITE_FETCH_INTERVAL_MS:-60000}
+      AUTO_GRAB_ENABLED: ${AUTO_GRAB_ENABLED:-false}
+      AUTO_GRAB_RUN_FETCH: ${AUTO_GRAB_RUN_FETCH:-true}
       NODE_ENV: development
     volumes:
       - finviz_auth_data:/var/lib/flashfeed-auth

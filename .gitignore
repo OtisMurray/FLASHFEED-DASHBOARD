@@ -92,6 +92,7 @@ temp/
 
 # Database/runtime dumps
 /data/
+/Infrastructure/server/data/
 data/
 *.db
 *.sqlite

@@ -6,6 +6,7 @@ market-moving phrases before any slower LLM/FinBERT batch scorer is added.
 
 from __future__ import annotations
 
+import math
 import re
 
 
@@ -131,6 +132,205 @@ def _weighted_hits(text: str, patterns: list[Pattern]) -> tuple[float, int]:
     return total, hits
 
 
+SOCIAL_BULLISH_PATTERNS = _compile([
+    (r"\b(?:loaded|loading|added|adding|accumulating|starter|starter position)\b", 0.7),
+    (r"\b(?:calls?|call sweeps?|unusual call|otm calls?|bull flow)\b", 0.9),
+    (r"\b(?:breakout|breaking out|base breakout|above vwap|held vwap|reclaim(?:ed|ing)?|support held|holds? support)\b", 1.1),
+    (r"\b(?:break|breaks|breaking)\b.{0,18}\b(?:test|next|above|over|through|then)\b", 0.8),
+    (r"\b(?:squeeze|short squeeze|gamma squeeze|low float|tiny float|float is locked|borrow fee|cost to borrow)\b", 1.1),
+    (r"\b(?:gap up|runner|ripping|rips?|send(?:ing)?|sending it|next leg|higher highs?|new highs?)\b", 0.9),
+    (r"\b(?:buy|buying|bought|long|bullish|bulls?|upside|momentum|watching for continuation)\b", 0.7),
+    (r"\b(?:not selling|holding strong|diamond hands|bears? trapped|shorts? trapped|shorties?|shorts right)\b", 0.7),
+    (r"\b(?:moon|to the moon|liftoff|rocket|push+|let'?s go|lfg|send it|game again)\b", 0.7),
+    (r"\b(?:bounce|reversal|curl(?:ing)?|green|strong close|ah run|power hour|continuation|moving now)\b", 0.7),
+    (r"\b(?:approval|clearance|contract|partnership|buyout|merger|acquisition|upgrade|beat|guidance raised)\b", 1.0),
+])
+
+
+SOCIAL_BEARISH_PATTERNS = _compile([
+    (r"\b(?:puts?|put sweeps?|bear flow|short(?:ing)?|shorted|bearish)\b", 0.9),
+    (r"\b(?:dump|dumping|rug|rug pull|exit liquidity|bagholder|bagholders|trap|bull trap|fake pump|pump and dump)\b", 1.0),
+    (r"\b(?:breakdown|lost vwap|below vwap|resistance rejected|reject(?:ed|ing)?|lower highs?|head and shoulders)\b", 1.0),
+    (r"\b(?:gap down|selloff|selling|sold|sell|avoid|stay away|dead|dead stock|dead cat|cooked|toast|done|falls? back)\b", 0.8),
+    (r"\b(?:offering|dilution|dilute|diluting|warrants?|reverse split|rs incoming|delisting|halt|lawsuit|investigation)\b", 1.2),
+    (r"\b(?:miss|downgrade|guidance cut|bankruptcy|going concern|crl|clinical hold)\b", 1.1),
+    (r"\b(?:no squeeze|not bullish|won't run|will not run|overextended|overvalued|too late|very little movement|no momentum)\b", 0.9),
+    (r"\b(?:atm|atm machine|ceiling|manipulation|scam|profit taking|taking profit|small profit|i'?m out|im out|trap doors? shut)\b", 0.7),
+    (r"\b(?:red|crash|crashing|rugged|weak|bleeding|sell the news|another day)\b", 0.7),
+])
+
+
+SOCIAL_NEGATION_RE = re.compile(
+    r"\b(?:not|no|never|without|fake|failed|fails?|won't|will not|cannot|can't)\b.{0,18}"
+    r"\b(?:bullish|breakout|squeeze|run|runner|approval|buyout|moon|rip)\b",
+    re.IGNORECASE,
+)
+
+
+SOURCE_BULLISH_RE = re.compile(r"\b(?:bull(?:ish)?|positive|up)\b", re.IGNORECASE)
+SOURCE_BEARISH_RE = re.compile(r"\b(?:bear(?:ish)?|negative|down)\b", re.IGNORECASE)
+CASHTAG_RE = re.compile(r"(?<![A-Z0-9])\$[A-Z][A-Z0-9.-]{0,9}", re.IGNORECASE)
+WORD_RE = re.compile(r"[a-z][a-z'-]{1,}", re.IGNORECASE)
+SOCIAL_NOISE_RE = re.compile(r"\b(?:trump|iran|nuke|saudi|war|politics|election|president)\b", re.IGNORECASE)
+MARKET_RESEARCH_REPORT_RE = re.compile(
+    r"\bmarket\s+(?:size|share|trends?|forecast|segmentation|analysis|outlook)\b"
+    r".{0,140}\b(?:cagr|forecast|segmentation|swot|industry report|leaders report|analysis outlook)\b",
+    re.IGNORECASE,
+)
+MARKET_MOVING_OVERRIDE_RE = re.compile(
+    r"\b(?:fda|approval|clearance|contract|order|partnership|earnings|revenue|eps|guidance|"
+    r"offering|dilution|delisting|downgrade|upgrade|trial|endpoint|merger|acquisition|buyout)\b",
+    re.IGNORECASE,
+)
+
+
+def _clamp(value: float, low: float = -1.0, high: float = 1.0) -> float:
+    return max(low, min(high, value))
+
+
+def _signed_source_score(source_sentiment: object = None, source_score: object = None) -> float:
+    """Normalize source labels into a non-binary prior instead of +/-1 votes."""
+    if source_score is not None:
+        try:
+            raw = float(source_score)
+            if math.isfinite(raw):
+                raw = _clamp(raw)
+                if abs(raw) > 0.75:
+                    return 0.62 if raw > 0 else -0.62
+                return raw
+        except (TypeError, ValueError):
+            pass
+
+    label = str(source_sentiment or "").strip().lower()
+    if SOURCE_BULLISH_RE.search(label):
+        return 0.58
+    if SOURCE_BEARISH_RE.search(label):
+        return -0.58
+    return 0.0
+
+
+def _social_text_features(text: str, bullish_hits: int = 0, bearish_hits: int = 0) -> dict[str, object]:
+    cashtags = CASHTAG_RE.findall(text or "")
+    words = WORD_RE.findall(text or "")
+    unique_words = {w.lower() for w in words}
+    signal_hits = bullish_hits + bearish_hits
+    non_ticker_words = [w for w in words if not w.startswith("$")]
+    mostly_tickers = len(cashtags) >= 3 and len(non_ticker_words) <= 8 and signal_hits == 0
+    unrelated_noise = bool(SOCIAL_NOISE_RE.search(text or "")) and signal_hits == 0
+    return {
+        "cashtags": len(cashtags),
+        "words": len(words),
+        "unique_words": len(unique_words),
+        "mostly_tickers": mostly_tickers,
+        "unrelated_noise": unrelated_noise,
+    }
+
+
+def _source_only_score(source_prior: float, text: str) -> tuple[float, list[str]]:
+    """Convert a raw social-platform label into weak evidence when text has no signal."""
+    if not source_prior:
+        return 0.0, []
+
+    sign = 1.0 if source_prior > 0 else -1.0
+    features = _social_text_features(text)
+    magnitude = 0.34
+    signals = ["source_label_only"]
+
+    if int(features["words"]) >= 6:
+        magnitude += 0.04
+        signals.append("readable_text")
+    if int(features["words"]) >= 14 and int(features["unique_words"]) >= 8:
+        magnitude += 0.03
+        signals.append("context_text")
+    if int(features["cashtags"]) <= 2 and int(features["words"]) >= 4:
+        magnitude += 0.03
+        signals.append("ticker_focused")
+    if int(features["words"]) <= 2:
+        magnitude -= 0.08
+        signals.append("ticker_only")
+    if bool(features["mostly_tickers"]):
+        magnitude -= 0.08
+        signals.append("multi_ticker_low_context")
+    if bool(features["unrelated_noise"]):
+        magnitude -= 0.10
+        signals.append("off_topic_noise")
+
+    return round(sign * _clamp(magnitude, 0.20, 0.46), 4), signals
+
+
+def _financial_confidence_cap(text: str, total: float, hits: int, event_score: float) -> float:
+    """Avoid over-certainty when a short headline has only one repeated clue."""
+    unique_words = len(set(WORD_RE.findall(text)))
+    cap = 0.86 + min(0.04, unique_words * 0.0025) + min(0.035, total * 0.006) + min(0.025, hits * 0.006)
+    if abs(event_score) >= 2.2:
+        cap += 0.025
+    if unique_words >= 16:
+        cap += 0.025
+    return min(0.95, cap)
+
+
+def _social_text_audit(text: str) -> dict[str, object]:
+    clean_text = _clean(text).lower()
+    if not clean_text:
+        return {"label": "neutral", "score": 0.0, "confidence": 0.0, "signals": []}
+
+    financial_label, financial_confidence = score_financial_sentiment(clean_text, "")
+    financial_score = signed_sentiment_score(financial_label, financial_confidence)
+    bullish, bullish_hits = _weighted_hits(clean_text, SOCIAL_BULLISH_PATTERNS)
+    bearish, bearish_hits = _weighted_hits(clean_text, SOCIAL_BEARISH_PATTERNS)
+    features = _social_text_features(clean_text, bullish_hits, bearish_hits)
+    if SOCIAL_NEGATION_RE.search(clean_text):
+        bearish += 0.7
+        bearish_hits += 1
+
+    total = bullish + bearish
+    lexicon_score = 0.0
+    if total > 0:
+        directional = (bullish - bearish) / total
+        evidence_strength = min(0.95, 0.42 + math.log1p(total) / math.log(12))
+        lexicon_score = _clamp(directional * evidence_strength)
+
+    if financial_score and lexicon_score:
+        if financial_score * lexicon_score > 0:
+            text_score = _clamp(0.55 * financial_score + 0.45 * lexicon_score)
+        else:
+            text_score = _clamp(0.35 * financial_score + 0.65 * lexicon_score)
+    else:
+        text_score = financial_score or lexicon_score
+
+    hits = bullish_hits + bearish_hits
+    confidence = 0.0 if abs(text_score) < 0.05 else min(
+        0.95,
+        0.34 + abs(text_score) * 0.42 + min(hits, 5) * 0.035 + min(total, 5.0) * 0.02,
+    )
+    if bool(features["mostly_tickers"]) or bool(features["unrelated_noise"]):
+        text_score *= 0.35
+        confidence *= 0.45
+    if abs(text_score) < 0.12:
+        label = "neutral"
+    else:
+        label = "bullish" if text_score > 0 else "bearish"
+
+    signals = []
+    if bullish_hits:
+        signals.append(f"bullish_terms:{bullish_hits}")
+    if bearish_hits:
+        signals.append(f"bearish_terms:{bearish_hits}")
+    if financial_label != "neutral":
+        signals.append(f"financial_{financial_label}:{financial_confidence:.2f}")
+    if bool(features["mostly_tickers"]):
+        signals.append("multi_ticker_low_context")
+    if bool(features["unrelated_noise"]):
+        signals.append("off_topic_noise")
+
+    return {
+        "label": label,
+        "score": round(text_score, 4),
+        "confidence": round(confidence, 3),
+        "signals": signals[:5],
+    }
+
+
 def classify_financial_event(title: str, content: str = "") -> tuple[str, float, str]:
     """Return event type, signed event score, and a compact reason."""
     text = _clean(f"{title} {content[:1000]}").lower()
@@ -152,27 +352,37 @@ def score_financial_sentiment(title: str, content: str = "") -> tuple[str, float
     text = _clean(f"{title} {content[:1000]}").lower()
     if not text:
         return "neutral", 0.0
+    if MARKET_RESEARCH_REPORT_RE.search(text) and not MARKET_MOVING_OVERRIDE_RE.search(text):
+        return "neutral", 0.0
 
     bullish, bullish_hits = _weighted_hits(text, BULLISH_PATTERNS)
     bearish, bearish_hits = _weighted_hits(text, BEARISH_PATTERNS)
     event_type, event_score, _event_reason = classify_financial_event(title, content)
     total = bullish + bearish
+    hits = bullish_hits + bearish_hits
     if total <= 0:
         if abs(event_score) >= 1.0 and event_type not in {"sec_filing", "general_news", "unknown"}:
-            confidence = min(0.9, round(0.45 + min(abs(event_score), 2.4) * 0.16, 2))
-            return ("bullish" if event_score > 0 else "bearish"), confidence
+            length_factor = min(0.035, len(set(WORD_RE.findall(text))) * 0.0015)
+            confidence = min(0.9, 0.45 + min(abs(event_score), 2.4) * 0.16 + length_factor)
+            return ("bullish" if event_score > 0 else "bearish"), round(confidence, 3)
         return "neutral", 0.0
 
     raw = (bullish - bearish) / total
     if abs(raw) < 0.08 or abs(bullish - bearish) < 0.25:
         if abs(event_score) >= 1.2 and event_type not in {"sec_filing", "general_news", "unknown"}:
-            confidence = min(0.9, round(0.42 + min(abs(event_score), 2.4) * 0.15 + min(total, 6.0) * 0.02, 2))
-            return ("bullish" if event_score > 0 else "bearish"), confidence
+            length_factor = min(0.035, len(set(WORD_RE.findall(text))) * 0.0015)
+            confidence = min(0.9, 0.42 + min(abs(event_score), 2.4) * 0.15 + min(total, 6.0) * 0.02 + length_factor)
+            return ("bullish" if event_score > 0 else "bearish"), round(confidence, 3)
         return "neutral", 0.0
 
-    hits = bullish_hits + bearish_hits
-    confidence = min(0.95, round(0.38 + abs(raw) * 0.42 + min(total, 8.0) * 0.025 + min(hits, 5) * 0.02, 2))
-    return ("bullish" if raw > 0 else "bearish"), confidence
+    length_factor = min(0.035, len(set(WORD_RE.findall(text))) * 0.0015)
+    event_factor = 0.0 if event_type in {"sec_filing", "general_news", "unknown"} else min(0.025, abs(event_score) * 0.006)
+    confidence = min(
+        0.95,
+        0.38 + abs(raw) * 0.42 + min(total, 8.0) * 0.025 + min(hits, 5) * 0.02 + length_factor + event_factor,
+    )
+    confidence = min(confidence, _financial_confidence_cap(text, total, hits, event_score))
+    return ("bullish" if raw > 0 else "bearish"), round(confidence, 3)
 
 
 def signed_sentiment_score(label: str, confidence: float) -> float:
@@ -200,11 +410,69 @@ def sentiment_audit(title: str, content: str = "") -> dict[str, object]:
     }
 
 
+def audit_social_sentiment(
+    text: str,
+    source_sentiment: object = None,
+    source_score: object = None,
+) -> dict[str, object]:
+    """Validate source social labels against text evidence and return a continuous score."""
+    text_audit = _social_text_audit(text)
+    text_score = float(text_audit["score"] or 0.0)
+    source_prior = _signed_source_score(source_sentiment, source_score)
+
+    if source_prior and text_score:
+        if source_prior * text_score > 0:
+            final_score = _clamp(0.48 * source_prior + 0.52 * text_score)
+            agreement = "confirmed"
+            agreement_boost = 0.08
+        else:
+            final_score = _clamp(0.30 * source_prior + 0.70 * text_score)
+            agreement = "source_text_disagree"
+            agreement_boost = -0.08
+    elif text_score:
+        final_score = text_score
+        agreement = "text_only"
+        agreement_boost = 0.0
+    elif source_prior:
+        final_score, source_signals = _source_only_score(source_prior, text)
+        text_audit["signals"] = list(text_audit["signals"]) + source_signals
+        agreement = "source_only"
+        agreement_boost = -0.08
+    else:
+        final_score = 0.0
+        agreement = "neutral"
+        agreement_boost = 0.0
+
+    confidence = min(
+        0.95,
+        max(
+            0.0,
+            float(text_audit["confidence"] or 0.0) * 0.78
+            + (0.18 if source_prior else 0.0)
+            + agreement_boost,
+        ),
+    )
+    if abs(final_score) < 0.12:
+        label = "neutral"
+    else:
+        label = "bullish" if final_score > 0 else "bearish"
+
+    return {
+        "method": "financial_social_validation_v1",
+        "label": label,
+        "score": round(final_score, 4),
+        "confidence": round(confidence, 3),
+        "agreement": agreement,
+        "source_label": str(source_sentiment or "").lower() or None,
+        "source_score": round(source_prior, 4),
+        "text_label": text_audit["label"],
+        "text_score": text_audit["score"],
+        "text_confidence": text_audit["confidence"],
+        "signals": text_audit["signals"],
+    }
+
+
 def score_social_sentiment(text: str) -> tuple[str, float]:
-    """Return label plus signed score in [-1, 1] for social posts."""
-    label, confidence = score_financial_sentiment(text, "")
-    if label == "bullish":
-        return label, confidence
-    if label == "bearish":
-        return label, -confidence
-    return label, 0.0
+    """Return label plus signed continuous score in [-1, 1] for social posts."""
+    audit = audit_social_sentiment(text)
+    return str(audit["label"]), float(audit["score"] or 0.0)

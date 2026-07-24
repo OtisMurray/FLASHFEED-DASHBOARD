@@ -9,7 +9,8 @@ const NewsPage = lazy(() => import('./pages/NewsPage').then(m => ({ default: m.N
 const ScreenerPage = lazy(() => import('./pages/ScreenerPage').then(m => ({ default: m.ScreenerPage })))
 const DecisionMapPanel = lazy(() => import('./pages/DecisionMapPanel').then(m => ({ default: m.DecisionMapPanel })))
 const SocialPage = lazy(() => import('./pages/SocialPage'))
-const ChartsPage = lazy(() => import('./pages/ChartsPage').then(m => ({ default: m.ChartsPage })))
+const ChartsPage = lazy(() => import('./pages/sentchart/ChartsPage').then(m => ({ default: m.ChartsPage })))
+const ChartsGridPage = lazy(() => import('./pages/ChartsGridPage').then(m => ({ default: m.ChartsGridPage })))
 const EntryScreenerPage = lazy(() => import('./pages/sentchart/EntryScreenerPage').then(m => ({ default: m.EntryScreenerPage })))
 const ExitScreenerPage = lazy(() => import('./pages/sentchart/ExitScreenerPage').then(m => ({ default: m.ExitScreenerPage })))
 const V11ScreenerPage = lazy(() => import('./pages/sentchart/V11ScreenerPage').then(m => ({ default: m.V11ScreenerPage })))
@@ -46,8 +47,7 @@ export default function App() {
             <Route path="/entry-screener" element={<EntryScreenerPage />} />
             <Route path="/exit-screener"  element={<ExitScreenerPage />} />
             <Route path="/v11-screener"   element={<V11ScreenerPage />} />
-            <Route path="/charts-grid" element={<Navigate to="/charts?chartTab=grid" replace />} />
-            <Route path="/sentcharts" element={<Navigate to="/charts" replace />} />
+            <Route path="/charts-grid" element={<ChartsGridPage />} />
             <Route path="/window-mirror" element={<Navigate to="/screener" replace />} />
             <Route path="/momentum"    element={<MomentumPage />} />
             <Route path="/correlation" element={<CorrelationPage />} />

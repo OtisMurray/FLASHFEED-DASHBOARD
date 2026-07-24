@@ -409,9 +409,10 @@ app.get('/api/ai/rankings', async (req, res) => {
       loadEnrichedTradeWatchRows(db, { limit: Math.max(limit, 30), days, socialWindow }),
       loadLatestPredictionModel(db),
       db.collection('prediction_signals').find({}, {
-        projection: { ticker: 1, signal_sec: 1, decision: 1, baseline_signal: 1, model_signal: 1, label_status: 1, labels: 1 },
+        projection: { ticker: 1, signal_sec: 1, decision: 1, baseline_signal: 1, threshold_rule_signal: 1, model_signal: 1, label_status: 1, labels: 1 },
       }).sort({ signal_sec: -1 }).limit(500).toArray().catch(() => []),
     ])
+    const validationMap = await loadPredictionValidationForTickers(db, tradeRows.map(row => row.ticker))
     const newsMap = aiScoreTickers(arts)
     const latestSignalByTicker = new Map()
     for (const row of signalRows) {
@@ -420,66 +421,92 @@ app.get('/api/ai/rankings', async (req, res) => {
     }
     const rows = tradeRows.map((row, index) => {
       const ticker = String(row.ticker || '').toUpperCase()
+      const validationRow = validationMap.get(ticker)
+      const scoredRow = validationRow
+        ? {
+            ...row,
+            correlation_score: validationRow.correlation_score ?? row.correlation_score,
+            prediction_validation_correlation: validationRow.prediction_validation_correlation ?? row.prediction_validation_correlation,
+            prediction_validation_accuracy_5m: validationRow.prediction_validation_accuracy_5m ?? row.prediction_validation_accuracy_5m,
+            prediction_validation_samples: validationRow.prediction_validation_samples ?? row.prediction_validation_samples,
+            prediction_validation_correct: validationRow.prediction_validation_correct ?? row.prediction_validation_correct,
+            prediction_validation_avg_return_5m: validationRow.prediction_validation_avg_return_5m ?? row.prediction_validation_avg_return_5m,
+            prediction_validation_latest_signal_sec: validationRow.prediction_validation_latest_signal_sec ?? row.prediction_validation_latest_signal_sec,
+          }
+        : row
       const news = newsMap.get(ticker) || { sum: 0, n: 0, pos: 0, neg: 0 }
-      const newsAvg = news.n ? news.sum / news.n : Number(row.article_sentiment || 0)
+      const newsAvg = news.n ? news.sum / news.n : Number(scoredRow.article_sentiment || 0)
       const newsScore = clamp((newsAvg + 1) / 2)
-      const tradeScore = Number(row.trade_watch?.trade_watch_score || 0)
-      const socialCount = Number(row.message_count || 0)
-      const articleCount = Number(row.article_count || 0)
+      const tradeScore = Number(scoredRow.trade_watch?.trade_watch_score || 0)
+      const socialCount = Number(scoredRow.message_count || 0)
+      const articleCount = Number(scoredRow.article_count || 0)
       const newsArticleCount = Math.max(articleCount, Number(news.n || 0))
-      const evidenceScore = Number(row.trade_watch?.evidence_score || 0)
+      const evidenceScore = Number(scoredRow.trade_watch?.evidence_score || 0)
       const socialDensity = clamp(Math.log1p(socialCount) / Math.log1p(80))
-      const features = predictionFeaturesFromMover(row, socialWindow)
+      const features = predictionFeaturesFromMover(scoredRow, socialWindow)
+      const thresholdEntry = evaluatePredictionEntryThreshold(scoredRow, features)
+      const thresholdRuleSignal = thresholdRulePredictionFromEntry(scoredRow, thresholdEntry)
       const modelSignal = applyPredictionModel(features, model)
-      const baselineSignal = baselinePredictionFromMover(row)
+      const baselineSignal = baselinePredictionFromMover(scoredRow, thresholdEntry)
       const storedSignal = latestSignalByTicker.get(ticker)
       const usableModelSignal = isLiveModelSignalEligible(modelSignal, model) ? modelSignal : null
+      const usableThresholdRuleSignal = thresholdRuleSignal?.entry_ready ? thresholdRuleSignal : null
+      const usableStoredThresholdRuleSignal = storedSignal?.threshold_rule_signal?.entry_ready ? storedSignal.threshold_rule_signal : null
       const usableStoredModelSignal = isLiveModelSignalEligible(storedSignal?.model_signal, model) ? storedSignal.model_signal : null
-      const activeSignal = usableModelSignal || usableStoredModelSignal || storedSignal?.baseline_signal || baselineSignal
+      const activeSignal = usableThresholdRuleSignal || usableStoredThresholdRuleSignal || usableModelSignal || usableStoredModelSignal || storedSignal?.baseline_signal || baselineSignal
       const probabilityUp = Number(activeSignal?.probability_up)
       const modelDirectionBoost = activeSignal?.direction === 'up' ? 0.08 : activeSignal?.direction === 'down' ? -0.08 : 0
       const predictionScore = Number.isFinite(probabilityUp) ? clamp(probabilityUp) : activeSignal?.direction === 'up' ? 0.62 : activeSignal?.direction === 'down' ? 0.38 : 0.5
-      const quoteFreshness = Number(row.trade_watch?.quote_freshness ?? 0.5)
-      const correlationScore = clamp(Number(features.correlation_score || 0), -1, 1)
-      const validationAccuracy = Number(features.prediction_validation_accuracy_5m)
-      const validationReturn = Number(features.prediction_validation_avg_return_5m)
+      const quoteFreshness = Number(scoredRow.trade_watch?.quote_freshness ?? 0.5)
+      const densityCorrelationRaw = nullableNumber(features.price_density_correlation)
+      const densityCorrelation = densityCorrelationRaw == null ? null : clamp(densityCorrelationRaw, -1, 1)
+      const densityCorrelationComponent = densityCorrelation == null ? 0.5 : (densityCorrelation + 1) / 2
+      const validationCorrelation = clamp(Number(features.prediction_validation_correlation || features.correlation_score || 0), -1, 1)
+      const validationAccuracy = nullableNumber(features.prediction_validation_accuracy_5m)
+      const validationReturn = nullableNumber(features.prediction_validation_avg_return_5m)
+      const validationSamples = nullableNumber(features.prediction_validation_samples)
       const validationEdge = clamp(
-        (Number.isFinite(validationAccuracy) ? Math.max(0, validationAccuracy - 0.5) * 1.6 : 0) +
+        (Number.isFinite(validationAccuracy) ? Math.max(0, validationAccuracy - 0.5) * 1.4 : 0) +
+        Math.max(0, validationCorrelation) * 0.25 +
         (Number.isFinite(validationReturn) ? Math.max(0, validationReturn) / 3 : 0),
         0,
         1,
       )
+      const densitySetupScore = clamp(Number(features.threshold_setup_score ?? thresholdEntry?.setupScore ?? 0) / 100)
+      const densityStatus = String(features.threshold_setup_status || thresholdEntry?.setupStatus || thresholdEntry?.status || '')
+      const densitySetupActive = ['entry_passed', 'active_setup_already_above_threshold', 'near_threshold_setup'].includes(densityStatus)
       const positiveCatalyst = Boolean(
         (newsArticleCount > 0 && newsAvg > 0.05) ||
-        (socialCount > 0 && Number(row.social_sentiment || 0) > 0.08) ||
-        correlationScore > 0.12 ||
+        (socialCount > 0 && Number(scoredRow.social_sentiment || 0) > 0.08) ||
+        densitySetupActive ||
+        (densityCorrelation != null && densityCorrelation > 0.34) ||
         validationEdge > 0.10 ||
         Number(features.is_news_catalyst || 0) === 1
       )
       const technicalConfirmation = positiveCatalyst ? clamp(
         (Number(features.rsi || 50) >= 38 && Number(features.rsi || 50) <= 68 ? 0.35 : 0) +
         (Number(features.rsi_oversold || 0) * 0.20) +
-        (Number(row.change_pct || 0) >= -4 && Number(row.change_pct || 0) <= 12 ? 0.20 : 0) +
-        (Number(row.rel_volume || 0) >= 1.25 ? 0.25 : 0),
+        (Number(scoredRow.change_pct || 0) >= -4 && Number(scoredRow.change_pct || 0) <= 12 ? 0.20 : 0) +
+        (Number(scoredRow.rel_volume || 0) >= 1.25 ? 0.25 : 0),
         0,
         1,
       ) : 0
       const blended = clamp(
-        tradeScore * 0.22 + newsScore * 0.18 + evidenceScore * 0.14 + socialDensity * 0.08 +
-        predictionScore * 0.16 + quoteFreshness * 0.05 + ((correlationScore + 1) / 2) * 0.08 +
-        validationEdge * 0.05 + technicalConfirmation * 0.04 + modelDirectionBoost
+        tradeScore * 0.20 + newsScore * 0.16 + evidenceScore * 0.13 + socialDensity * 0.08 +
+        predictionScore * 0.15 + quoteFreshness * 0.05 + densityCorrelationComponent * 0.08 +
+        densitySetupScore * 0.06 + validationEdge * 0.05 + technicalConfirmation * 0.04 + modelDirectionBoost
       )
       const aiRankScore = Number((blended * 100).toFixed(1))
-      const bullishEvidence = positiveCatalyst && Number(row.change_pct || 0) >= 0 && (aiRankScore >= 58 || tradeScore >= 0.65)
+      const bullishEvidence = positiveCatalyst && Number(scoredRow.change_pct || 0) >= 0 && (aiRankScore >= 58 || tradeScore >= 0.65)
       const direction = bullishEvidence ? 'bullish' : aiRankScore <= 38 || activeSignal?.direction === 'down' ? 'bearish' : 'watch'
       return {
         rank_seed: index + 1,
         ticker,
-        company: row.company || '',
-        price: row.price ?? null,
-        change_pct: Number(row.change_pct || 0),
-        rel_volume: Number(row.rel_volume || 0),
-        volume: Number(row.volume || 0),
+        company: scoredRow.company || '',
+        price: scoredRow.price ?? null,
+        change_pct: Number(scoredRow.change_pct || 0),
+        rel_volume: Number(scoredRow.rel_volume || 0),
+        volume: Number(scoredRow.volume || 0),
         ai_rank_score: aiRankScore,
         direction,
         confidence: Number(Math.abs(blended - 0.5).toFixed(3)),
@@ -491,7 +518,16 @@ app.get('/api/ai/rankings', async (req, res) => {
             : Number(predictionScore.toFixed(3)),
           confidence: activeSignal?.confidence ?? Number(Math.abs(predictionScore - 0.5).toFixed(3)),
           predicted_return_5m: activeSignal?.predicted_return_5m ?? null,
+          predicted_return_intraday_trade: activeSignal?.predicted_return_intraday_trade ?? null,
           model: activeSignal?.model || 'baseline_trade_watch_v1',
+          horizon: activeSignal?.horizon || null,
+          entry_ready: Boolean(activeSignal?.entry_ready || thresholdEntry?.passed),
+          threshold_status: activeSignal?.threshold_status || thresholdEntry?.status || null,
+          threshold_policy_version: activeSignal?.threshold_policy_version || thresholdEntry?.policyVersion || null,
+          backtest_trades: activeSignal?.backtest_trades ?? null,
+          backtest_profit_factor: activeSignal?.backtest_profit_factor ?? null,
+          backtest_validation_mean_return_pct: activeSignal?.backtest_validation_mean_return_pct ?? null,
+          backtest_test_mean_return_pct: activeSignal?.backtest_test_mean_return_pct ?? null,
         },
         model_ready: Boolean(modelSignal),
         evidence: {
@@ -501,14 +537,20 @@ app.get('/api/ai/rankings', async (req, res) => {
           bullish_news: Number(news.pos || 0),
           bearish_news: Number(news.neg || 0),
           social_posts: socialCount,
-          social_sentiment: Number(Number(row.social_sentiment || 0).toFixed(3)),
+          social_sentiment: Number(Number(scoredRow.social_sentiment || 0).toFixed(3)),
           evidence_score: Number(evidenceScore.toFixed(3)),
-          agreement: Number(row.trade_watch?.agreement || 0),
-          quote_age_minutes: row.trade_watch?.quote_age_minutes ?? null,
+          agreement: Number(scoredRow.trade_watch?.agreement || 0),
+          quote_age_minutes: scoredRow.trade_watch?.quote_age_minutes ?? null,
           latest_signal_status: storedSignal?.label_status || null,
+          price_density_correlation: densityCorrelation == null ? null : Number(densityCorrelation.toFixed(3)),
+          density_setup_score: Number((densitySetupScore * 100).toFixed(1)),
+          density_setup_status: densityStatus || null,
+          validation_accuracy_5m: Number.isFinite(validationAccuracy) ? Number(validationAccuracy.toFixed(3)) : null,
+          validation_samples: validationSamples == null ? null : validationSamples,
+          validation_avg_return_5m: Number.isFinite(validationReturn) ? Number(validationReturn.toFixed(3)) : null,
         },
-        reasons: row.trade_watch?.reasons || [],
-        risks: row.trade_watch?.risks || [],
+        reasons: scoredRow.trade_watch?.reasons || [],
+        risks: scoredRow.trade_watch?.risks || [],
       }
     })
       .filter(row => row.ticker && row.ai_rank_score >= minScore)
@@ -529,6 +571,8 @@ app.get('/api/ai/rankings', async (req, res) => {
         validation_edge: modelValidation.edge,
         live_classifier_enabled: modelValidation.allow_live_classifier,
         live_classifier_reason: modelValidation.reason,
+        threshold_rule_live_enabled: true,
+        threshold_rule_live_reason: 'validated_v11_threshold_rule_live_when_entry_ready',
         fallback: 'baseline_trade_watch_v1',
       },
       methodology: {
@@ -590,21 +634,37 @@ app.get('/api/ai/ticker/:ticker', async (req, res) => {
         { $project: { _id: 0, platform: '$_norm_platform', author: 1, text: { $ifNull: ['$text', { $ifNull: ['$content', '$title'] }] }, sentiment: 1, sentiment_score: 1, url: 1, event_sec: '$_event_sec' } },
       ]).toArray(),
       db.collection('prediction_signals').find({ ticker }, {
-        projection: { _id: 0, signal_id: 1, signal_sec: 1, decision: 1, baseline_signal: 1, model_signal: 1, label_status: 1, labels: 1, rank: 1 },
+        projection: { _id: 0, signal_id: 1, signal_sec: 1, decision: 1, baseline_signal: 1, threshold_rule_signal: 1, model_signal: 1, label_status: 1, labels: 1, rank: 1 },
       }).sort({ signal_sec: -1 }).limit(20).toArray(),
     ])
     const mover = movers.find(row => String(row.ticker || '').toUpperCase() === ticker)
-    const [articleMap, socialMap] = await Promise.all([
+    const [articleMap, socialMap, validationMap] = await Promise.all([
       loadArticleStatsForTickers(db, [ticker], days),
       loadSocialStatsForTickers(db, [ticker], socialWindow),
+      loadPredictionValidationForTickers(db, [ticker]),
     ])
-    const enriched = mover ? addTradeWatchFields(mergeMoverContext(mover, articleMap.get(ticker), socialMap.get(ticker))) : null
+    const validationRow = validationMap.get(ticker)
+    const enrichedBase = mover ? mergeMoverContext(mover, articleMap.get(ticker), socialMap.get(ticker)) : null
+    const enriched = enrichedBase ? addTradeWatchFields(validationRow ? {
+      ...enrichedBase,
+      correlation_score: validationRow.correlation_score ?? enrichedBase.correlation_score,
+      prediction_validation_correlation: validationRow.prediction_validation_correlation ?? enrichedBase.prediction_validation_correlation,
+      prediction_validation_accuracy_5m: validationRow.prediction_validation_accuracy_5m ?? enrichedBase.prediction_validation_accuracy_5m,
+      prediction_validation_samples: validationRow.prediction_validation_samples ?? enrichedBase.prediction_validation_samples,
+      prediction_validation_correct: validationRow.prediction_validation_correct ?? enrichedBase.prediction_validation_correct,
+      prediction_validation_avg_return_5m: validationRow.prediction_validation_avg_return_5m ?? enrichedBase.prediction_validation_avg_return_5m,
+      prediction_validation_latest_signal_sec: validationRow.prediction_validation_latest_signal_sec ?? enrichedBase.prediction_validation_latest_signal_sec,
+    } : enrichedBase) : null
     const news = aiScoreTickers(arts).get(ticker) || { sum: 0, n: 0, pos: 0, neg: 0 }
     const newsAvg = news.n ? news.sum / news.n : Number(enriched?.article_sentiment || 0)
     const features = enriched ? predictionFeaturesFromMover(enriched, socialWindow) : {}
+    const thresholdEntry = enriched ? evaluatePredictionEntryThreshold(enriched, features) : null
+    const thresholdRuleSignal = enriched ? thresholdRulePredictionFromEntry(enriched, thresholdEntry) : null
     const modelSignal = enriched ? applyPredictionModel(features, model) : null
-    const baselineSignal = enriched ? baselinePredictionFromMover(enriched) : null
-    const activeSignal = (isLiveModelSignalEligible(modelSignal, model) ? modelSignal : null) ||
+    const baselineSignal = enriched ? baselinePredictionFromMover(enriched, thresholdEntry) : null
+    const activeSignal = (thresholdRuleSignal?.entry_ready ? thresholdRuleSignal : null) ||
+      (predictionRows[0]?.threshold_rule_signal?.entry_ready ? predictionRows[0].threshold_rule_signal : null) ||
+      (isLiveModelSignalEligible(modelSignal, model) ? modelSignal : null) ||
       (isLiveModelSignalEligible(predictionRows[0]?.model_signal, model) ? predictionRows[0].model_signal : null) ||
       predictionRows[0]?.baseline_signal ||
       baselineSignal
@@ -616,9 +676,35 @@ app.get('/api/ai/ticker/:ticker', async (req, res) => {
     const predictionScore = Number.isFinite(Number(activeSignal?.probability_up)) ? clamp(Number(activeSignal.probability_up)) : activeSignal?.direction === 'up' ? 0.62 : activeSignal?.direction === 'down' ? 0.38 : 0.5
     const socialDensity = clamp(Math.log1p(socialCount) / Math.log1p(80))
     const quoteFreshness = Number(enriched?.trade_watch?.quote_freshness ?? 0.5)
+    const densityCorrelationRaw = nullableNumber(features.price_density_correlation)
+    const densityCorrelation = densityCorrelationRaw == null ? null : clamp(densityCorrelationRaw, -1, 1)
+    const densityCorrelationComponent = densityCorrelation == null ? 0.5 : (densityCorrelation + 1) / 2
+    const validationCorrelation = clamp(Number(features.prediction_validation_correlation || features.correlation_score || 0), -1, 1)
+    const validationAccuracy = nullableNumber(features.prediction_validation_accuracy_5m)
+    const validationReturn = nullableNumber(features.prediction_validation_avg_return_5m)
+    const validationSamples = nullableNumber(features.prediction_validation_samples)
+    const validationEdge = clamp(
+      (Number.isFinite(validationAccuracy) ? Math.max(0, validationAccuracy - 0.5) * 1.4 : 0) +
+      Math.max(0, validationCorrelation) * 0.25 +
+      (Number.isFinite(validationReturn) ? Math.max(0, validationReturn) / 3 : 0),
+      0,
+      1,
+    )
+    const densitySetupScore = clamp(Number(features.threshold_setup_score ?? thresholdEntry?.setupScore ?? 0) / 100)
+    const densityStatus = String(features.threshold_setup_status || thresholdEntry?.setupStatus || thresholdEntry?.status || '')
+    const densitySetupActive = ['entry_passed', 'active_setup_already_above_threshold', 'near_threshold_setup'].includes(densityStatus)
+    const technicalConfirmation = (newsArticleTotal > 0 || socialCount > 0 || densitySetupActive || validationEdge > 0.1) ? clamp(
+      (Number(features.rsi || 50) >= 38 && Number(features.rsi || 50) <= 68 ? 0.35 : 0) +
+      (Number(features.rsi_oversold || 0) * 0.20) +
+      (Number(enriched?.change_pct || 0) >= -4 && Number(enriched?.change_pct || 0) <= 12 ? 0.20 : 0) +
+      (Number(enriched?.rel_volume || 0) >= 1.25 ? 0.25 : 0),
+      0,
+      1,
+    ) : 0
     const blended = enriched ? clamp(
-      tradeScore * 0.22 + clamp((newsAvg + 1) / 2) * 0.18 + evidenceScore * 0.14 + socialDensity * 0.08 +
-      predictionScore * 0.16 + quoteFreshness * 0.05 + 0.04 +
+      tradeScore * 0.20 + clamp((newsAvg + 1) / 2) * 0.16 + evidenceScore * 0.13 + socialDensity * 0.08 +
+      predictionScore * 0.15 + quoteFreshness * 0.05 + densityCorrelationComponent * 0.08 +
+      densitySetupScore * 0.06 + validationEdge * 0.05 + technicalConfirmation * 0.04 +
       (activeSignal?.direction === 'up' ? 0.08 : activeSignal?.direction === 'down' ? -0.08 : 0)
     ) : 0
     const aiRankScore = Number((blended * 100).toFixed(1))
@@ -631,6 +717,7 @@ app.get('/api/ai/ticker/:ticker', async (req, res) => {
       { label: 'News evidence window', status: articleCount > 0 ? 'pass' : 'warn', detail: `${articleCount} approved articles found in the last ${days} day(s).` },
       { label: 'Social evidence window', status: socialCount > 0 ? 'pass' : 'warn', detail: `${socialCount} social posts found in the selected ${socialWindow} minute window.` },
       { label: 'Prediction validation', status: correct5.length >= 20 ? 'pass' : correct5.length ? 'warn' : 'info', detail: correct5.length ? `${correct5.length} labeled 5m outcomes; accuracy ${Math.round((accuracy5m || 0) * 100)}%.` : 'No completed 5m labels yet; ranking uses current model/baseline signal.' },
+      { label: 'Density setup', status: thresholdEntry?.passed ? 'pass' : densitySetupActive ? 'warn' : 'info', detail: `${densityStatus || 'unknown'}; corr ${densityCorrelation == null ? '--' : densityCorrelation.toFixed(3)}, setup score ${Math.round(densitySetupScore * 100)}.` },
       { label: 'Model validation set', status: modelValidation.allow_live_classifier ? 'pass' : Number(model?.metrics?.baseline_actionable_samples || 0) > 0 ? 'warn' : 'info', detail: `Live classifier: ${modelValidation.allow_live_classifier ? 'enabled' : `shadowed (${modelValidation.reason})`}.` },
     ]
     res.json({
@@ -647,6 +734,13 @@ app.get('/api/ai/ticker/:ticker', async (req, res) => {
         social_density_score: Number(socialDensity.toFixed(3)),
         prediction_score: Number(predictionScore.toFixed(3)),
         quote_freshness: Number(quoteFreshness.toFixed(3)),
+        price_density_correlation: densityCorrelation == null ? null : Number(densityCorrelation.toFixed(3)),
+        density_setup_score: Number((densitySetupScore * 100).toFixed(1)),
+        density_setup_status: densityStatus || null,
+        validation_edge: Number(validationEdge.toFixed(3)),
+        validation_accuracy_5m: Number.isFinite(validationAccuracy) ? Number(validationAccuracy.toFixed(3)) : null,
+        validation_samples: validationSamples == null ? null : validationSamples,
+        validation_avg_return_5m: Number.isFinite(validationReturn) ? Number(validationReturn.toFixed(3)) : null,
       },
       mover: enriched ? {
         ticker,
@@ -1602,6 +1696,16 @@ function normalizeScreenerDoc(doc = {}) {
     threshold_setup_score: nullableNumber(doc.threshold_setup_score),
     threshold_setup_distance_to_entry: nullableNumber(doc.threshold_setup_distance_to_entry),
     threshold_feature_updated_at: doc.threshold_feature_updated_at || null,
+    correlation_score: nullableNumber(doc.correlation_score),
+    prediction_validation_correlation: nullableNumber(doc.prediction_validation_correlation),
+    prediction_validation_accuracy_5m: nullableNumber(doc.prediction_validation_accuracy_5m),
+    prediction_validation_samples: nullableNumber(doc.prediction_validation_samples),
+    prediction_validation_correct: nullableNumber(doc.prediction_validation_correct),
+    prediction_validation_avg_return_5m: nullableNumber(doc.prediction_validation_avg_return_5m),
+    prediction_validation_latest_signal_sec: nullableNumber(doc.prediction_validation_latest_signal_sec),
+    prediction_validation_updated_at: doc.prediction_validation_updated_at || null,
+    prediction_validation_status: doc.prediction_validation_status || null,
+    prediction_validation: doc.prediction_validation || null,
     previous_close: nullableFixed(doc.previous_close, 2),
     change: nullableFixed(doc.change, 2),
     quote_source: doc.quote_source || null,
@@ -1998,6 +2102,32 @@ async function loadSocialStatsForTickers(db, tickers = [], windowMinutes = 1440)
   ]).toArray()
 
   return new Map(rows.map(row => [String(row._id || "").toUpperCase(), row]))
+}
+
+async function loadPredictionValidationForTickers(db, tickers = []) {
+  const wanted = normalizeTickerList(tickers, 300, { ensurePrivate: false })
+  if (!wanted.length) return new Map()
+
+  const rows = await db.collection("correlations").find({
+    ticker: { $in: wanted },
+    prediction_validation_samples: { $gte: 5 },
+  }, {
+    projection: {
+      _id: 0,
+      ticker: 1,
+      correlation_score: 1,
+      prediction_validation_correlation: 1,
+      prediction_validation_accuracy_5m: 1,
+      prediction_validation_samples: 1,
+      prediction_validation_correct: 1,
+      prediction_validation_avg_return_5m: 1,
+      prediction_validation_latest_signal_sec: 1,
+      prediction_validation_updated_at: 1,
+      correlation_source: 1,
+    },
+  }).toArray().catch(() => [])
+
+  return new Map(rows.map(row => [String(row.ticker || "").toUpperCase(), row]))
 }
 
 function bracketOrderResearchSignal(row, { sentiment, totalArticleCount, socialCount }) {
@@ -2494,12 +2624,12 @@ function thresholdGuardEvaluation(row = {}, profile = {}, baseMinTrailing60Messa
   return predictionThresholdPolicy.thresholdGuardEvaluation(row, profile, baseMinTrailing60Messages)
 }
 
-function predictionThresholdProfile(row = {}) {
-  return predictionThresholdPolicy.predictionThresholdProfile(row)
+function predictionThresholdProfile(row = {}, profileOverride = null) {
+  return predictionThresholdPolicy.predictionThresholdProfile(row, profileOverride)
 }
 
-function evaluatePredictionEntryThreshold(row = {}, features = {}) {
-  return predictionThresholdPolicy.evaluatePredictionEntryThreshold(row, features)
+function evaluatePredictionEntryThreshold(row = {}, features = {}, profileOverride = null) {
+  return predictionThresholdPolicy.evaluatePredictionEntryThreshold(row, features, profileOverride)
 }
 
 function predictionFeaturesFromMover(row, socialWindowMinutes = 60) {
@@ -2508,6 +2638,15 @@ function predictionFeaturesFromMover(row, socialWindowMinutes = 60) {
   const relVolume = Number(row.rel_volume || 0)
   const changePct = Number(row.change_pct || 0)
   const sentiment = Number(row.sentiment || 0)
+  const validation = row.prediction_validation || {}
+  const validationCorrelation = nullableNumber(row.prediction_validation_correlation ?? row.correlation_score)
+  const validationAccuracy = nullableNumber(row.prediction_validation_accuracy_5m ?? validation.accuracy_5m ?? validation.accuracy)
+  const validationSamples = nullableNumber(row.prediction_validation_samples ?? validation.samples)
+  const validationAvgReturn = nullableNumber(row.prediction_validation_avg_return_5m ?? validation.avg_return_5m)
+  const priceDensityCorrelation = nullableNumber(row.price_density_correlation)
+  const previousPriceDensityCorrelation = nullableNumber(row.previous_price_density_correlation)
+  const thresholdSetupScore = nullableNumber(row.threshold_setup_score)
+  const thresholdSetupDistance = nullableNumber(row.threshold_setup_distance_to_entry)
   const evidenceScore =
     Number(row.article_sentiment || 0) * Math.min(1, articleCount / 5) +
     Number(row.social_sentiment || 0) * Math.min(1, socialCount / 20)
@@ -2524,10 +2663,19 @@ function predictionFeaturesFromMover(row, socialWindowMinutes = 60) {
     float_bucket: predictionFloatBucket(row),
     float_short: row.float_short ?? null,
     short_interest: row.short_interest ?? null,
-    price_density_correlation: row.price_density_correlation ?? null,
-    previous_price_density_correlation: row.previous_price_density_correlation ?? null,
+    price_density_correlation: priceDensityCorrelation,
+    previous_price_density_correlation: previousPriceDensityCorrelation,
+    correlation_score: validationCorrelation,
+    prediction_validation_correlation: validationCorrelation,
+    prediction_validation_accuracy_5m: validationAccuracy,
+    prediction_validation_samples: validationSamples,
+    prediction_validation_avg_return_5m: validationAvgReturn,
+    prediction_validation_latest_signal_sec: row.prediction_validation_latest_signal_sec ?? null,
     threshold_pre_return_60m_pct: row.threshold_pre_return_60m_pct ?? null,
     threshold_trailing_60m_messages: row.threshold_trailing_60m_messages ?? null,
+    threshold_setup_status: row.threshold_setup_status ?? null,
+    threshold_setup_score: thresholdSetupScore,
+    threshold_setup_distance_to_entry: thresholdSetupDistance,
     threshold_feature_policy_version: row.threshold_feature_policy_version ?? PREDICTION_THRESHOLD_POLICY_VERSION,
     threshold_feature_policy_name: row.threshold_feature_policy_name ?? predictionThresholdPolicy.PREDICTION_THRESHOLD_POLICY.candidateRule.name,
     threshold_feature_source: row.threshold_feature_source ?? predictionThresholdPolicy.PREDICTION_THRESHOLD_FEATURE_SOURCE,
@@ -2551,6 +2699,13 @@ function predictionFeaturesFromMover(row, socialWindowMinutes = 60) {
     evidence_score: Number(evidenceScore.toFixed(3)),
     trade_watch_score: Number(row.trade_watch?.trade_watch_score || 0),
     agreement: Number(row.trade_watch?.agreement || 0),
+    is_news_catalyst: Boolean(
+      validation.recognizedNewsCatalyst ||
+      validation.materialDirectCatalyst ||
+      validation.recognizedSqueezeCatalyst ||
+      row.validated_prediction ||
+      row.prediction_validation_status === 'validated'
+    ) ? 1 : 0,
   }
 }
 
@@ -3597,12 +3752,18 @@ function socialTimeStages() {
       $addFields: {
 	        _time_raw: {
 	          $ifNull: [
-	            "$created_at",
+	            "$published_at",
 	            { $ifNull: [
 	              "$timestamp",
 	              { $ifNull: [
-	                "$publish_date",
-	                { $ifNull: ["$detected_at", "$fetched_at"] }
+	                "$created_at_dt",
+	                { $ifNull: [
+	                  "$created_at",
+	                  { $ifNull: [
+	                    "$publish_date",
+	                    { $ifNull: ["$detected_at", "$fetched_at"] }
+	                  ] }
+	                ] }
 	              ] }
 	            ] }
 	          ]
@@ -4014,6 +4175,9 @@ app.get("/api/social/rolling", async (req, res) => {
           sentiment: 1,
           sentiment_score: "$_display_sentiment_score",
           raw_sentiment_score: "$sentiment_score",
+          source_sentiment: 1,
+          source_sentiment_score: 1,
+          sentiment_validation: 1,
           cashtag: 1,
           finance_keywords: 1,
           keywords: 1,
@@ -4252,37 +4416,32 @@ app.get("/api/social/series/:ticker", async (req, res) => {
       { $match: { _event_sec: { $gte: sinceSec } } },
       { $match: { _ticker_candidates: ticker } },
       {
-        $addFields: {
-          _bucket_sec: {
-            $multiply: [
-              { $floor: { $divide: ["$_event_sec", bucketSec] } },
-              bucketSec,
+      $addFields: {
+        _bucket_sec: {
+          $multiply: [
+            { $floor: { $divide: ["$_event_sec", bucketSec] } },
+            bucketSec,
+          ],
+        },
+        _score: {
+          $switch: {
+            branches: [
+              { case: { $in: [{ $type: "$sentiment_score" }, ["int", "long", "double", "decimal"]] }, then: { $toDouble: "$sentiment_score" } },
+              { case: { $regexMatch: { input: { $toLower: { $toString: { $ifNull: ["$sentiment", ""] } } }, regex: "bull|positive" } }, then: 1 },
+              { case: { $regexMatch: { input: { $toLower: { $toString: { $ifNull: ["$sentiment", ""] } } }, regex: "bear|negative" } }, then: -1 },
             ],
+            default: 0,
           },
         },
       },
-      {
-        $group: {
-          _id: "$_bucket_sec",
-          message_count: { $sum: 1 },
-          bullish: {
-            $sum: {
-              $cond: [
-                { $regexMatch: { input: { $toLower: { $toString: { $ifNull: ["$sentiment", ""] } } }, regex: "bull|positive" } },
-                1,
-                0,
-              ],
-            },
-          },
-          bearish: {
-            $sum: {
-              $cond: [
-                { $regexMatch: { input: { $toLower: { $toString: { $ifNull: ["$sentiment", ""] } } }, regex: "bear|negative" } },
-                1,
-                0,
-              ],
-            },
-          },
+    },
+    {
+      $group: {
+        _id: "$_bucket_sec",
+        message_count: { $sum: 1 },
+          sentiment: { $avg: "$_score" },
+          bullish: { $sum: { $cond: [{ $gt: ["$_score", 0.1] }, 1, 0] } },
+          bearish: { $sum: { $cond: [{ $lt: ["$_score", -0.1] }, 1, 0] } },
           platforms: { $addToSet: "$_norm_platform" },
         },
       },
@@ -4297,7 +4456,7 @@ app.get("/api/social/series/:ticker", async (req, res) => {
         session: marketSessionForSec(row._id),
         message_count: count,
         message_density: Number((count / bucketMinutes).toFixed(3)),
-        sentiment: count ? Number((((row.bullish || 0) - (row.bearish || 0)) / count).toFixed(3)) : 0,
+        sentiment: count ? Number(Number(row.sentiment || 0).toFixed(3)) : 0,
         bullish: Number(row.bullish || 0),
         bearish: Number(row.bearish || 0),
         platforms: row.platforms || [],
@@ -4964,6 +5123,8 @@ async function chartSocialSeries(db, ticker, windowMinutes, bucketMinutes, optio
         _id: "$_bucket_sec",
         message_count: { $sum: 1 },
         sentiment: { $avg: "$_score" },
+        bullish: { $sum: { $cond: [{ $gt: ["$_score", 0.1] }, 1, 0] } },
+        bearish: { $sum: { $cond: [{ $lt: ["$_score", -0.1] }, 1, 0] } },
         platforms: { $addToSet: "$_norm_platform" },
       },
     },
@@ -4973,7 +5134,7 @@ async function chartSocialSeries(db, ticker, windowMinutes, bucketMinutes, optio
   if (!rows.length) return []
 
   const bucketMap = new Map(rows.map(row => [Number(row._id || 0), row]))
-  const firstBucket = Math.floor((requestedStart || Number(rows[0]._id || sinceSec)) / bucketSec) * bucketSec
+  const firstBucket = Math.floor(sinceSec / bucketSec) * bucketSec
   const fallbackLastBucket = Math.floor(Date.now() / (bucketSec * 1000)) * bucketSec
   const lastBucket = Math.floor((requestedEnd || Math.max(Number(rows[rows.length - 1]._id || sinceSec), fallbackLastBucket)) / bucketSec) * bucketSec
   const filled = []
@@ -4987,6 +5148,8 @@ async function chartSocialSeries(db, ticker, windowMinutes, bucketMinutes, optio
       message_count: count,
       message_density: Number((count / bucketMinutes).toFixed(3)),
       sentiment: count > 0 ? Number(Number(row.sentiment || 0).toFixed(3)) : 0,
+      bullish: Number(row.bullish || 0),
+      bearish: Number(row.bearish || 0),
       platforms: row.platforms || [],
     })
   }
@@ -5218,21 +5381,26 @@ app.get("/api/chart/social", async (req, res) => {
       return res.json({
         status: "ok", source: "none", messages: 0, bullish: 0, bearish: 0, complete: true,
         labels: [], times: [], density: [], density_smooth: [], sent_labels: [], sent_times: [], scores: [], scores_smooth: [],
-        win_density: [], win_density_smooth: [], window_minutes: windowMinutes, bucket_minutes: bucketMinutes,
+        win_density: [], win_density_smooth: [], density_per_minute: [], window_minutes: windowMinutes, bucket_minutes: bucketMinutes,
+        density_unit: "raw_messages_per_bucket",
+        density_per_minute_unit: "messages_per_minute",
       })
     }
     const times = rows.map(r => Number(r.time || 0))
     const labels = rows.map(r => etHHMM(r.time))
-    const density = rows.map(r => Number(r.message_density ?? 0))
+    const density = rows.map(r => Number(r.message_count ?? 0))
+    const densityPerMinute = rows.map(r => Number(r.message_density ?? 0))
     const scores = rows.map(r => Number(r.sentiment ?? 0))
     const messages = rows.reduce((a, r) => a + Number(r.message_count ?? 0), 0)
-    const bullish = rows.reduce((a, r) => a + (Number(r.sentiment ?? 0) > 0.1 ? Number(r.message_count ?? 0) : 0), 0)
-    const bearish = rows.reduce((a, r) => a + (Number(r.sentiment ?? 0) < -0.1 ? Number(r.message_count ?? 0) : 0), 0)
+    const bullish = rows.reduce((a, r) => a + Number(r.bullish ?? 0), 0)
+    const bearish = rows.reduce((a, r) => a + Number(r.bearish ?? 0), 0)
     res.json({
       status: "ok", source: "feedflash-social", messages, bullish, bearish, complete: true,
-      labels, times, density, density_smooth: density,
+      labels, times, density, density_smooth: density, density_per_minute: densityPerMinute,
       sent_labels: labels, sent_times: times, scores, scores_smooth: scores,
       win_density: density, win_density_smooth: density, window_minutes: windowMinutes, bucket_minutes: bucketMinutes,
+      density_unit: "raw_messages_per_bucket",
+      density_per_minute_unit: "messages_per_minute",
     })
   } catch (err) {
     res.status(500).json({ error: String(err.message || err) })

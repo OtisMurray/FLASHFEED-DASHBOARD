@@ -238,6 +238,69 @@ export function clonePlain(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+const PROFILE_OVERRIDE_KEYS = new Set([
+  'policyVersion',
+  'label',
+  'name',
+  'entrySignal',
+  'windowMinutes',
+  'smoothingMinutes',
+  'thresholdC',
+  'setupNearThresholdBand',
+  'maxPreSignalReturn60mPct',
+  'minTrailing60Messages',
+  'minSignalChangePct',
+  'maxSignalChangePct',
+  'maxSignalAbsChangePct',
+  'maxSignalAbsChangePctByFloatBucket',
+  'minRelVolumeByFloatBucket',
+  'floatEvidenceGates',
+  'exitStrategy',
+  'partialExitFraction',
+  'partialProfitTargetPct',
+  'profitGivebackPct',
+  'profitGivebackActivationPct',
+  'runnerTrailingStopPct',
+  'legacyFallbackTrailingStopPct',
+  'trailingStopPct',
+  'protectiveStopPct',
+  'exitPlan',
+])
+
+const FEATURE_KEYS = new Set([
+  'price_density_correlation',
+  'previous_price_density_correlation',
+  'threshold_pre_return_60m_pct',
+  'pre_signal_return_60m_pct',
+  'pre_return_60m_pct',
+  'threshold_trailing_60m_messages',
+  'trailing_60m_messages',
+  'trailing60Messages',
+])
+
+function isPlainObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function looksLikeProfileOverride(value) {
+  if (!isPlainObject(value)) return false
+  const keys = Object.keys(value)
+  if (!keys.length) return false
+  const hasProfileKey = keys.some(key => PROFILE_OVERRIDE_KEYS.has(key))
+  const hasFeatureKey = keys.some(key => FEATURE_KEYS.has(key))
+  return hasProfileKey && !hasFeatureKey
+}
+
+function splitFeaturesAndProfileOverride(featuresOrOverride = {}, profileOverride = null) {
+  if (profileOverride && isPlainObject(profileOverride)) {
+    return { features: isPlainObject(featuresOrOverride) ? featuresOrOverride : {}, profileOverride }
+  }
+  if (looksLikeProfileOverride(featuresOrOverride)) {
+    return { features: {}, profileOverride: featuresOrOverride }
+  }
+  return { features: isPlainObject(featuresOrOverride) ? featuresOrOverride : {}, profileOverride: null }
+}
+
 export function marketCapBucket(marketCap) {
   const cap = Number(marketCap || 0)
   if (cap >= 200e9) return 'Mega'
@@ -376,30 +439,33 @@ export function thresholdGuardEvaluation(row = {}, profile = {}, baseMinTrailing
   }
 }
 
-export function predictionThresholdProfile(row = {}) {
+export function predictionThresholdProfile(row = {}, profileOverride = null) {
   const tier = predictionMarketCapTier(row)
   const baseProfile = PREDICTION_THRESHOLD_POLICY.candidateRule || {}
   const tierProfile = PREDICTION_THRESHOLD_POLICY.tierRules?.[tier] || {}
+  const override = isPlainObject(profileOverride) ? profileOverride : {}
   const profile = {
     ...baseProfile,
     ...tierProfile,
-    exitStrategy: baseProfile.exitStrategy,
-    partialExitFraction: baseProfile.partialExitFraction,
-    partialProfitTargetPct: baseProfile.partialProfitTargetPct,
-    profitGivebackPct: baseProfile.profitGivebackPct,
-    profitGivebackActivationPct: baseProfile.profitGivebackActivationPct,
-    runnerTrailingStopPct: baseProfile.runnerTrailingStopPct,
-    legacyFallbackTrailingStopPct: baseProfile.legacyFallbackTrailingStopPct,
-    maxSignalAbsChangePct: baseProfile.maxSignalAbsChangePct,
-    maxSignalAbsChangePctByFloatBucket: baseProfile.maxSignalAbsChangePctByFloatBucket,
-    minSignalChangePct: baseProfile.minSignalChangePct,
-    maxSignalChangePct: baseProfile.maxSignalChangePct,
-    minRelVolumeByFloatBucket: baseProfile.minRelVolumeByFloatBucket,
-    floatEvidenceGates: baseProfile.floatEvidenceGates,
+    ...override,
+    exitStrategy: override.exitStrategy ?? baseProfile.exitStrategy,
+    partialExitFraction: override.partialExitFraction ?? baseProfile.partialExitFraction,
+    partialProfitTargetPct: override.partialProfitTargetPct ?? baseProfile.partialProfitTargetPct,
+    profitGivebackPct: override.profitGivebackPct ?? baseProfile.profitGivebackPct,
+    profitGivebackActivationPct: override.profitGivebackActivationPct ?? baseProfile.profitGivebackActivationPct,
+    runnerTrailingStopPct: override.runnerTrailingStopPct ?? baseProfile.runnerTrailingStopPct,
+    legacyFallbackTrailingStopPct: override.legacyFallbackTrailingStopPct ?? baseProfile.legacyFallbackTrailingStopPct,
+    maxSignalAbsChangePct: override.maxSignalAbsChangePct ?? baseProfile.maxSignalAbsChangePct,
+    maxSignalAbsChangePctByFloatBucket: override.maxSignalAbsChangePctByFloatBucket ?? baseProfile.maxSignalAbsChangePctByFloatBucket,
+    minSignalChangePct: override.minSignalChangePct ?? baseProfile.minSignalChangePct,
+    maxSignalChangePct: override.maxSignalChangePct ?? baseProfile.maxSignalChangePct,
+    minRelVolumeByFloatBucket: override.minRelVolumeByFloatBucket ?? baseProfile.minRelVolumeByFloatBucket,
+    floatEvidenceGates: override.floatEvidenceGates ?? baseProfile.floatEvidenceGates,
   }
   return {
-    policyVersion: PREDICTION_THRESHOLD_POLICY_VERSION,
+    policyVersion: override.policyVersion || PREDICTION_THRESHOLD_POLICY_VERSION,
     tier,
+    overrideProfile: override.label || override.name || null,
     profile: clonePlain(profile),
     pooledBacktestProfile: clonePlain(PREDICTION_THRESHOLD_POLICY.candidateRule),
     tierRules: clonePlain(PREDICTION_THRESHOLD_POLICY.tierRules),
@@ -411,8 +477,10 @@ export function predictionThresholdProfile(row = {}) {
   }
 }
 
-export function evaluatePredictionEntryThreshold(row = {}, features = {}) {
-  const threshold = predictionThresholdProfile(row)
+export function evaluatePredictionEntryThreshold(row = {}, featuresOrOverride = {}, profileOverride = null) {
+  const split = splitFeaturesAndProfileOverride(featuresOrOverride, profileOverride)
+  const features = split.features
+  const threshold = predictionThresholdProfile(row, split.profileOverride)
   const profile = threshold.profile
   const rawCorr = row.price_density_correlation ?? row.priceDensityCorrelation ?? features.price_density_correlation
   const rawPrevCorr = row.previous_price_density_correlation ?? row.prevPriceDensityCorrelation ?? features.previous_price_density_correlation

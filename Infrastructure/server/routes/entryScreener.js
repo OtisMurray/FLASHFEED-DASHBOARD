@@ -23,6 +23,7 @@ const router = Router()
 const CHART_SERVICE_URL = (process.env.CHART_SERVICE_URL || 'http://localhost:5055').replace(/\/+$/, '')
 const CORR_WINDOW_MINUTES = 360        // the strategy's rolling window (chart-service STRAT_ROLL_WINDOW)
 const EVIDENCE_TARGET_MESSAGES = 100   // message count at which evidence weight saturates to 1
+const UNIVERSE_SCAN_LIMIT = Number(process.env.SCREENER_UNIVERSE_SCAN_LIMIT || 6000)
 const DEFAULT_LIMIT = 30
 const MAX_LIMIT = 50                   // chart-service batch cap
 
@@ -61,7 +62,7 @@ async function fetchCorrBatch(tickers) {
 
 router.get('/', async (req, res) => {
   try {
-    const threshold = clamp(req.query.threshold ?? 0.5, 0.1, 1)
+    const threshold = clamp(req.query.threshold ?? 0.1, 0.1, 1)
     const limit = Math.round(clamp(req.query.limit ?? DEFAULT_LIMIT, 1, MAX_LIMIT))
 
     // 1. Same clean listed-US universe as /api/screener
@@ -70,7 +71,7 @@ router.get('/', async (req, res) => {
       ticker: { $not: /\./ },
       price: { $ne: null },
     }
-    const rows = (await Screener.find(filter).limit(1500).lean())
+    const rows = (await Screener.find(filter).limit(UNIVERSE_SCAN_LIMIT).lean())
       .map(normalizeScreenerRow)
       .filter(isCleanListedUsRow)
 

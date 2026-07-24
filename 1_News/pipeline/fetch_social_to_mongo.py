@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import quote_plus
 
 from pymongo import MongoClient, UpdateOne
-from sentiment_utils import score_social_sentiment
+from sentiment_utils import audit_social_sentiment, score_social_sentiment
 try:
     from source_status import record_source_status
 except Exception:
@@ -490,14 +490,31 @@ def _sentiment_value(message: dict) -> tuple[str, float]:
     if isinstance(sentiment_obj, dict):
         raw = str(sentiment_obj.get("basic") or "").lower()
     if raw == "bullish":
-        return "bullish", 1.0
+        return "bullish", 0.58
     if raw == "bearish":
-        return "bearish", -1.0
+        return "bearish", -0.58
     return "neutral", 0.0
 
 
 def _score_text_sentiment(text: str) -> tuple[str, float]:
     return score_social_sentiment(text)
+
+
+def _validated_sentiment_fields(
+    text: str,
+    source_sentiment: str | None = None,
+    source_score: float | None = None,
+) -> dict:
+    audit = audit_social_sentiment(text, source_sentiment=source_sentiment, source_score=source_score)
+    fields = {
+        "sentiment": audit["label"],
+        "sentiment_score": audit["score"],
+        "sentiment_validation": audit,
+    }
+    if source_sentiment:
+        fields["source_sentiment"] = source_sentiment
+        fields["source_sentiment_score"] = source_score
+    return fields
 
 
 def _parse_iso_ts(raw: str) -> int:
@@ -573,7 +590,7 @@ def _fetch_ticker(ticker: str) -> list[dict]:
         body = _clean(message.get("body", ""))
         if not body:
             continue
-        sentiment, score = _sentiment_value(message)
+        source_sentiment, source_score = _sentiment_value(message)
         user = message.get("user") or {}
         created_at = _created_ts(message.get("created_at", ""))
         doc_id = _post_id(ticker, message.get("id", body))
@@ -591,8 +608,7 @@ def _fetch_ticker(ticker: str) -> list[dict]:
             "source_url": url,
             "cashtag": f"${ticker}",
             "author": user.get("username", ""),
-            "sentiment": sentiment,
-            "sentiment_score": score,
+            **_validated_sentiment_fields(body, source_sentiment, source_score),
             "message_volume": message_volume,
             "message_density": message_density,
             "fetched_at": now,
@@ -720,7 +736,6 @@ def _fetch_reddit_ticker(ticker: str) -> list[dict]:
                 continue
             seen_links.add(link)
 
-            sentiment, score = _score_text_sentiment(text)
             created_at = int(entry.get("created_at") or now)
             if entry.get("published_parsed"):
                 try:
@@ -747,8 +762,7 @@ def _fetch_reddit_ticker(ticker: str) -> list[dict]:
                 "query": job["params"].get("q"),
                 "cashtag": f"${ticker}",
                 "author": entry.get("author", ""),
-                "sentiment": sentiment,
-                "sentiment_score": score,
+                **_validated_sentiment_fields(text),
                 "message_volume": message_volume,
                 "message_density": message_density,
                 "fetched_at": now,
@@ -779,7 +793,6 @@ def _fetch_reddit_ticker(ticker: str) -> list[dict]:
                 continue
             seen_links.add(link)
 
-            sentiment, score = _score_text_sentiment(text)
             created_at = int(entry.get("created_at") or now)
             if entry.get("published_parsed"):
                 try:
@@ -805,8 +818,7 @@ def _fetch_reddit_ticker(ticker: str) -> list[dict]:
                 "query": ticker,
                 "cashtag": f"${ticker}",
                 "author": entry.get("author", ""),
-                "sentiment": sentiment,
-                "sentiment_score": score,
+                **_validated_sentiment_fields(text),
                 "message_volume": message_volume,
                 "message_density": message_density,
                 "fetched_at": now,
@@ -853,7 +865,6 @@ def _fetch_bluesky_ticker(ticker: str) -> list[dict]:
             continue
 
         post_id = uri.split("/")[-1]
-        sentiment, score = _score_text_sentiment(text)
         doc_id = hashlib.sha1(f"bluesky:{ticker}:{uri}".encode()).hexdigest()[:24]
         docs.append({
             "id": doc_id,
@@ -870,8 +881,7 @@ def _fetch_bluesky_ticker(ticker: str) -> list[dict]:
             "query": query,
             "cashtag": f"${ticker}",
             "author": handle,
-            "sentiment": sentiment,
-            "sentiment_score": score,
+            **_validated_sentiment_fields(text),
             "message_volume": message_volume,
             "message_density": message_density,
             "reply_count": post.get("replyCount"),
@@ -927,7 +937,6 @@ def _fetch_x_ticker(ticker: str) -> list[dict]:
         if not _matches_ticker_text(text, ticker):
             continue
 
-        sentiment, score = _score_text_sentiment(text)
         created_at = _created_ts(str(tweet.get("created_at") or ""))
         metrics = tweet.get("public_metrics") or {}
         doc_id = hashlib.sha1(f"x:{ticker}:{tweet_id}".encode()).hexdigest()[:24]
@@ -947,8 +956,7 @@ def _fetch_x_ticker(ticker: str) -> list[dict]:
             "query": query,
             "cashtag": f"${ticker}",
             "author": tweet.get("author_id", ""),
-            "sentiment": sentiment,
-            "sentiment_score": score,
+            **_validated_sentiment_fields(text),
             "message_volume": message_volume,
             "message_density": message_density,
             "retweet_count": metrics.get("retweet_count"),
@@ -991,7 +999,6 @@ def _fetch_x_public_ticker(ticker: str) -> list[dict]:
             link = entry.get("link") or ""
             if not text or not _matches_ticker_text(text, ticker):
                 continue
-            sentiment, score = _score_text_sentiment(text)
             doc_id = hashlib.sha1(f"x-public:{ticker}:{link or text[:120]}".encode()).hexdigest()[:24]
             docs.append({
                 "id": doc_id,
@@ -1008,8 +1015,7 @@ def _fetch_x_public_ticker(ticker: str) -> list[dict]:
                 "query": query,
                 "cashtag": f"${ticker}",
                 "author": entry.get("author", ""),
-                "sentiment": sentiment,
-                "sentiment_score": score,
+                **_validated_sentiment_fields(text),
                 "message_volume": message_volume,
                 "message_density": message_density,
                 "fetched_at": now,

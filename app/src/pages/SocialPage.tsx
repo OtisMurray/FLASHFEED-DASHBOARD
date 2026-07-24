@@ -16,6 +16,20 @@ type SocialPost = {
   author?: string
   sentiment?: string
   sentiment_score?: number
+  source_sentiment?: string
+  source_sentiment_score?: number
+  sentiment_validation?: {
+    method?: string
+    label?: string
+    score?: number
+    confidence?: number
+    agreement?: string
+    text_label?: string
+    text_score?: number
+    source_label?: string
+    source_score?: number
+    signals?: string[]
+  }
   sentiment_confidence?: number
   ml_confidence?: number
   finance_keywords?: string[]
@@ -255,6 +269,15 @@ function sentimentDisplay(sentiment?: string) {
   if (s.includes('bull') || s.includes('positive')) return 'Bullish'
   if (s.includes('bear') || s.includes('negative')) return 'Bearish'
   return 'Neutral'
+}
+
+function validationLabel(post: SocialPost) {
+  const audit = post.sentiment_validation
+  if (!audit) return ''
+  const agreement = String(audit.agreement || '').replaceAll('_', ' ')
+  const confidence = typeof audit.confidence === 'number' ? `${Math.round(audit.confidence * 100)}%` : ''
+  const textScore = typeof audit.text_score === 'number' ? `text ${audit.text_score >= 0 ? '+' : ''}${audit.text_score.toFixed(2)}` : ''
+  return [agreement, confidence, textScore].filter(Boolean).join(' · ')
 }
 
 export default function SocialPage() {
@@ -518,6 +541,7 @@ export default function SocialPage() {
           {visiblePosts.map((post, idx) => {
             const text = displayText(post)
             const ticker = primaryTicker(post)
+            const validation = validationLabel(post)
             return (
               <a
                 key={`${post.platform}-${post.url}-${idx}`}
@@ -552,6 +576,7 @@ export default function SocialPage() {
                   {(post.finance_keywords || post.keywords || []).slice(0, 4).map(k => (
                     <span key={k}>#{k}</span>
                   ))}
+                  {validation && <span className="text-sky-300">{validation}</span>}
                 </div>
               </a>
             )

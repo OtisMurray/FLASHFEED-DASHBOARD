@@ -248,12 +248,9 @@ const TITLES: Record<ResearchMode, string> = {
 }
 
 // Rolling-window density slider bounds (Price+Density view only). Window=1 is
-// the RAW per-minute series (smoothSame is a no-op at k<=1, so the line equals
-// the Messages/min bars exactly). Default is deliberately LIGHT (3 min) so the
-// true timing of chatter vs price is visible for lead/lag investigation — the
-// heavy research default (ROLL_WINDOW_DEFAULT, 360) is still reachable via the
-// slider and stays the default for the other research views.
-const WIN_MIN = 1, WIN_MAX = 480, WIN_DEFAULT = 3
+// the raw per-minute series; the professor-facing default is 240m, and the
+// slider remains live so shorter lead/lag windows can still be inspected.
+const WIN_MIN = 1, WIN_MAX = 480, WIN_DEFAULT = 240
 
 export function ResearchChart({ ticker, mode, window: win, date }: { ticker: string; mode: ResearchMode; window: Win; date?: string }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)

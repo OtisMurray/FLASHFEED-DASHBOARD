@@ -216,6 +216,14 @@ function formatWindowMinutes(minutes: number): string {
   return `${minutes}m`
 }
 
+function formatNewsWindow(days: string): string {
+  if (days === '1') return 'today'
+  if (days === '3') return '3 days'
+  if (days === '7') return 'this week'
+  if (days === '30') return '30 days'
+  return '30 days'
+}
+
 function watcherMetricValue(row: ScreenerRow): string {
   const current = compact((row as any).stocktwits_watcher_count)
   const delta = num((row as any).watcher_feature?.delta)
@@ -509,8 +517,9 @@ function MirrorCard({ row, signal, recentDays, keyword, refreshNonce, rollingWin
     ? `/api/charts/${encodeURIComponent(ticker)}?tf=1m&events=1&window_minutes=${rollingWindowMinutes}&view_window_minutes=${rollingWindowMinutes}&bucket_minutes=${chartBucketMinutes}&_r=${refreshNonce}`
     : null
   const articleDays = recentDays && recentDays !== '0' ? recentDays : '30'
+  const fallbackArticleDays = Number(articleDays) < 30 ? '30' : ''
   const articleUrl = ticker && visible
-    ? `/api/articles?ticker=${encodeURIComponent(ticker)}&limit=12&window_minutes=${rollingWindowMinutes}&recent_days=${articleDays}&facets=0&_r=${refreshNonce}`
+    ? `/api/articles?ticker=${encodeURIComponent(ticker)}&limit=12&recent_days=${articleDays}&facets=0&_r=${refreshNonce}`
     : null
   const cardSWR = { revalidateOnFocus: false, refreshInterval: 60_000, keepPreviousData: false }
   const { data: chart, error: chartError, isLoading: chartLoading } = useSWR(chartUrl, fetcher, cardSWR)
@@ -523,15 +532,27 @@ function MirrorCard({ row, signal, recentDays, keyword, refreshNonce, rollingWin
   const displayChange = num(row.change_pct)
   const displayVolume = num(row.volume)
   const quoteSourceLabel = row.quote_source || row.source || 'FinViz top mover'
-  const rawArticles = useMemo(() => {
+  const selectedArticles = useMemo(() => {
     const source = Array.isArray(articleData?.articles) ? articleData.articles : []
     const tickerSpecific = source.filter((article: any) => articleMatchesTickerOrCompany(row, article))
     if (!keyword) return tickerSpecific
     return tickerSpecific.filter((article: any) => String(article.title || article.headline || '').toLowerCase().includes(keyword))
   }, [articleData, keyword, row])
+  const fallbackArticleUrl = ticker && visible && fallbackArticleDays && !selectedArticles.length
+    ? `/api/articles?ticker=${encodeURIComponent(ticker)}&limit=12&recent_days=${fallbackArticleDays}&facets=0&_r=${refreshNonce}`
+    : null
+  const { data: fallbackArticleData } = useSWR(fallbackArticleUrl, fetcher, cardSWR)
+  const fallbackArticles = useMemo(() => {
+    if (selectedArticles.length) return []
+    const source = Array.isArray(fallbackArticleData?.articles) ? fallbackArticleData.articles : []
+    const tickerSpecific = source.filter((article: any) => articleMatchesTickerOrCompany(row, article))
+    if (!keyword) return tickerSpecific
+    return tickerSpecific.filter((article: any) => String(article.title || article.headline || '').toLowerCase().includes(keyword))
+  }, [fallbackArticleData, keyword, row, selectedArticles.length])
   const rawArticleCount = Array.isArray(articleData?.articles) ? articleData.articles.length : 0
-  const rejectedAmbiguousArticles = Math.max(0, rawArticleCount - rawArticles.length)
-  const articles = rawArticles
+  const rejectedAmbiguousArticles = Math.max(0, rawArticleCount - selectedArticles.length)
+  const showingFallbackArticles = !selectedArticles.length && fallbackArticles.length > 0
+  const articles = showingFallbackArticles ? fallbackArticles : selectedArticles
   const matchedNewsCount = articles.length || Number((row as any).news_article_count ?? (row as any).article_count ?? 0)
   const displaySentiment = num((row as any).sentiment ?? row.avg_sentiment)
   const chartOverlays = useMemo(() => {
@@ -687,9 +708,18 @@ function MirrorCard({ row, signal, recentDays, keyword, refreshNonce, rollingWin
       <section className="border-t border-border bg-[#1b2432]">
         <div className="flex items-center justify-between border-b border-border px-4 py-2">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-200">Latest News Sources</h2>
-          <span className="text-[11px] text-neutral">{articles.length ? `${articles.length} ticker-specific` : 'No ticker-specific article rows'}</span>
+          <span className={clsx('text-[11px]', showingFallbackArticles ? 'text-amber-200' : 'text-neutral')}>
+            {articles.length
+              ? `${articles.length} ${showingFallbackArticles ? 'older ' : ''}ticker-specific`
+              : 'No ticker-specific article rows'}
+          </span>
         </div>
         <div className="divide-y divide-border">
+          {showingFallbackArticles && (
+            <div className="border-b border-border bg-amber-500/5 px-4 py-2 text-[11px] text-amber-100">
+              No ticker-specific rows in {formatNewsWindow(articleDays)}; showing the latest ticker-specific rows from 30 days.
+            </div>
+          )}
           {articles.length ? articles.map((article: any, index: number) => (
             <a
               key={article.id || article.article_id || article.url || `${ticker}-${index}`}
@@ -709,7 +739,7 @@ function MirrorCard({ row, signal, recentDays, keyword, refreshNonce, rollingWin
             </a>
           )) : (
             <div className="px-4 py-6 text-center text-xs text-neutral">
-              No ticker-specific news found for {ticker} in the selected news window.
+              No ticker-specific news found for {ticker} in {formatNewsWindow(articleDays)}.
               {rejectedAmbiguousArticles > 0 && (
                 <span className="ml-1 text-amber-200">{rejectedAmbiguousArticles} ambiguous source row{rejectedAmbiguousArticles === 1 ? '' : 's'} rejected.</span>
               )}

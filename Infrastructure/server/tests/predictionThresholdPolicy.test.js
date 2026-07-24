@@ -78,3 +78,44 @@ test('feature object fallback matches row-field evaluation', () => {
   assert.equal(result.passed, true)
   assert.equal(result.status, 'entry_passed')
 })
+
+test('explicit threshold profile override changes the evaluated gate', () => {
+  const override = {
+    label: 'test_override_c060',
+    policyVersion: 'test_override_policy',
+    windowMinutes: 77,
+    smoothingMinutes: 77,
+    thresholdC: 0.6,
+    setupNearThresholdBand: 0.02,
+    maxPreSignalReturn60mPct: 4,
+    minTrailing60Messages: 9,
+    minSignalChangePct: 0,
+    maxSignalChangePct: 12,
+  }
+  const result = evaluatePredictionEntryThreshold(baseRow, override)
+  assert.equal(result.policyVersion, 'test_override_policy')
+  assert.equal(result.overrideProfile, 'test_override_c060')
+  assert.equal(result.profile.windowMinutes, 77)
+  assert.equal(result.thresholdC, 0.6)
+  assert.equal(result.minTrailing60Messages, 9)
+  assert.equal(result.passed, false)
+  assert.equal(result.status, 'entry_not_crossed')
+})
+
+test('feature object and threshold override can be supplied together', () => {
+  const { price_density_correlation, previous_price_density_correlation, threshold_pre_return_60m_pct, threshold_trailing_60m_messages, ...rowWithoutFeatures } = baseRow
+  const result = evaluatePredictionEntryThreshold(rowWithoutFeatures, {
+    price_density_correlation,
+    previous_price_density_correlation,
+    threshold_pre_return_60m_pct,
+    threshold_trailing_60m_messages,
+  }, {
+    label: 'test_override_c040',
+    thresholdC: 0.4,
+    minTrailing60Messages: 3,
+  })
+  assert.equal(result.overrideProfile, 'test_override_c040')
+  assert.equal(result.thresholdC, 0.4)
+  assert.equal(result.passed, true)
+  assert.equal(result.status, 'entry_passed')
+})

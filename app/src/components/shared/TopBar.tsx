@@ -37,7 +37,7 @@ const ROUTE_PREFETCHERS: Record<string, () => Promise<unknown>> = {
   '/screener': () => import('@/pages/ScreenerPage'),
   '/decision-map': () => import('@/pages/DecisionMapPanel'),
   '/social': () => import('@/pages/SocialPage'),
-  '/charts': () => import('@/pages/ChartsPage'),
+  '/charts': () => import('@/pages/sentchart/ChartsPage'),
   '/entry-screener': () => import('@/pages/sentchart/EntryScreenerPage'),
   '/exit-screener': () => import('@/pages/sentchart/ExitScreenerPage'),
   '/momentum': () => import('@/pages/MomentumPage'),

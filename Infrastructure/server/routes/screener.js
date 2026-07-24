@@ -1716,12 +1716,12 @@ function clonePlain(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
-function predictionThresholdProfile(row = {}) {
-  return predictionThresholdPolicy.predictionThresholdProfile(row)
+function predictionThresholdProfile(row = {}, profileOverride = null) {
+  return predictionThresholdPolicy.predictionThresholdProfile(row, profileOverride)
 }
 
-function evaluatePredictionEntryThreshold(row = {}) {
-  return predictionThresholdPolicy.evaluatePredictionEntryThreshold(row)
+function evaluatePredictionEntryThreshold(row = {}, features = {}, profileOverride = null) {
+  return predictionThresholdPolicy.evaluatePredictionEntryThreshold(row, features, profileOverride)
 }
 
 function rollingWindowMinutes(row) {

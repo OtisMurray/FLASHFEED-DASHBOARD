@@ -3,7 +3,7 @@ import mongoose from 'mongoose'
 import Screener from '../models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow, loadAdaptiveSocialStatsForRows } from './screener.js'
 
-// GET /api/exit-screener?stopPct=10&limit=30
+// GET /api/exit-screener?stopPct=5&limit=30
 //
 // There is no positions store: open/simulated positions are derived live by the
 // chart-service (/api/sentchart/positions/batch), which runs the SAME strategy
@@ -24,6 +24,7 @@ const router = Router()
 const CHART_SERVICE_URL = (process.env.CHART_SERVICE_URL || 'http://localhost:5055').replace(/\/+$/, '')
 const CORR_WINDOW_MINUTES = 360          // strategy rolling window (candidate-selection window too)
 const DEFAULT_ENTRY_THRESHOLD = 0.10     // the strategy's confirmed entry threshold
+const UNIVERSE_SCAN_LIMIT = Number(process.env.SCREENER_UNIVERSE_SCAN_LIMIT || 6000)
 const DEFAULT_LIMIT = 30
 const MAX_LIMIT = 50                     // chart-service batch cap
 
@@ -67,7 +68,7 @@ router.get('/', async (req, res) => {
       ticker: { $not: /\./ },
       price: { $ne: null },
     }
-    const universe = (await Screener.find(filter).limit(1500).lean())
+    const universe = (await Screener.find(filter).limit(UNIVERSE_SCAN_LIMIT).lean())
       .map(normalizeScreenerRow)
       .filter(isCleanListedUsRow)
 

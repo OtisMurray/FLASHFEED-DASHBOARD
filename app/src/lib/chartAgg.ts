@@ -14,6 +14,7 @@ export interface BollingerBands { upper: LinePoint[]; lower: LinePoint[] }
 // Social payload subset we read (from /api/chart/social — see ResearchChart).
 export interface SocialSeries {
   labels: string[]; density: number[]
+  density_per_minute?: number[]
   sent_labels: string[]; scores_smooth: number[]
   // New backend payload includes real unix seconds.  Older payloads only had
   // HH:MM labels, so these stay optional for backward compatibility.
@@ -194,7 +195,11 @@ export function overlaySeries(
     acc.set(bucket, a)
   }
 
-  const densSmooth = trailingCount(social.density || [], windowMin)
+  // `density` is the raw message count per backend bucket. The chart requests
+  // one-minute buckets, so the rolling overlay is a real trailing message count.
+  // Keep `density_per_minute` separate for diagnostics; do not roll it here.
+  const rawDensity = Array.isArray(social.density) ? social.density.map(v => Number(v || 0)) : []
+  const densSmooth = trailingCount(rawDensity, windowMin)
   const dAcc = new Map<number, { sum: number; n: number }>()
   const sAcc = new Map<number, { sum: number; n: number }>()
 

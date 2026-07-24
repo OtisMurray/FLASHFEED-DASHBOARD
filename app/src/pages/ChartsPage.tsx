@@ -111,8 +111,8 @@ export function ChartsPage() {
   const [sp, setSp] = useSearchParams()
   const urlTicker = (sp.get('t') || '').toUpperCase().trim()
   const chartTab = sp.get('chartTab') === 'grid' ? 'grid' : 'single'
-  const [input, setInput] = useState(urlTicker || 'AAPL')
-  const [ticker, setTicker] = useState<string | null>(urlTicker || 'AAPL')
+  const [input, setInput] = useState(urlTicker)
+  const [ticker, setTicker] = useState<string | null>(urlTicker || null)
   const [view, setView] = useState<View>('candles')
   const [tf, setTf] = useState('5m')
   const [win, setWin] = useState<Win>('full')
@@ -132,6 +132,7 @@ export function ChartsPage() {
   const [watcherMsg, setWatcherMsg] = useState('')
   const socialCache = useRef<Record<string, SocialSeries>>({})
   const watcherCache = useRef<Record<string, WatcherSeries>>({})
+  const loadedTopAiTickerRef = useRef(false)
   const overlayOk = OVERLAY_TFS.has(tf)
 
   const setChartTab = useCallback((next: 'single' | 'grid') => {
@@ -150,6 +151,26 @@ export function ChartsPage() {
     const t = (sp.get('t') || '').toUpperCase().trim()
     if (t && t !== ticker) { setInput(t); setTicker(t) }
   }, [sp])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (ticker || urlTicker || loadedTopAiTickerRef.current) return
+    loadedTopAiTickerRef.current = true
+    let cancelled = false
+    fetch('/api/ai/rankings?days=3&limit=1&window_minutes=1440&min_score=0')
+      .then(r => r.json())
+      .then(json => {
+        if (cancelled) return
+        const topTicker = String(json?.rows?.[0]?.ticker || '').toUpperCase().trim()
+        if (!topTicker) return
+        setInput(topTicker)
+        setTicker(topTicker)
+        const nextParams = new URLSearchParams(sp)
+        nextParams.set('t', topTicker)
+        setSp(nextParams, { replace: true })
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [ticker, urlTicker, sp, setSp])
 
   // Per-ticker enrichments (news alert + 3-day news + social/gossip). DB reads.
   useEffect(() => {
@@ -260,6 +281,7 @@ export function ChartsPage() {
         const series: SocialSeries = {
           labels: payload.labels || [],
           density: payload.density || [],
+          density_per_minute: payload.density_per_minute || [],
           times: payload.times || [],
           sent_labels: payload.sent_labels || payload.labels || [],
           scores_smooth: payload.scores_smooth || [],

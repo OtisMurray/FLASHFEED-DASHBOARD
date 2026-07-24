@@ -49,6 +49,8 @@ export const V11_PROFILE = {
   setupNearThresholdBand: 0.05,
   maxPreSignalReturn60mPct: 4,     // prior 60m return must be <= +4%
   minTrailing60Messages: 3,        // >= 3 trailing-60m messages
+  minSignalChangePct: 0,           // explicit override threaded into the policy gate
+  maxSignalChangePct: 12,
   activeMoveMinPct: 0,             // the active move itself must be in [0%, 12%]
   activeMoveMaxPct: 12,
   // Exit == V7_PAYOFF_CAPTURE_EXIT (screener.js): 50% at +5%; runner gives back 5%
