@@ -596,3 +596,59 @@ export interface EntryScreenerRow {
   corr_status?:            string
   corr_date?:              string | null
 }
+
+// Long-Term Fundamentals — rows from /api/long-term-fundamentals. Unlike every other
+// screener in this app (which run on 120-360 min intraday correlation windows),
+// this one is multi-month/multi-year and reads only Finviz Elite fundamentals.
+export interface LongTermScoreComponents {
+  range_position:  number | null   // where price sits in its 52-week range
+  return_1y:       number | null   // realized trailing 1-year return
+  trend_200d:      number | null   // price vs its 200-day average
+  analyst_rating:  number | null   // sell-side consensus (Finviz 1..5, 1 = best)
+  fundamentals:    number | null   // profitability / leverage / valuation blend
+}
+
+export interface LongTermFundamentalsRow {
+  ticker:               string
+  company?:             string
+  sector?:              string
+  market_cap?:          number | null
+  market_cap_bucket?:   string
+  price?:               number | null
+  change_pct?:          number | null
+
+  // long_term_score is the honest renormalized value shown to the user;
+  // ranked_score is that value shrunk toward neutral by evidence coverage and is
+  // what the server sorts on, so thin rows cannot top the board on missing data.
+  long_term_score?:     number | null
+  ranked_score?:        number | null
+  long_term_label?:     string
+  components:           LongTermScoreComponents
+  components_available?: number
+  components_total?:    number
+  score_coverage?:      number
+
+  horizon_return?:      number | null
+  perf_week?:           number | null
+  perf_month?:          number | null
+  perf_quarter?:        number | null
+  perf_half?:           number | null
+  perf_ytd?:            number | null
+  perf_year?:           number | null
+
+  week_52_high?:        number | null
+  week_52_low?:         number | null
+  sma50?:               number | null
+  sma200?:              number | null
+  analyst?:             string | null
+  target_price?:        number | null
+
+  pe_ratio?:            number | null
+  forward_pe?:          number | null
+  peg?:                 number | null
+  roe?:                 number | null
+  debt_equity?:         number | null
+  profit_margin?:       number | null
+  dividend_yield?:      number | null
+  inst_own?:            number | null
+}
