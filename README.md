@@ -4,6 +4,16 @@ FlashFeed aggregates news, social sentiment, screener data, and momentum signals
 
 **Live:** https://backend-production-da72.up.railway.app — the Railway `backend` service serves both the dashboard and the API from one origin (see `Infrastructure/server/Dockerfile`). Commits on `main` deploy automatically.
 
+Two Railway services deploy from this repo, both watching `OtisMurray/FLASHFEED-DASHBOARD @ main`:
+
+| service | Dockerfile | serves |
+| --- | --- | --- |
+| `backend` | `Infrastructure/server/Dockerfile` | dashboard + API (single origin) |
+| `chart-service` | `chart-service/Dockerfile` | `/api/sentchart/*`, proxied by `backend` via `CHART_SERVICE_URL` |
+
+A plain `git push origin main` deploys both. Neither has watch paths, so a
+frontend-only commit still rebuilds `chart-service` — harmless, just slower.
+
 ---
 
 ## Quick Start (Local Development with Docker)
