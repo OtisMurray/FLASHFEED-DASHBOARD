@@ -3031,16 +3031,32 @@ async function loadCatalystPriceReactionMap(db, rows = []) {
       cursor += 1
       const start = Math.max(1, item.eventSec - 30 * 60)
       const end = Math.floor(Date.now() / 1000) + 10 * 60
-      const docs = await collection.find({
-        ticker: item.ticker,
-        minute: { $gte: start, $lte: end },
-      }, {
-        projection: { _id: 0, minute: 1, open: 1, high: 1, low: 1, close: 1, price: 1, volume: 1, providerIntervalSec: 1, providerInterval: 1 },
-      })
-        .sort({ minute: 1, providerIntervalSec: 1 })
-        .limit(1500)
-        .toArray()
-        .catch(() => [])
+      let docs = []
+      let ohlcQueryFailed = false
+      try {
+        docs = await collection.find({
+          ticker: item.ticker,
+          minute: { $gte: start, $lte: end },
+        }, {
+          projection: { _id: 0, minute: 1, open: 1, high: 1, low: 1, close: 1, price: 1, volume: 1, providerIntervalSec: 1, providerInterval: 1 },
+        })
+          .sort({ minute: 1, providerIntervalSec: 1 })
+          .maxTimeMS(8000)
+          .toArray()
+      } catch (err) {
+        ohlcQueryFailed = true
+        console.error(`[catalyst-reaction] ohlcv_bars query failed for ${item.ticker}: ${err.message}`)
+      }
+      if (ohlcQueryFailed) {
+        out.set(item.ticker, {
+          available: false,
+          ticker: item.ticker,
+          event_sec: item.eventSec,
+          source: 'mongo_ohlcv_bars',
+          reason: 'ohlcv_query_failed',
+        })
+        continue
+      }
       const hasPostCatalystBars = docs.some(doc => Number(doc.minute || 0) >= item.eventSec)
       let liveBars = []
       let liveOhlcRefreshed = false
