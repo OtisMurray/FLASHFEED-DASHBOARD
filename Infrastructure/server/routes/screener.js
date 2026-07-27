@@ -6245,7 +6245,7 @@ router.get('/tickers', async (req, res) => {
 
 router.get('/', async (req, res) => {
   try {
-    const { sector, signal, orderBy = 'ticker', orderDir = 'asc', limit = 3000, days = 3 } = req.query
+    const { sector, signal, orderBy = 'change_pct', orderDir = 'desc', limit = 3000, days = 3 } = req.query
     const compact = ['1', 'true', 'yes'].includes(String(req.query.compact || '').toLowerCase())
     const mirrorMode = ['1', 'true', 'yes'].includes(String(req.query.mirror || '').toLowerCase())
     const windowOverride = req.query.window_minutes ? Number(req.query.window_minutes) : null
@@ -6262,6 +6262,7 @@ router.get('/', async (req, res) => {
     const view = String(req.query.view || 'all').toLowerCase()
     const predictionView = view === 'predicted_increases' || view === 'high_conviction_next_day'
     const sort = { [orderBy]: orderDir === 'asc' ? 1 : -1 }
+    const rawRequestedLimit = Number(limit || 3000)
     const requestedLimit = Math.max(1, Math.min(5000, Number(limit || 3000)))
     const queryLimit = predictionView
       ? Math.max(requestedLimit, PREDICTION_UNIVERSE_LIMIT)
@@ -6294,10 +6295,20 @@ router.get('/', async (req, res) => {
       !['1', 'true', 'yes'].includes(String(req.query.enrich || '').toLowerCase())
     )
     
-    let data = (await Screener.find(filter)
-      .sort(sort)
-      .limit(queryLimit)
-      .lean())
+    // countDocuments runs alongside the find: the filter uses $ne and a negated
+    // regex so it cannot use an index (~112ms on a 3.6k-doc collection), and
+    // serialising it would add that to every screener request.
+    const [rawDocs, matchedCount] = await Promise.all([
+      Screener.find(filter)
+        .sort(sort)
+        .limit(queryLimit)
+        .lean(),
+      Screener.countDocuments(filter).catch(err => {
+        console.error(`[screener] countDocuments failed: ${err.message}`)
+        return null
+      }),
+    ])
+    let data = rawDocs
       .map(normalizeScreenerRow)
       .filter(isCleanListedUsRow)
 
@@ -7212,6 +7223,13 @@ router.get('/', async (req, res) => {
       visible_count: responseRows.length,
       result_count: filteredData.length,
       universe_count: filterUniverse.length,
+      // universe_count above is the post-filter row count the mirror filter
+      // panel uses as its denominator; it cannot reveal truncation because it is
+      // derived from the already-capped result set. These four can:
+      matched_count: matchedCount,
+      applied_limit: queryLimit,
+      requested_limit: rawRequestedLimit,
+      truncated: matchedCount == null ? null : matchedCount > queryLimit,
       data_load_mode: leanFullUniverseOverview ? 'lean_full_universe_overview' : 'live_enriched',
       prediction_session_context: sessionContext,
       catalyst_window: {
