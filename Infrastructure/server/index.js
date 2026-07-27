@@ -5154,15 +5154,22 @@ function startWatcherSnapshotScheduler() {
 }
 
 async function chartSocialSeries(db, ticker, windowMinutes, bucketMinutes, options = {}) {
+  // Two time domains here: requestedStart/requestedEnd come from the frontend
+  // chart and are chart-encoded (naive ET wall-clock encoded as a UTC epoch),
+  // while `_event_sec` in the socials collection is a REAL UTC epoch. Query
+  // Mongo using real time (sinceSec/endSec below), then convert each bucket
+  // to encoded time before filtering against the requested bounds, mirroring
+  // chartWatcherSeries.
   const requestedStart = timestampSeconds(options.startSec || options.start_sec)
   const requestedEnd = timestampSeconds(options.endSec || options.end_sec)
-  const sinceSec = requestedStart || (Math.floor(Date.now() / 1000) - windowMinutes * 60)
-  const endSec = requestedEnd || 0
+  const nowSec = Math.floor(Date.now() / 1000)
+  const sinceSec = Math.max(0, nowSec - Math.max(1, normalizeRollingWindowMinutes(windowMinutes, 1440)) * 60)
+  const endSec = nowSec
   const bucketSec = bucketMinutes * 60
   const rows = await db.collection("socials").aggregate([
     ...socialTimeStages(),
     { $match: { _event_sec: { $gte: sinceSec } } },
-    ...(endSec ? [{ $match: { _event_sec: { $lte: endSec } } }] : []),
+    { $match: { _event_sec: { $lte: endSec } } },
     { $match: { _ticker_candidates: ticker } },
     {
       $addFields: {
@@ -5188,15 +5195,21 @@ async function chartSocialSeries(db, ticker, windowMinutes, bucketMinutes, optio
   const bucketMap = new Map(rows.map(row => [Number(row._id || 0), row]))
   const firstBucket = Math.floor(sinceSec / bucketSec) * bucketSec
   const fallbackLastBucket = Math.floor(Date.now() / (bucketSec * 1000)) * bucketSec
-  const lastBucket = Math.floor((requestedEnd || Math.max(Number(rows[rows.length - 1]._id || sinceSec), fallbackLastBucket)) / bucketSec) * bucketSec
+  // Deliberately does NOT use requestedEnd: these bucket bounds are real epochs,
+  // and requestedEnd is chart-encoded, so mixing them ended the fill loop a
+  // UTC-ET offset early and cut the newest ~4h off the series. Generate the full
+  // real window here; the encoded `bounded` filter below trims to the request.
+  const lastBucket = Math.floor(Math.max(Number(rows[rows.length - 1]._id || sinceSec), fallbackLastBucket) / bucketSec) * bucketSec
   const filled = []
   for (let bucket = firstBucket; bucket <= lastBucket; bucket += bucketSec) {
     const row = bucketMap.get(bucket) || { _id: bucket, message_count: 0, sentiment: 0, platforms: [] }
     const count = Number(row.message_count || 0)
+    const bucketRealSec = Number(row._id || bucket)
+    const encodedSec = chartEncodedSecFromRealSec(bucketRealSec)
     filled.push({
-      time: Number(row._id || bucket),
-      bucket_sec: Number(row._id || bucket),
-      session: chartMarketSessionForSec(row._id || bucket),
+      time: encodedSec,
+      bucket_sec: encodedSec,
+      session: chartMarketSessionForSec(encodedSec),
       message_count: count,
       message_density: Number((count / bucketMinutes).toFixed(3)),
       sentiment: count > 0 ? Number(Number(row.sentiment || 0).toFixed(3)) : 0,
@@ -5206,7 +5219,10 @@ async function chartSocialSeries(db, ticker, windowMinutes, bucketMinutes, optio
     })
   }
 
-  return addSessionScaledSocialFields(filled, bucketMinutes)
+  const bounded = filled
+    .filter(row => row.time > 0)
+    .filter(row => (!requestedStart || row.time >= requestedStart) && (!requestedEnd || row.time <= requestedEnd))
+  return addSessionScaledSocialFields(bounded, bucketMinutes)
 }
 
 function trailingSocialWindow(rows, windowMinutes, bucketMinutes) {
