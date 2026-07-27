@@ -82,7 +82,12 @@ router.get('/', async (req, res) => {
       ticker: { $not: /\./ },
       price: { $ne: null },
     }
-    const universe = (await Screener.find(filter).limit(UNIVERSE_SCAN_LIMIT).lean())
+    // Deterministic scan order. Without a sort this takes UNIVERSE_SCAN_LIMIT docs
+    // in natural/storage order, which Mongo does not guarantee to be stable, so
+    // once the universe exceeds the cap it would silently drop whichever rows
+    // happen to sit last on disk. ticker breaks change_pct ties (113 rows share
+    // change_pct=0) so the order is total, not merely ranked.
+    const universe = (await Screener.find(filter).sort({ change_pct: -1, ticker: 1 }).limit(UNIVERSE_SCAN_LIMIT).lean())
       .map(normalizeScreenerRow)
       .filter(isCleanListedUsRow)
 
