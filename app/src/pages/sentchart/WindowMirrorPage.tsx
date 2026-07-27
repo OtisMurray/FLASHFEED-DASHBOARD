@@ -14,6 +14,9 @@ import type { ViewMode } from '../ScreenerPage'
 // client-side math). Zero new backend code: window_minutes is a long-standing
 // param of the screener endpoint. Fully separate from the Charts page's Window
 // buttons (15m/30m/…) and the main screener's "Social Window" dropdown.
+// The request also pins orderBy/orderDir and asks for the full 5000-row
+// ceiling, so this page screens the same universe as ScreenerPage instead of
+// an alphabetical slice of it.
 
 const fetcher = (url: string) => fetch(url).then(r => r.json())
 
@@ -38,8 +41,11 @@ export function WindowMirrorPage() {
     return () => window.clearTimeout(t)
   }, [windowMin])
 
+  const [orderBy, setOrderBy] = useState('change_pct')
+  const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('desc')
+
   const { data, isLoading, mutate } = useSWR(
-    `/api/screener?limit=1500&window_minutes=${debouncedWindow}`,
+    `/api/screener?limit=5000&window_minutes=${debouncedWindow}&orderBy=${orderBy}&orderDir=${orderDir}`,
     fetcher,
     { refreshInterval: 30_000, keepPreviousData: true }
   )
@@ -48,8 +54,6 @@ export function WindowMirrorPage() {
   const [filterTab, setFilterTab] = useState<FilterTab>('all')
   const [viewMode, setViewMode] = useState<ViewMode>('overview')
   const [signal, setSignal] = useState('')
-  const [orderBy, setOrderBy] = useState('ticker')
-  const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('asc')
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(0)
   const pageSize = 50
