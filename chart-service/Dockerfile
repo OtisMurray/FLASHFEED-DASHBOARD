@@ -19,6 +19,13 @@ COPY chart-service/social_store.py ./social_store.py
 COPY chart-service/tv_overnight.py ./tv_overnight.py
 COPY chart-service/finviz_auth.py ./finviz_auth.py
 
+# Deploy identity for /api/version — see the backend Dockerfile for the rationale.
+# Declared after the pip layer so a changing SHA never busts the dependency cache.
+ARG GIT_COMMIT_SHA=""
+ARG BUILD_TIME=""
+ENV GIT_COMMIT_SHA=$GIT_COMMIT_SHA
+ENV BUILD_TIME=$BUILD_TIME
+
 ENV PYTHONUNBUFFERED=1
 ENV PORT=5050
 

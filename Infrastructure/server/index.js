@@ -7883,6 +7883,57 @@ async function start() {
     Number(process.env.SHORT_INTEREST_ESTIMATE_INTERVAL_MS || 3_600_000),
   )
   
+// GET /api/version — which revision is actually serving this request.
+//
+// Added after a deploy could only be confirmed by inferring it from a shift in
+// the data: there was no way to ask the running service what it was. `started_at`
+// / `uptime_seconds` are the load-bearing part — they answer "did my push
+// actually restart this process yet?" even when no commit SHA is available,
+// which is the question that usually matters during a deploy.
+//
+// The SHA is read at RUNTIME (Railway injects RAILWAY_GIT_COMMIT_SHA into the
+// container) with a build-arg fallback baked by the Dockerfile. `commit_source`
+// names which one answered, and an absent SHA reports null rather than a
+// plausible-looking placeholder — a wrong hash here is worse than no hash.
+const PROCESS_STARTED_AT = new Date()
+const VERSION_COMMIT_ENV_VARS = [
+  'RAILWAY_GIT_COMMIT_SHA',   // injected by Railway for GitHub-linked services
+  'GIT_COMMIT_SHA',           // Dockerfile build arg (see ARG GIT_COMMIT_SHA)
+  'SOURCE_COMMIT',            // some PaaS builders use this name
+  'COMMIT_SHA',
+  'HEROKU_SLUG_COMMIT',
+]
+
+function resolveDeployedCommit() {
+  for (const name of VERSION_COMMIT_ENV_VARS) {
+    const value = String(process.env[name] || '').trim()
+    // Guard against a build arg that was declared but never passed, which
+    // otherwise arrives as the literal string "unknown" or an empty default.
+    if (/^[0-9a-f]{7,40}$/i.test(value)) return { commit: value, commit_source: name }
+  }
+  return { commit: null, commit_source: null }
+}
+
+app.get("/api/version", (_req, res) => {
+  const { commit, commit_source: commitSource } = resolveDeployedCommit()
+  const buildTime = String(process.env.BUILD_TIME || '').trim() || null
+  res.json({
+    ok: true,
+    service: 'flashfeed-backend',
+    commit,
+    commit_short: commit ? commit.slice(0, 7) : null,
+    commit_source: commitSource,
+    commit_available: Boolean(commit),
+    branch: String(process.env.RAILWAY_GIT_BRANCH || '').trim() || null,
+    deployment_id: String(process.env.RAILWAY_DEPLOYMENT_ID || '').trim() || null,
+    build_time: buildTime,
+    started_at: PROCESS_STARTED_AT.toISOString(),
+    uptime_seconds: Math.round(process.uptime()),
+    node_version: process.version,
+    env: process.env.NODE_ENV || 'development',
+  })
+})
+
 // Ryan frontend compatibility endpoints
 app.get("/api/status", async (req, res) => {
   try {

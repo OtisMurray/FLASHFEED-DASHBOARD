@@ -811,6 +811,43 @@ except ImportError:
         return resp
 
 
+# Mirrors the backend's /api/version: which revision is serving, and — the part
+# that actually matters mid-deploy — whether this process has restarted yet.
+# The SHA is read at runtime (Railway injects RAILWAY_GIT_COMMIT_SHA) with a
+# build-arg fallback; an absent or malformed value reports null rather than a
+# placeholder, because a wrong hash is worse than no hash.
+_PROCESS_STARTED_AT = datetime.now(timezone.utc)
+_VERSION_COMMIT_ENV_VARS = ("RAILWAY_GIT_COMMIT_SHA", "GIT_COMMIT_SHA", "SOURCE_COMMIT", "COMMIT_SHA")
+
+
+def _resolve_deployed_commit():
+    for name in _VERSION_COMMIT_ENV_VARS:
+        value = (os.environ.get(name) or "").strip()
+        if re.fullmatch(r"[0-9a-fA-F]{7,40}", value):
+            return value, name
+    return None, None
+
+
+@app.route("/api/version")
+def api_version():
+    commit, source = _resolve_deployed_commit()
+    uptime = (datetime.now(timezone.utc) - _PROCESS_STARTED_AT).total_seconds()
+    return jsonify({
+        "ok": True,
+        "service": "chart-service",
+        "commit": commit,
+        "commit_short": commit[:7] if commit else None,
+        "commit_source": source,
+        "commit_available": bool(commit),
+        "branch": (os.environ.get("RAILWAY_GIT_BRANCH") or "").strip() or None,
+        "deployment_id": (os.environ.get("RAILWAY_DEPLOYMENT_ID") or "").strip() or None,
+        "build_time": (os.environ.get("BUILD_TIME") or "").strip() or None,
+        "started_at": _PROCESS_STARTED_AT.isoformat(),
+        "uptime_seconds": round(uptime),
+        "python_version": sys.version.split()[0],
+    })
+
+
 @app.route("/api/health")
 def api_health():
     return jsonify({"ok": True, "service": "chart-service", "phase": 2,

@@ -49,6 +49,17 @@ COPY scripts /scripts
 # Built dashboard — express.static + SPA fallback serve this (see mountFrontend()).
 COPY --from=frontend /build/dist ./public
 
+# Deploy identity for /api/version. Railway injects RAILWAY_GIT_COMMIT_SHA into
+# the running container, which is preferred because it needs no build plumbing;
+# these are the fallback for builders that only expose the commit at build time.
+# Declared LAST so a changing SHA busts only this layer, never the npm/pip
+# installs above. Left empty when not passed — /api/version validates the shape
+# and reports null rather than publishing a placeholder as if it were real.
+ARG GIT_COMMIT_SHA=""
+ARG BUILD_TIME=""
+ENV GIT_COMMIT_SHA=$GIT_COMMIT_SHA
+ENV BUILD_TIME=$BUILD_TIME
+
 ENV PYTHONUNBUFFERED=1
 ENV RSS_COOLDOWN_SECONDS=0
 ENV RSS_STATE_FILE=/tmp/feedflash_rss_fetch_state.json
