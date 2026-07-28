@@ -24,14 +24,19 @@ const NAV = [
   { href: '/exit-screener', label: 'Exit Screener' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
-  { href: '/v11-screener', label: 'v11 Profile (test)' },
   { href: '/long-term-fundamentals', label: 'Long-Term Fundamentals' },
+  { href: '/v11-screener', label: 'v11 Profile (test)' },
   { href: '/prediction-audit', label: 'Prediction Audit' },
   { href: '/system-health', label: 'System Health' },
   { href: '/settings', label: 'Settings' },
 ]
-const PRIMARY_NAV = NAV.slice(0, 11)
-const MORE_NAV = NAV.slice(11)
+// The split index is an ORDER-dependent cut, not a per-item flag: PRIMARY_NAV is
+// everything before it, MORE_NAV everything after. Long-Term Fundamentals sits at
+// index 11 (ahead of v11 Profile) specifically so this cut promotes it rather than
+// v11. Moving the boundary without also moving the entry promotes whichever item
+// happens to sit at the old index.
+const PRIMARY_NAV = NAV.slice(0, 12)
+const MORE_NAV = NAV.slice(12)
 const ROUTE_PREFETCHERS: Record<string, () => Promise<unknown>> = {
   '/overview': () => import('@/pages/OverviewPage'),
   '/ai': () => import('@/pages/AIPage'),
