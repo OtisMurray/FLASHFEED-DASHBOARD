@@ -38,7 +38,7 @@ const NEAR_STOP_PCT = 2
 const STATUS_LABEL: Record<PositionDataStatus, string> = {
   live: 'Live',
   recorded: 'Recorded',
-  stale: 'Stale',
+  stale: 'Unsettled',
   warming: 'Warming',
   no_bars: 'No bars',
   chart_service_unavailable: 'No sim',
@@ -47,8 +47,9 @@ const STATUS_LABEL: Record<PositionDataStatus, string> = {
 const STATUS_TITLE: Record<PositionDataStatus, string> = {
   live: 'Simulated in this request from the current session\'s bars and messages.',
   recorded: 'Read back from screener_position_history. The session is over and this figure is settled.',
-  stale: 'Recorded but never finalized — the scheduler stopped observing this position before its session ended. '
-    + 'The P&L shown is a frozen mid-session mark, NOT a settled result.',
+  stale: 'UNSETTLED — this position never reached a conclusion. The scheduler stopped observing it before its '
+    + 'session ended, so the figure shown is a frozen mid-session mark, not a realized result. It never stopped '
+    + 'out and it was never closed at the bell; treat the P&L as incomplete rather than as a trade outcome.',
   warming: 'Still collecting StockTwits messages for this ticker/session, so no correlation and no trades yet.',
   no_bars: 'No intraday bars available for this ticker and session, so the strategy could not be simulated.',
   chart_service_unavailable: 'The chart-service could not be reached, so no live position could be simulated.',
@@ -57,7 +58,7 @@ const STATUS_TITLE: Record<PositionDataStatus, string> = {
 const STATUS_TONE: Record<PositionDataStatus, string> = {
   live: 'text-sky-300 border-sky-500/40 bg-sky-500/10',
   recorded: 'text-slate-300 border-slate-500/40 bg-slate-500/10',
-  stale: 'text-amber-300 border-amber-500/40 bg-amber-500/10',
+  stale: 'text-fuchsia-200 border-fuchsia-400/70 border-dashed bg-fuchsia-500/20 font-semibold',
   warming: 'text-amber-400 border-amber-600/40 bg-amber-600/10',
   no_bars: 'text-neutral border-border bg-bg',
   chart_service_unavailable: 'text-red-300 border-red-500/40 bg-red-500/10',
@@ -407,9 +408,15 @@ function PositionRow({ row }: { row: PositionScreenerRow }) {
   const isOpen = row.group === 'open'
   const nearStop = isOpen && row.distance_to_stop_pct != null && row.distance_to_stop_pct <= NEAR_STOP_PCT
   const isWatch = row.group === 'watch'
+  // Never concluded: flagged on the row itself, not only in the DATA column.
+  const unsettled = row.data_status === 'stale'
 
   return (
-    <tr className={clsx('hover:bg-card-hover transition-colors', nearStop && 'bg-amber-500/10')}>
+    <tr className={clsx(
+      'hover:bg-card-hover transition-colors',
+      nearStop && 'bg-amber-500/10',
+      unsettled && 'bg-fuchsia-500/[0.07]',
+    )}>
       <td className="px-2 py-2 whitespace-nowrap">
         <span className="font-mono font-bold text-accent">{row.ticker}</span>
         {row.company && <span className="text-slate-500 ml-1.5 truncate inline-block max-w-[110px] align-bottom">{row.company}</span>}
@@ -453,7 +460,7 @@ function PositionRow({ row }: { row: PositionScreenerRow }) {
           </span>
         ) : (
           <span className="font-mono">
-            <span className="text-white">{fmtMoney(row.exit_price)}</span>
+            <span className={unsettled ? 'text-slate-400' : 'text-white'}>{fmtMoney(row.exit_price)}</span>
             <span className="text-neutral ml-1">{row.exit_time ?? ''}</span>
             <span
               className={clsx(
@@ -463,7 +470,7 @@ function PositionRow({ row }: { row: PositionScreenerRow }) {
               )}
               title={row.exit_corr != null ? `Exit corr ${row.exit_corr.toFixed(3)}` : undefined}
             >
-              {exitReasonLabel(row.exit_reason)}
+              {unsettled ? 'No close' : exitReasonLabel(row.exit_reason)}
             </span>
           </span>
         )}
@@ -475,16 +482,27 @@ function PositionRow({ row }: { row: PositionScreenerRow }) {
           <span className="font-mono text-neutral">—</span>
         ) : (
           <span className="font-mono">
-            <span className={row.pnl_pct >= 0 ? 'text-emerald-400' : 'text-red-400'}>
-              {fmtPct(row.pnl_pct, true)}
+            <span
+              className={clsx(
+                unsettled
+                  ? 'text-slate-400 italic'            // drained of the win/loss signal it has not earned
+                  : row.pnl_pct >= 0 ? 'text-emerald-400' : 'text-red-400',
+              )}
+            >
+              {unsettled ? '~' : ''}{fmtPct(row.pnl_pct, true)}
             </span>
             <span
-              className="text-[9px] uppercase tracking-wide text-slate-500 ml-1"
-              title={row.pnl_is_realized
-                ? 'Realized: measured to the actual exit fill.'
-                : 'Unrealized: marked to the latest bar and still moving.'}
+              className={clsx(
+                'text-[9px] uppercase tracking-wide ml-1',
+                unsettled ? 'text-fuchsia-300' : 'text-slate-500',
+              )}
+              title={unsettled
+                ? 'Not a result: a frozen mid-session mark from a position that never closed.'
+                : row.pnl_is_realized
+                  ? 'Realized: measured to the actual exit fill.'
+                  : 'Unrealized: marked to the latest bar and still moving.'}
             >
-              {row.pnl_is_realized ? 'real' : 'unreal'}
+              {unsettled ? 'not settled' : row.pnl_is_realized ? 'real' : 'unreal'}
             </span>
           </span>
         )}
