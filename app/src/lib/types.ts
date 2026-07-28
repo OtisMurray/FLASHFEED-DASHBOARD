@@ -652,3 +652,110 @@ export interface LongTermFundamentalsRow {
   dividend_yield?:      number | null
   inst_own?:            number | null
 }
+
+// ── Short Squeeze screener (GET /api/squeeze-screener) ───────────────────────
+// Surfaces the EXISTING squeeze-evidence gate in routes/screener.js against live
+// rows, joined with the short-interest snapshots the FINRA estimator writes. No
+// score of its own — `gate` is a report of predictionEvidenceValidation's verdict.
+
+// One leg of the gate: what was required, what was observed, did it clear.
+export interface SqueezeGateCheck {
+  key:             'squeeze_score' | 'verified_short_interest' | 'social' | 'not_bearish_catalyst'
+  label:           string
+  ok:              boolean
+  observed:        number | string | null
+  required:        number | null
+  window_minutes?: number
+}
+
+export interface SqueezeGate {
+  passed:  boolean
+  status:  'squeeze_catalyst_confirmed' | 'blocked' | 'blocked_upstream'
+  checks:  SqueezeGateCheck[]
+  failed:  string[]
+  reason:  string
+  // False when the per-check thresholds mirrored in squeezeScreener.js no longer
+  // reproduce screener.js's verdict. `passed` stays authoritative; the per-check
+  // breakdown does not, and the UI must say so rather than showing both as equals.
+  trace_in_sync: boolean
+}
+
+// Where this row's short-interest number actually came from. These are not
+// interchangeable and the page must never blur them.
+export type SqueezeSiCoverage = 'live_estimate' | 'settlement_only' | 'finviz_only' | 'none'
+
+export interface SqueezeScreenerRow {
+  ticker:              string
+  company?:            string
+  sector?:             string
+  market_cap?:         number | null
+  market_cap_bucket?:  string
+  price?:              number | null
+  change_pct?:         number | null
+  rel_volume?:         number | null
+
+  squeeze_score?:      number | null
+  squeeze_signal?:     string | null
+  squeeze_reason?:     string | null
+
+  short_interest_official_pct?: number | null
+  short_interest_live_estimate?: number | null
+  short_interest_delta_pct?:    number | null
+  short_interest_pct?:          number | null
+  short_interest_shares?:       number | null
+  short_interest_change_pct?:   number | null
+  short_covering_signal?:       string | null
+
+  si_coverage:         SqueezeSiCoverage
+  si_data_mode?:       string | null
+  si_uncalibrated?:    boolean | null
+  si_calibration_status?: string | null
+  si_sanity_band_clamped?: boolean | null
+  si_baseline_is_ticker_specific?: boolean | null
+  si_observed_days?:   number | null
+  si_source?:          string | null
+  si_as_of_date?:      string | null
+  si_settlement_date?: string | null
+  si_note?:            string | null
+
+  days_to_cover?:      number | null
+  float_shares?:       number | null
+  float_short_pct?:    number | null
+
+  social_messages?:    number
+  social_window_minutes?: number
+  stocktwits_watcher_count?: number | null
+  news_article_count?: number
+  catalyst?:           string | null
+
+  gate:                SqueezeGate
+  evidence_primary?:   string
+  evidence_labels?:    string[]
+  risk_flags?:         string[]
+}
+
+export interface SqueezeScreenerResponse {
+  ok:                  boolean
+  limit?:              number
+  passing_only?:       boolean
+  window_minutes?:     number | null
+  universe_size?:      number
+  candidate_pool?:     number
+  no_short_interest_data?: number
+  count?:              number
+  passing?:            number
+  near_misses?:        number
+  rows?:               SqueezeScreenerRow[]
+  sorted_by?:          string
+  si_coverage_counts?: Partial<Record<SqueezeSiCoverage, number>>
+  si_uncalibrated_rows?: number
+  si_live_estimate_rows?: number
+  si_all_uncalibrated?: boolean
+  gate_trace_out_of_sync_rows?: number
+  gate_note?:          string
+  si_note?:            string
+  social_note?:        string
+  trace_warning?:      string
+  note?:               string
+  error?:              string
+}

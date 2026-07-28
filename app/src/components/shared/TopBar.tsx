@@ -27,6 +27,12 @@ const NAV = [
   { href: '/charts', label: 'Charts' },
   { href: '/entry-screener', label: 'Entry Screener' },
   { href: '/exit-screener', label: 'Exit Screener' },
+  // Sits with Entry/Exit rather than in More: it is a live, market-facing screener
+  // on the same clean universe and the same request cadence, whereas v11 is an
+  // explicitly experimental postmortem probe. The cost is real — this is the 13th
+  // primary item and the row already overflows horizontally below ~1920px, so
+  // Correlation now needs a scroll slightly sooner than it did.
+  { href: '/squeeze-screener', label: 'Short Squeeze' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
   { href: '/v11-screener', label: 'v11 Profile (test)' },
@@ -35,12 +41,13 @@ const NAV = [
   { href: '/settings', label: 'Settings' },
 ]
 // The split index is an ORDER-dependent cut, not a per-item flag: PRIMARY_NAV is
-// everything before it, MORE_NAV everything after. Long-Term Fundamentals sits at
-// index 11 (ahead of v11 Profile) specifically so this cut promotes it rather than
-// v11. Moving the boundary without also moving the entry promotes whichever item
-// happens to sit at the old index.
-const PRIMARY_NAV = NAV.slice(0, 12)
-const MORE_NAV = NAV.slice(12)
+// everything before it, MORE_NAV everything after. Long-Term Fundamentals and
+// Short Squeeze both sit ahead of v11 Profile specifically so this cut promotes
+// them rather than v11. Moving the boundary without also moving the entries
+// promotes whichever item happens to sit at the old index — the cut moved from 12
+// to 13 when Short Squeeze was inserted, purely to keep the same set promoted.
+const PRIMARY_NAV = NAV.slice(0, 13)
+const MORE_NAV = NAV.slice(13)
 const ROUTE_PREFETCHERS: Record<string, () => Promise<unknown>> = {
   '/overview': () => import('@/pages/OverviewPage'),
   '/ai': () => import('@/pages/AIPage'),
@@ -51,6 +58,7 @@ const ROUTE_PREFETCHERS: Record<string, () => Promise<unknown>> = {
   '/charts': () => import('@/pages/sentchart/ChartsPage'),
   '/entry-screener': () => import('@/pages/sentchart/EntryScreenerPage'),
   '/exit-screener': () => import('@/pages/sentchart/ExitScreenerPage'),
+  '/squeeze-screener': () => import('@/pages/sentchart/SqueezeScreenerPage'),
   '/momentum': () => import('@/pages/MomentumPage'),
   '/correlation': () => import('@/pages/CorrelationPage'),
   '/v11-screener': () => import('@/pages/sentchart/V11ScreenerPage'),

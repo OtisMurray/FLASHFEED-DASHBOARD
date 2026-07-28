@@ -15,6 +15,7 @@ const EntryScreenerPage = lazy(() => import('./pages/sentchart/EntryScreenerPage
 const ExitScreenerPage = lazy(() => import('./pages/sentchart/ExitScreenerPage').then(m => ({ default: m.ExitScreenerPage })))
 const V11ScreenerPage = lazy(() => import('./pages/sentchart/V11ScreenerPage').then(m => ({ default: m.V11ScreenerPage })))
 const LongTermFundamentalsPage = lazy(() => import('./pages/sentchart/LongTermFundamentalsPage').then(m => ({ default: m.LongTermFundamentalsPage })))
+const SqueezeScreenerPage = lazy(() => import('./pages/sentchart/SqueezeScreenerPage').then(m => ({ default: m.SqueezeScreenerPage })))
 const MirrorPage = lazy(() => import('./pages/MirrorPage').then(m => ({ default: m.MirrorPage })))
 const MomentumPage = lazy(() => import('./pages/MomentumPage').then(m => ({ default: m.MomentumPage })))
 const CorrelationPage = lazy(() => import('./pages/CorrelationPage').then(m => ({ default: m.CorrelationPage })))
@@ -47,6 +48,7 @@ export default function App() {
             <Route path="/charts"      element={<ChartsPage />} />
             <Route path="/entry-screener" element={<EntryScreenerPage />} />
             <Route path="/exit-screener"  element={<ExitScreenerPage />} />
+            <Route path="/squeeze-screener" element={<SqueezeScreenerPage />} />
             <Route path="/v11-screener"   element={<V11ScreenerPage />} />
             <Route path="/long-term-fundamentals" element={<LongTermFundamentalsPage />} />
             <Route path="/charts-grid" element={<ChartsGridPage />} />

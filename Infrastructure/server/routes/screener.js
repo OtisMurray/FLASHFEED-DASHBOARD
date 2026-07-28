@@ -7308,6 +7308,14 @@ router.post('/upsert', async (req, res) => {
 // Shared with routes/entryScreener.js and routes/exitScreener.js so the entry/
 // exit screeners screen the exact same clean listed-US universe and social-
 // activity stats as /api/screener.
+//
+// The second block is additionally shared with routes/squeezeScreener.js, which
+// must reproduce this file's enrichment chain EXACTLY (articles → social →
+// short-interest → watchers) before it can evaluate predictionEvidenceValidation.
+// Any of these evaluated on a differently-enriched row would silently answer a
+// different question than the /api/screener prediction tabs do. The canonical
+// call order is the one in GET /api/screener/audit/:ticker above; squeezeScreener
+// mirrors it verbatim rather than inventing a second enrichment path.
 export {
   normalizeScreenerRow,
   isCleanListedUsRow,
@@ -7317,6 +7325,14 @@ export {
   attachShortInterestEvidence,
   evaluatePredictionEntryThreshold,
   predictionMarketCapTier,
+
+  enrichScreenerRow,
+  loadArticleStatsForTickers,
+  loadShortInterestSnapshots,
+  loadStocktwitsWatcherSnapshots,
+  marketSessionContext,
+  predictionEvidenceValidation,
+  resolvedRollingWindowMinutes,
 }
 
 export default router

@@ -15,6 +15,7 @@ import entryScreenerRouter from './routes/entryScreener.js'
 import exitScreenerRouter from './routes/exitScreener.js'
 import v11ScreenerRouter from './routes/v11Screener.js'
 import longTermFundamentalsRouter from './routes/longTermFundamentals.js'
+import squeezeScreenerRouter from './routes/squeezeScreener.js'
 import socialRouter      from './routes/social.js'
 import correlationRouter from './routes/correlation.js'
 import settingsRouter    from './routes/settings.js'
@@ -3412,6 +3413,7 @@ app.use('/api/entry-screener', entryScreenerRouter)
 app.use('/api/exit-screener', exitScreenerRouter)
 app.use('/api/v11-screener', v11ScreenerRouter)
 app.use('/api/long-term-fundamentals', longTermFundamentalsRouter)
+app.use('/api/squeeze-screener', squeezeScreenerRouter)
 
 app.get("/api/momentum/trending", async (req, res) => {
   try {
