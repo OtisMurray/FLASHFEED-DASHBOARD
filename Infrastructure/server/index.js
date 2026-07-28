@@ -7615,6 +7615,7 @@ async function start() {
   let refreshCycleInFlight = false
   let lastPredictionMaintenanceAt = 0
   let lastOhlcvHydrationAt = 0
+  let lastShortInterestEstimateAt = 0
   const PREDICTION_MAINTENANCE_INTERVAL_MS = Math.max(
     60_000,
     Number(process.env.PREDICTION_MAINTENANCE_INTERVAL_MS || 300_000),
@@ -7622,6 +7623,13 @@ async function start() {
   const OHLCV_HYDRATION_INTERVAL_MS = Math.max(
     60_000,
     Number(process.env.OHLCV_HYDRATION_INTERVAL_MS || 300_000),
+  )
+  // FINRA publishes one short-volume file per trading day, so re-estimating
+  // every cycle would recompute the same inputs. Hourly keeps the intraday
+  // volume term moving without re-walking the day files.
+  const SHORT_INTEREST_ESTIMATE_INTERVAL_MS = Math.max(
+    300_000,
+    Number(process.env.SHORT_INTEREST_ESTIMATE_INTERVAL_MS || 3_600_000),
   )
   
 // Ryan frontend compatibility endpoints
@@ -8223,6 +8231,18 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
       : Promise.resolve({ attempted_tickers: 0, fetched_tickers: 0, fetched_bars: 0, persisted_bars: 0, errors: [], skipped: true }),
   ])
 
+  // Runs after the batch rather than inside it: the estimate reads the screener
+  // rows the Finviz ingest above just wrote (float, float_short, rel/avg volume),
+  // so running it in parallel would price off the previous cycle's universe.
+  const shortInterestEstimateDue =
+    (Date.now() - lastShortInterestEstimateAt) >= SHORT_INTEREST_ESTIMATE_INTERVAL_MS
+  const shortInterestEstimates = shortInterestEstimateDue
+    ? await runPythonScript("2_Screener/pipeline/fetch_short_interest_estimates_to_mongo.py", {
+        timeout: Number(process.env.SHORT_INTEREST_ESTIMATE_TIMEOUT_MS || 120000),
+      })
+    : skippedPythonResult("Short interest estimates", "FINRA data is daily; next estimate not due yet")
+  if (shortInterestEstimateDue) lastShortInterestEstimateAt = Date.now()
+
   const afterStructuredArticles = await db.collection("articles").countDocuments()
   const structuredCounts = parseStructuredFetch(structured.stdout || "", beforeArticles, afterStructuredArticles)
   const afterArticles = await db.collection("articles").countDocuments()
@@ -8301,6 +8321,8 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
     prediction_maintenance_ran: predictionMaintenanceDue,
     ohlcv_hydration_ran: ohlcvHydrationDue,
     ohlcv_hydration: ohlcvHydration,
+    short_interest_estimates_ran: shortInterestEstimateDue,
+    short_interest_estimates: (shortInterestEstimates.stdout || shortInterestEstimates.stderr || "").trim().slice(-400),
     prediction_signals_saved: predictionSnapshot.saved,
     prediction_model_status: predictionModel.status,
     prediction_model_samples: predictionModel.samples || 0,

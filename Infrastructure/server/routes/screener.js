@@ -3664,6 +3664,16 @@ function attachShortInterestEvidence(row = {}, shortRow = null) {
     short_covering_signal: coveringStarted ? 'covering_started_but_interest_remains_high' : (shortInterestPct != null && shortInterestPct >= 10 ? 'high_short_interest_remaining' : null),
     short_interest_source: shortRow.source || 'short_interest_snapshot',
     short_interest_as_of: shortRow.as_of_date || null,
+    // Provenance for the number above: whether it is a live FINRA-derived
+    // estimate or a passed-through settlement figure, and — when estimated —
+    // whether the dampening constant was actually fitted. Reporting only; no
+    // gate or score reads these.
+    short_interest_data_mode: shortRow.si_data_mode || (shortRow.source ? null : 'settlement_only'),
+    short_interest_official_pct: nullableNumber(shortRow.si_official_pct),
+    short_interest_settlement_date: shortRow.si_settlement_date || null,
+    short_interest_estimate_delta_pct: nullableNumber(shortRow.si_delta_pct),
+    short_interest_estimate_uncalibrated: shortRow.si_uncalibrated ?? null,
+    short_interest_estimate_note: shortRow.si_estimate_note || null,
     short_squeeze_available: true,
     short_squeeze_score: Math.max(Number(row.short_squeeze_score || 0), Number(squeezeEvidenceScore.toFixed(1))),
     short_squeeze_reason: [row.short_squeeze_reason, shortReason].filter(Boolean).join('; '),
@@ -7304,6 +7314,7 @@ export {
   loadAdaptiveSocialStatsForRows,
   predictionPeopleAttention,
   attachWatcherSqueezeEvidence,
+  attachShortInterestEvidence,
   evaluatePredictionEntryThreshold,
   predictionMarketCapTier,
 }
