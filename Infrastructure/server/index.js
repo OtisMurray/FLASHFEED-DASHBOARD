@@ -110,7 +110,12 @@ try {
     enableOfflineQueue: false,
     enableAutoPipelining: true,
     keepAlive: 30000,
-    retryStrategy: (n) => (n > 10 ? null : Math.min(n * 200, 2000)),
+    // Retry forever with capped exponential backoff: 200ms, 400, 800, 1600,
+    // 3200, 6400, then 10s indefinitely. Returning null (as this did after 10
+    // attempts, ~11s) tells ioredis to STOP reconnecting permanently, so any
+    // Redis outage longer than that left the process serving from Mongo only
+    // until the app itself was restarted — nothing recovered on its own.
+    retryStrategy: (n) => Math.min(200 * 2 ** Math.min(n - 1, 6), 10_000),
   })
   redis.on('error', () => {})                       // quiet; usage is guarded by status check
   redis.on('ready', () => console.log('  Redis   →  connected (RAM cache + hot feed active)'))
