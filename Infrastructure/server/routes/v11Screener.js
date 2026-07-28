@@ -104,7 +104,16 @@ function v11EvidenceGate(row, tier) {
   const catalystPower = num(row.catalyst_power_score) || 0
   const catalystArticles = num(row.catalyst_window_article_count ?? row.news_article_count) || 0
   const watcherCount = num(row.stocktwits_watcher_count) || 0
-  const messages = num(row.message_count ?? row.threshold_trailing_60m_messages) || 0
+  // Prefer threshold_trailing_60m_messages: it comes from lib/thresholdFeatures.js,
+  // whose candidateTickers has always deduped ticker/symbol/cashtag. message_count
+  // comes from the screener.js aggregation, which counted one real message three
+  // times until the $setUnion fix. Reading the inflated field first made
+  // PEOPLE_MIN_MESSAGES mean two different things depending on which branch fired.
+  // Today this is a no-op — save_daily_prediction_snapshot.js's compactRow writes
+  // threshold_trailing_60m_messages and never writes message_count, so the
+  // fallback already resolved to the correct field — but the order is now right
+  // by construction rather than by accident of what the snapshot happens to store.
+  const messages = num(row.threshold_trailing_60m_messages ?? row.message_count) || 0
 
   const shortSupport = (shortInterestPct != null && shortInterestPct >= 10) || (floatShort != null && floatShort >= 10)
   const catalystSupport = catalystPower >= 1 || catalystArticles > 0

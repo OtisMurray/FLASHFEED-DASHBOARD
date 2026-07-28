@@ -3185,34 +3185,50 @@ function socialTickerCandidateStages() {
     },
     {
       $addFields: {
+        // $setUnion DEDUPES, and that is load-bearing rather than tidiness.
+        // _ticker_values_raw concatenates ticker, symbol, cashtag and
+        // tickers_mentioned, and on a StockTwits document all of those normalise
+        // to the same string ("AAPL", "AAPL", "$AAPL" -> "AAPL"). Without the
+        // dedupe the later $unwind emitted one row per repetition and
+        // `count: {$sum: 1}` scored a single real message three times. Measured
+        // over 5,000 documents: 15,000 emitted rows, x3 on 100% of them.
+        //
+        // Note this pipeline was the ONLY inflated path. The JS equivalent in
+        // lib/thresholdFeatures.js (candidateTickers) has always deduped, so the
+        // threshold-policy features were correct while these were not.
         _ticker_candidates: {
-          $filter: {
-            input: {
-              $map: {
-                input: '$_ticker_values_raw',
-                as: 'raw',
-                in: {
-                  $trim: {
-                    input: {
-                      $replaceAll: {
-                        input: { $toUpper: { $toString: '$$raw' } },
-                        find: { $literal: '$' },
-                        replacement: '',
+          $setUnion: [
+            {
+              $filter: {
+                input: {
+                  $map: {
+                    input: '$_ticker_values_raw',
+                    as: 'raw',
+                    in: {
+                      $trim: {
+                        input: {
+                          $replaceAll: {
+                            input: { $toUpper: { $toString: '$$raw' } },
+                            find: { $literal: '$' },
+                            replacement: '',
+                          },
+                        },
+                        chars: ' ,;#',
                       },
                     },
-                    chars: ' ,;#',
+                  },
+                },
+                as: 'candidate',
+                cond: {
+                  $regexMatch: {
+                    input: '$$candidate',
+                    regex: '^[A-Z][A-Z0-9.-]{0,5}$',
                   },
                 },
               },
             },
-            as: 'candidate',
-            cond: {
-              $regexMatch: {
-                input: '$$candidate',
-                regex: '^[A-Z][A-Z0-9.-]{0,5}$',
-              },
-            },
-          },
+            [],
+          ],
         },
       },
     },
@@ -7317,6 +7333,7 @@ router.post('/upsert', async (req, res) => {
 // call order is the one in GET /api/screener/audit/:ticker above; squeezeScreener
 // mirrors it verbatim rather than inventing a second enrichment path.
 export {
+  socialTickerCandidateStages,
   normalizeScreenerRow,
   isCleanListedUsRow,
   loadAdaptiveSocialStatsForRows,
