@@ -219,7 +219,27 @@ app.get('/api/feed/:ticker', async (req, res) => {
   }
   try {
     const ids = await redis.zrevrange(`feed:${ticker}`, 0, limit - 1)
-    if (!ids || !ids.length) return res.json({ ticker, source: 'redis', count: 0, events: [] })
+    if (!ids || !ids.length) {
+      // count:0 used to read identically whether the hot feed was legitimately
+      // drained or the pipeline that fills it does not exist. In production it is
+      // the latter: no broker is configured, and the only writer of feed:{ticker}
+      // is Infrastructure/kafka/consumer.py, which runs only under docker-compose.
+      // Same expression the system-health block uses, so the two agree.
+      const pipelineConfigured = Boolean(
+        process.env.KAFKA_BROKERS || process.env.KAFKA_BOOTSTRAP_SERVERS || process.env.REDPANDA_BROKERS
+      )
+      return res.json({
+        ticker,
+        source: 'redis',
+        count: 0,
+        events: [],
+        pipeline_configured: pipelineConfigured,
+        status: pipelineConfigured ? 'empty' : 'pipeline_not_configured',
+        note: pipelineConfigured
+          ? 'Hot feed is empty for this ticker.'
+          : 'No Kafka/Redpanda broker configured — the hot-feed consumer is not deployed, so feed:{ticker} is never written.',
+      })
+    }
     const pipe = redis.pipeline()
     ids.forEach((id) => pipe.hgetall(`event:${id}`))
     const rows = await pipe.exec()
