@@ -3,6 +3,7 @@ import useSWR from 'swr'
 import { useState, useMemo } from 'react'
 import { clsx } from 'clsx'
 import type { EntryScreenerRow } from '@/lib/types'
+import { sortRows } from '@/lib/tableSort'
 
 // Entry Screener — ranks the most StockTwits-active tickers by the strategy's
 // rolling price×density correlation (360-min window, computed server-side by
@@ -49,15 +50,7 @@ export function EntryScreenerPage() {
       ...r,
       passes: r.price_density_corr != null && r.price_density_corr >= threshold,
     }))
-    return all.sort((a, b) => {
-      const av = (a as any)[orderBy]
-      const bv = (b as any)[orderBy]
-      if (av == null && bv == null) return 0
-      if (av == null) return 1                    // nulls always last
-      if (bv == null) return -1
-      if (typeof av === 'string') return orderDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av)
-      return orderDir === 'desc' ? Number(bv) - Number(av) : Number(av) - Number(bv)
-    })
+    return sortRows(all, orderBy, orderDir)
   }, [data, threshold, orderBy, orderDir])
 
   const passing = rows.filter(r => r.passes).length

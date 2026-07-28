@@ -759,3 +759,79 @@ export interface SqueezeScreenerResponse {
   note?:               string
   error?:              string
 }
+
+// Positions — the unified Entry/Exit/P&L view from /api/position-screener.
+// Rows come from TWO sources that must not be conflated: `live` rows are
+// today's session re-simulated at the caller's parameters, `recorded` rows are
+// prior sessions read back from screener_position_history, which only exists at
+// the canonical parameters. Hence per-row `threshold`/`stop_pct`.
+export type PositionGroup = 'open' | 'closed_today' | 'closed_earlier' | 'watch'
+export type PositionProvenance = 'live' | 'recorded'
+export type PositionDataStatus =
+  | 'live'                        // simulated this request
+  | 'recorded'                    // read back from history, settled
+  | 'stale'                       // recorded but never finalized — a mid-session mark, not a result
+  | 'warming'                     // still collecting StockTwits messages
+  | 'no_bars'                     // no intraday bars for this ticker/session
+  | 'chart_service_unavailable'
+
+export interface PositionScreenerRow {
+  group:                 PositionGroup
+  provenance:            PositionProvenance
+  data_status:           PositionDataStatus
+  ticker:                string
+  company?:              string | null
+  date?:                 string | null
+  entry_price?:          number | null
+  entry_time?:           string | null
+  entry_epoch?:          number | null
+  entry_corr?:           number | null
+  exit_price?:           number | null
+  exit_time?:            string | null
+  exit_reason?:          'price_trailing_stop' | 'correlation_break' | 'session_end' | string | null
+  exit_corr?:            number | null
+  current_price?:        number | null
+  peak_price?:           number | null
+  stop_price?:           number | null
+  distance_to_stop_pct?: number | null
+  pnl_pct?:              number | null
+  pnl_is_realized?:      boolean | null
+  threshold?:            number | null
+  stop_pct?:             number | null
+  // watch rows only
+  price?:                number | null
+  price_density_corr?:   number | null
+  msg_density_rolling?:  number | null
+  session_messages?:     number | null
+  // recorded rows only
+  snapshots?:            number | null
+  recorded_at?:          string | null
+}
+
+export interface PositionScreenerResponse {
+  ok:                  boolean
+  threshold:           number
+  stopPct:             number
+  canonical:           { threshold: number; stop_pct: number }
+  is_canonical:        boolean
+  corr_window_minutes: number
+  chart_service_ok:    boolean
+  tickers_scanned:     number
+  universe_size:       number
+  coverage:            Record<string, number>
+  tickers_warming:     number
+  tickers_no_bars:     number
+  counts:              Record<PositionGroup, number>
+  history_days:        number
+  history_rows:        number
+  history_dates:       number
+  history_truncated:   boolean
+  newest_history_date: string | null
+  stale_rows:          number
+  superseded_rows:     number
+  count:               number
+  rows:                PositionScreenerRow[]
+  simulation_note:     string
+  parameter_note:      string
+  note?:               string
+}

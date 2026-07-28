@@ -3,6 +3,7 @@ import useSWR from 'swr'
 import { useState, useMemo } from 'react'
 import { clsx } from 'clsx'
 import type { ExitScreenerRow } from '@/lib/types'
+import { sortRows } from '@/lib/tableSort'
 
 // Exit Screener — simulated positions derived live from the strategy sim in the
 // chart-service (rolling-corr entry and post-entry-peak trailing stop; joined
@@ -53,15 +54,7 @@ export function ExitScreenerPage() {
       const distance = refPrice && stopPrice != null ? ((refPrice - stopPrice) / refPrice) * 100 : null
       return { ...r, trailing_stop_pct: stopPct, stop_price: stopPrice, distance_to_stop_pct: distance }
     })
-    return all.sort((a, b) => {
-      const av = (a as any)[orderBy]
-      const bv = (b as any)[orderBy]
-      if (av == null && bv == null) return 0
-      if (av == null) return 1                    // nulls always last
-      if (bv == null) return -1
-      if (typeof av === 'string') return orderDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av)
-      return orderDir === 'asc' ? Number(av) - Number(bv) : Number(bv) - Number(av)
-    })
+    return sortRows(all, orderBy, orderDir)
   }, [data, stopPct, orderBy, orderDir])
 
   const holding = rows.filter(r => r.status === 'Holding').length

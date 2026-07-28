@@ -26,8 +26,13 @@ const NAV = [
   { href: '/social', label: 'Social' },
   { href: '/charts', label: 'Charts' },
   { href: '/entry-screener', label: 'Entry Screener' },
-  { href: '/exit-screener', label: 'Exit Screener' },
-  // Sits with Entry/Exit rather than in More: it is a live, market-facing screener
+  // Positions takes the slot Exit Screener held. It is a strict superset of that
+  // page (same sim, same universe, plus recorded history and the entry side), so
+  // promoting it costs no nav width. Exit Screener drops to More for a one-week
+  // overlap rather than being removed, so the professor can compare the two
+  // before it retires.
+  { href: '/positions', label: 'Positions' },
+  // Sits with Entry/Positions rather than in More: it is a live, market-facing screener
   // on the same clean universe and the same request cadence, whereas v11 is an
   // explicitly experimental postmortem probe. The cost is real — this is the 13th
   // primary item and the row already overflows horizontally below ~1920px, so
@@ -35,6 +40,7 @@ const NAV = [
   { href: '/squeeze-screener', label: 'Short Squeeze' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
+  { href: '/exit-screener', label: 'Exit Screener (retiring)' },
   { href: '/v11-screener', label: 'v11 Profile (test)' },
   { href: '/prediction-audit', label: 'Prediction Audit' },
   { href: '/system-health', label: 'System Health' },
@@ -58,6 +64,7 @@ const ROUTE_PREFETCHERS: Record<string, () => Promise<unknown>> = {
   '/charts': () => import('@/pages/sentchart/ChartsPage'),
   '/entry-screener': () => import('@/pages/sentchart/EntryScreenerPage'),
   '/exit-screener': () => import('@/pages/sentchart/ExitScreenerPage'),
+  '/positions': () => import('@/pages/sentchart/PositionsPage'),
   '/squeeze-screener': () => import('@/pages/sentchart/SqueezeScreenerPage'),
   '/momentum': () => import('@/pages/MomentumPage'),
   '/correlation': () => import('@/pages/CorrelationPage'),

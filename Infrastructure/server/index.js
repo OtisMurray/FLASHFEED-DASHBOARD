@@ -16,12 +16,23 @@ import exitScreenerRouter from './routes/exitScreener.js'
 import v11ScreenerRouter from './routes/v11Screener.js'
 import longTermFundamentalsRouter from './routes/longTermFundamentals.js'
 import squeezeScreenerRouter from './routes/squeezeScreener.js'
+import positionScreenerRouter from './routes/positionScreener.js'
 import socialRouter      from './routes/social.js'
 import correlationRouter from './routes/correlation.js'
 import settingsRouter    from './routes/settings.js'
 import decisionMapRouter from './routes/decisionMap.js'
 import { approvedNewsSourceMongoFilter } from './sourceFilter.js'
 import { dedupeWatcherSeries, loadWatcherFeatureMap, persistWatcherSnapshot } from './lib/watcherSnapshots.js'
+import Screener from './models/Screener.js'
+import { normalizeScreenerRow, isCleanListedUsRow, loadAdaptiveSocialStatsForRows } from './routes/screener.js'
+import {
+  ensurePositionHistoryIndexes,
+  persistPositionSnapshot,
+  prunePositionHistory,
+  rowsFromPositionsBatch,
+  supersedeMissingTrades,
+  POSITION_HISTORY_COLLECTION,
+} from './lib/positionHistory.js'
 import { normalizeRollingWindowMinutes, recordIsInsideRollingWindow, sliceCandlesToRollingWindow } from './lib/rollingWindow.js'
 import * as predictionThresholdPolicy from './lib/predictionThresholdPolicy.js'
 
@@ -87,6 +98,33 @@ const watcherSnapshotStatus = {
   lastTickers: [],
   lastCaptured: 0,
   lastSkippedRecent: 0,
+}
+
+// Simulated-position history. CANONICAL PARAMETERS ONLY: the recorded history is
+// the 0.10 entry threshold / 5% trailing stop the Entry and Exit screeners
+// default to. The trade set is a function of these parameters, so recording a
+// user's slider position would produce a second, incompatible history — the
+// unified view's sliders are a live what-if and are deliberately not persisted.
+const POSITION_HISTORY_ENABLED = !['0', 'false', 'no'].includes(String(process.env.POSITION_HISTORY_ENABLED || 'true').toLowerCase())
+const POSITION_HISTORY_INTERVAL_MS = Math.max(60_000, Number(process.env.POSITION_HISTORY_INTERVAL_MS || 5 * 60_000))
+// Capped at 50: the chart-service batch endpoint hard-truncates above that
+// (_CORR_BATCH_MAX_TICKERS), so a larger batch would silently drop tickers.
+const POSITION_HISTORY_BATCH_SIZE = Math.max(1, Math.min(50, Number(process.env.POSITION_HISTORY_BATCH_SIZE || 30)))
+const POSITION_HISTORY_THRESHOLD = Number(process.env.POSITION_HISTORY_THRESHOLD || 0.10)
+const POSITION_HISTORY_STOP_PCT = Number(process.env.POSITION_HISTORY_STOP_PCT || 5)
+const POSITION_HISTORY_RETENTION_DAYS = Math.max(1, Math.min(365, Number(process.env.POSITION_HISTORY_RETENTION_DAYS || 90)))
+const POSITION_HISTORY_UNIVERSE_SCAN_LIMIT = Number(process.env.SCREENER_UNIVERSE_SCAN_LIMIT || 6000)
+const POSITION_HISTORY_CORR_WINDOW_MINUTES = 360   // matches the strategy window the screeners use
+const positionHistoryStatus = {
+  enabled: POSITION_HISTORY_ENABLED,
+  running: false,
+  lastStartedAt: null,
+  lastFinishedAt: null,
+  lastError: null,
+  lastTickers: [],
+  lastSummary: null,
+  lastCoverage: null,
+  lastPrune: null,
 }
 
 // ── Middleware ────────────────────────────────────────────
@@ -3414,6 +3452,7 @@ app.use('/api/exit-screener', exitScreenerRouter)
 app.use('/api/v11-screener', v11ScreenerRouter)
 app.use('/api/long-term-fundamentals', longTermFundamentalsRouter)
 app.use('/api/squeeze-screener', squeezeScreenerRouter)
+app.use('/api/position-screener', positionScreenerRouter)
 
 app.get("/api/momentum/trending", async (req, res) => {
   try {
@@ -5182,6 +5221,176 @@ function startWatcherSnapshotScheduler() {
   console.log(`  Watchers → snapshot scheduler enabled (${Math.round(WATCHER_SNAPSHOT_INTERVAL_MS / 60000)} min, ${WATCHER_SNAPSHOT_BATCH_SIZE}/cycle)`)
 }
 
+// ── Simulated-position history ────────────────────────────────────────────────
+// Records the Entry/Exit strategy sim's trades so closed positions survive past
+// the chart-service's 120s cache and past the session boundary. Candidate
+// selection is deliberately identical to routes/entryScreener.js and
+// routes/exitScreener.js (same clean listed-US universe, same deterministic
+// scan order, same most-StockTwits-active ranking) so the recorded history is
+// the history of what those screeners actually showed.
+
+// Own copy rather than the SENTCHART_UPSTREAM defined further down, matching how
+// each screener route declares its own (dev default 5055; docker-compose
+// overrides to http://chart-service:5050).
+const POSITION_HISTORY_CHART_SERVICE_URL = (process.env.CHART_SERVICE_URL || 'http://localhost:5055').replace(/\/+$/, '')
+
+// Finalization compares a row's session date against the current ET date, so
+// this must be the market clock and not the server's local one.
+function positionHistoryTodayKey(date = new Date()) {
+  const p = easternParts(date)
+  return `${String(p.year).padStart(4, '0')}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`
+}
+
+async function positionHistoryCandidates(db, limit = POSITION_HISTORY_BATCH_SIZE) {
+  const filter = {
+    exchange: { $in: ['NASDAQ', 'NYSE', 'AMEX'] },
+    ticker: { $not: /\./ },
+    price: { $ne: null },
+  }
+  const universe = (await Screener.find(filter)
+    .sort({ change_pct: -1, ticker: 1 })
+    .limit(POSITION_HISTORY_UNIVERSE_SCAN_LIMIT)
+    .lean())
+    .map(normalizeScreenerRow)
+    .filter(isCleanListedUsRow)
+  if (!universe.length) return []
+
+  const socialMap = await loadAdaptiveSocialStatsForRows(db, universe, POSITION_HISTORY_CORR_WINDOW_MINUTES)
+  return universe
+    .map(row => ({ row, social: socialMap.get(row.ticker) }))
+    .filter(c => Number(c.social?.stocktwits_count || c.social?.count || 0) > 0)
+    .sort((a, b) =>
+      (Number(b.social?.stocktwits_count || 0) - Number(a.social?.stocktwits_count || 0)) ||
+      (Number(b.social?.count || 0) - Number(a.social?.count || 0)))
+    .slice(0, limit)
+    .map(c => c.row)
+}
+
+async function fetchPositionHistoryBatch(tickers) {
+  const params = new URLSearchParams({
+    tickers: tickers.join(','),
+    stop_pct: String(POSITION_HISTORY_STOP_PCT),
+    threshold: String(POSITION_HISTORY_THRESHOLD),
+  })
+  const url = `${POSITION_HISTORY_CHART_SERVICE_URL}/api/sentchart/positions/batch?${params.toString()}`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 90_000)
+  try {
+    const res = await fetch(url, { signal: controller.signal })
+    if (!res.ok) throw new Error(`chart-service responded ${res.status}`)
+    const data = await res.json()
+    return data?.results || {}
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function runPositionHistoryCycle(reason = 'scheduled') {
+  if (!POSITION_HISTORY_ENABLED) return positionHistoryStatus
+  if (positionHistoryStatus.running) return positionHistoryStatus
+  const db = mongoose.connection.db
+  if (!db) return positionHistoryStatus
+
+  positionHistoryStatus.running = true
+  positionHistoryStatus.lastStartedAt = new Date().toISOString()
+  positionHistoryStatus.lastError = null
+  let tickers = []
+  let summary = null
+  let coverage = null
+  try {
+    await ensurePositionHistoryIndexes(db)
+    const candidates = await positionHistoryCandidates(db)
+    tickers = candidates.map(row => row.ticker)
+    if (tickers.length) {
+      const companies = new Map(candidates.map(row => [row.ticker, row.company || null]))
+      const results = await fetchPositionHistoryBatch(tickers)
+      const observedAt = new Date()
+      // The sim decides which session it simulated (it walks back up to 5 days
+      // for the latest one with bars), so "today" for finalization comes from
+      // the market clock, not from the row.
+      const today = positionHistoryTodayKey(observedAt)
+      const flattened = rowsFromPositionsBatch(results, {
+        companies,
+        threshold: POSITION_HISTORY_THRESHOLD,
+        stopPct: POSITION_HISTORY_STOP_PCT,
+        corrExitThreshold: null,
+        observedAt,
+      })
+      coverage = flattened.coverage
+      summary = await persistPositionSnapshot(db, flattened.rows, { today, now: observedAt })
+
+      // Reconcile: the sim just run is authoritative for the sessions it
+      // covered, so withdraw stored trades it no longer produces. Without this
+      // the frontier-drift described in supersedeMissingTrades accumulates one
+      // phantom open position per ticker per cycle.
+      let superseded = 0
+      const keepByKey = new Map()
+      for (const row of flattened.rows) {
+        const key = `${row.ticker}|${row.date}`
+        if (!keepByKey.has(key)) keepByKey.set(key, [])
+        keepByKey.get(key).push(row.entry_epoch)
+      }
+      for (const [ticker, result] of Object.entries(results)) {
+        // Only a clean sim may withdraw anything. A warming/no_bars/error result
+        // knows nothing about the session and must not be read as "no trades".
+        if (result?.status !== 'ok' || !result.date) continue
+        superseded += await supersedeMissingTrades(db, {
+          ticker,
+          date: result.date,
+          threshold: POSITION_HISTORY_THRESHOLD,
+          stopPct: POSITION_HISTORY_STOP_PCT,
+          keepEpochs: keepByKey.get(`${ticker}|${result.date}`) || [],
+          now: observedAt,
+        })
+      }
+      if (summary) summary.superseded = superseded
+      positionHistoryStatus.lastPrune = await prunePositionHistory(db, { retentionDays: POSITION_HISTORY_RETENTION_DAYS })
+    }
+
+    const recorded = Number(summary?.inserted || 0) + Number(summary?.updated || 0)
+    await recordNodeSourceStatus(db, 'Simulated Position History', recorded ? 'working' : 'ready_no_rows_yet', {
+      detail: recorded
+        ? `Recorded ${summary.inserted} new and updated ${summary.updated} simulated positions across ${tickers.length} tickers`
+        : `No simulated positions to record across ${tickers.length} candidate tickers`,
+      count: recorded,
+      sourceType: 'strategy_simulation',
+      metadata: {
+        reason,
+        threshold: POSITION_HISTORY_THRESHOLD,
+        stop_pct: POSITION_HISTORY_STOP_PCT,
+        batch_size: POSITION_HISTORY_BATCH_SIZE,
+        coverage,
+        summary,
+      },
+    })
+  } catch (err) {
+    positionHistoryStatus.lastError = String(err.message || err)
+    await recordNodeSourceStatus(db, 'Simulated Position History', 'error', {
+      detail: positionHistoryStatus.lastError,
+      count: 0,
+      sourceType: 'strategy_simulation',
+    })
+  } finally {
+    positionHistoryStatus.running = false
+    positionHistoryStatus.lastFinishedAt = new Date().toISOString()
+    positionHistoryStatus.lastTickers = tickers
+    positionHistoryStatus.lastSummary = summary
+    positionHistoryStatus.lastCoverage = coverage
+  }
+  return positionHistoryStatus
+}
+
+function startPositionHistoryScheduler() {
+  if (!POSITION_HISTORY_ENABLED) {
+    console.log('  Positions → history scheduler disabled')
+    return
+  }
+  setTimeout(() => runPositionHistoryCycle('startup').catch(() => {}), 30_000).unref?.()
+  const timer = setInterval(() => runPositionHistoryCycle('scheduled').catch(() => {}), POSITION_HISTORY_INTERVAL_MS)
+  if (timer.unref) timer.unref()
+  console.log(`  Positions → history scheduler enabled (${Math.round(POSITION_HISTORY_INTERVAL_MS / 60000)} min, ${POSITION_HISTORY_BATCH_SIZE}/cycle, threshold ${POSITION_HISTORY_THRESHOLD} / stop ${POSITION_HISTORY_STOP_PCT}%)`)
+}
+
 async function chartSocialSeries(db, ticker, windowMinutes, bucketMinutes, options = {}) {
   // Two time domains here: requestedStart/requestedEnd come from the frontend
   // chart and are chart-encoded (naive ET wall-clock encoded as a UTC epoch),
@@ -5606,6 +5815,45 @@ app.get("/api/chart/watchers/status", async (_req, res) => {
       batch_size: WATCHER_SNAPSHOT_BATCH_SIZE,
       latest_snapshot: latest,
     })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) })
+  }
+})
+
+app.get("/api/positions/history/status", async (_req, res) => {
+  try {
+    const db = mongoose.connection.db
+    const coll = db ? db.collection(POSITION_HISTORY_COLLECTION) : null
+    const [total, latest, dates] = coll
+      ? await Promise.all([
+          coll.countDocuments({}).catch(() => 0),
+          coll.findOne({}, { sort: { updated_at: -1 }, projection: { _id: 1, ticker: 1, date: 1, status: 1, updated_at: 1, snapshots: 1 } }).catch(() => null),
+          coll.distinct('date').catch(() => []),
+        ])
+      : [0, null, []]
+    res.json({
+      ok: true,
+      ...positionHistoryStatus,
+      interval_ms: POSITION_HISTORY_INTERVAL_MS,
+      batch_size: POSITION_HISTORY_BATCH_SIZE,
+      // The recorded history exists only at these parameters — see the comment
+      // on POSITION_HISTORY_ENABLED.
+      canonical_threshold: POSITION_HISTORY_THRESHOLD,
+      canonical_stop_pct: POSITION_HISTORY_STOP_PCT,
+      retention_days: POSITION_HISTORY_RETENTION_DAYS,
+      stored_rows: total,
+      stored_dates: dates.length,
+      latest_row: latest,
+    })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) })
+  }
+})
+
+app.post("/api/positions/history/run", async (_req, res) => {
+  try {
+    const status = await runPositionHistoryCycle('manual_api')
+    res.json({ ok: true, ...status })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) })
   }
@@ -7611,6 +7859,7 @@ async function start() {
   await connectDB()
   await ensureRuntimeIndexes()
   startWatcherSnapshotScheduler()
+  startPositionHistoryScheduler()
 
   // Shared guard so the heavy data-refresh cycle never runs twice at once
   // (double Run Now clicks, or Run Now firing while the auto-grabber is mid-cycle).

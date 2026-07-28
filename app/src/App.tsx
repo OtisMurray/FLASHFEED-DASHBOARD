@@ -13,6 +13,7 @@ const ChartsPage = lazy(() => import('./pages/sentchart/ChartsPage').then(m => (
 const ChartsGridPage = lazy(() => import('./pages/ChartsGridPage').then(m => ({ default: m.ChartsGridPage })))
 const EntryScreenerPage = lazy(() => import('./pages/sentchart/EntryScreenerPage').then(m => ({ default: m.EntryScreenerPage })))
 const ExitScreenerPage = lazy(() => import('./pages/sentchart/ExitScreenerPage').then(m => ({ default: m.ExitScreenerPage })))
+const PositionsPage = lazy(() => import('./pages/sentchart/PositionsPage').then(m => ({ default: m.PositionsPage })))
 const V11ScreenerPage = lazy(() => import('./pages/sentchart/V11ScreenerPage').then(m => ({ default: m.V11ScreenerPage })))
 const LongTermFundamentalsPage = lazy(() => import('./pages/sentchart/LongTermFundamentalsPage').then(m => ({ default: m.LongTermFundamentalsPage })))
 const SqueezeScreenerPage = lazy(() => import('./pages/sentchart/SqueezeScreenerPage').then(m => ({ default: m.SqueezeScreenerPage })))
@@ -48,6 +49,7 @@ export default function App() {
             <Route path="/charts"      element={<ChartsPage />} />
             <Route path="/entry-screener" element={<EntryScreenerPage />} />
             <Route path="/exit-screener"  element={<ExitScreenerPage />} />
+            <Route path="/positions"      element={<PositionsPage />} />
             <Route path="/squeeze-screener" element={<SqueezeScreenerPage />} />
             <Route path="/v11-screener"   element={<V11ScreenerPage />} />
             <Route path="/long-term-fundamentals" element={<LongTermFundamentalsPage />} />
