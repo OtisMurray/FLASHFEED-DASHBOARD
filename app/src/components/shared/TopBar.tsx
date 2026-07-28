@@ -17,6 +17,11 @@ const NAV = [
   { href: '/ai', label: 'AI' },
   { href: '/news', label: 'News' },
   { href: '/screener', label: 'Screener' },
+  // Placed here rather than at the end of the main bar on purpose. The nav row
+  // overflows horizontally below ~1920px, so whatever sits last needs a scroll to
+  // reach. Sitting fourth keeps this reachable without scrolling down to 1280px,
+  // and pushes Correlation (less frequently used) to the overflow edge instead.
+  { href: '/long-term-fundamentals', label: 'Long-Term Fundamentals' },
   { href: '/decision-map', label: 'Decision Map' },
   { href: '/social', label: 'Social' },
   { href: '/charts', label: 'Charts' },
@@ -24,7 +29,6 @@ const NAV = [
   { href: '/exit-screener', label: 'Exit Screener' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
-  { href: '/long-term-fundamentals', label: 'Long-Term Fundamentals' },
   { href: '/v11-screener', label: 'v11 Profile (test)' },
   { href: '/prediction-audit', label: 'Prediction Audit' },
   { href: '/system-health', label: 'System Health' },
