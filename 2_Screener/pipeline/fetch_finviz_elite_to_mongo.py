@@ -210,6 +210,69 @@ def _int_thousands(value):
     return int(number) if number is not None else None
 
 
+def _week_52_levels(price, pct_from_high, pct_above_low):
+    """Convert Finviz's 52-week PERCENT-DISTANCE columns into PRICE LEVELS.
+
+    Finviz's v=152 export gives "52-Week High"/"52-Week Low" as percent distance
+    from the extreme, the same convention as its SMA20/50/200 columns — NOT as
+    price. The CNBC quote ingest (1_News/pipeline/fetch_quotes_to_mongo.py) writes
+    absolute dollars into the SAME two field names in the SAME screeners
+    collection, so leaving the percent form here makes a row's meaning depend on
+    which ingest wrote last. Both now write price levels.
+
+        high = price / (1 + pct_from_high/100)     # pct_from_high is <= 0
+        low  = price / (1 + pct_above_low/100)     # pct_above_low is >= 0
+
+    Returns (high, low), either of which may be None. Anything that cannot be
+    derived into a range that actually brackets the current price returns None
+    rather than a technically-computed but wrong number: a null renders as "—"
+    and costs one score component, whereas a bad level silently corrupts the
+    52-week range position.
+    """
+    if price is None or not math.isfinite(price) or price <= 0:
+        return None, None
+
+    def level(pct):
+        if pct is None or not math.isfinite(pct):
+            return None
+        factor = 1.0 + (pct / 100.0)
+        # factor <= 0 would flip the sign or divide by ~zero. Only reachable from
+        # corrupt input (a >100% decline is not a thing), so refuse it.
+        if factor <= 0.01:
+            return None
+        value = price / factor
+        return value if math.isfinite(value) and value > 0 else None
+
+    high = level(pct_from_high)
+    low = level(pct_above_low)
+
+    # THE PAIR IS ALL-OR-NOTHING. If either side cannot be derived — absent
+    # column, degenerate divisor, or implausible against the price — the row is
+    # not being read correctly and whatever survived is only accidentally sane.
+    # The one consumer (longTermScore's range position) needs both anyway, so a
+    # lone value buys nothing while putting a wrong figure in a field whose name
+    # promises a price.
+    if high is None or low is None:
+        return None, None
+
+    # Plausibility: a real 52-week range contains the price it came from. A small
+    # violation is expected and benign — the 52-week columns and the price column
+    # are snapshotted at slightly different moments, so a stock sitting exactly at
+    # its 52-week high can derive a high a hair below the last trade. Allow that
+    # margin; reject anything larger. This is also what stops an already-price-form
+    # row (should one ever reach here) from being re-derived into a plausible-
+    # looking low.
+    tolerance = price * 0.02
+    if high + tolerance < price:
+        return None, None
+    if low - tolerance > price:
+        return None, None
+    # An inverted or degenerate range is not a range.
+    if not (high > low):
+        return None, None
+    return high, low
+
+
 def _col(row: dict, *names: str) -> str:
     lower = {str(k).strip().lower(): v for k, v in row.items()}
     for name in names:
@@ -303,6 +366,11 @@ def _fetch_tier(tier: str, filter_text: str) -> tuple[str, list[dict], str | Non
             continue
         change_pct = _num(_col(raw, "Change"))
         price = _num(_col(raw, "Price"))
+        # Raw percent distances, kept verbatim below as *_pct so nothing is lost,
+        # and converted to price levels for the shared week_52_high/low fields.
+        week_52_high_pct = _num(_col(raw, "52-Week High"))
+        week_52_low_pct = _num(_col(raw, "52-Week Low"))
+        week_52_high, week_52_low = _week_52_levels(price, week_52_high_pct, week_52_low_pct)
         volume = _int(_col(raw, "Volume"))
         rel_volume = _num(_col(raw, "Relative Volume", "Rel Volume"))
         avg_volume = _int_thousands(_col(raw, "Average Volume", "Avg Volume"))
@@ -365,8 +433,13 @@ def _fetch_tier(tier: str, filter_text: str) -> tuple[str, list[dict], str | Non
             "sma20": _num(_col(raw, "20-Day Simple Moving Average")),
             "sma50": _num(_col(raw, "50-Day Simple Moving Average")),
             "sma200": _num(_col(raw, "200-Day Simple Moving Average")),
-            "week_52_high": _num(_col(raw, "52-Week High")),
-            "week_52_low": _num(_col(raw, "52-Week Low")),
+            # PRICE LEVELS, matching what the CNBC quote ingest writes into these
+            # same fields. The raw percent distances Finviz actually exports are
+            # preserved beside them so the conversion is never lossy.
+            "week_52_high": round(week_52_high, 4) if week_52_high is not None else None,
+            "week_52_low": round(week_52_low, 4) if week_52_low is not None else None,
+            "week_52_high_pct": week_52_high_pct,
+            "week_52_low_pct": week_52_low_pct,
             "rsi": _num(_col(raw, "RSI (14)", "RSI")),
             "change_from_open": _num(_col(raw, "Change from Open")),
             "gap": _num(_col(raw, "Gap")),

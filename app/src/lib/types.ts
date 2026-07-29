@@ -112,8 +112,9 @@ export interface ScreenerRow {
   perf_ytd?:            number | null
   atr?:                 number | null
   gap?:                 number | null
-  high_52w?:            number | null
-  low_52w?:             number | null
+  // high_52w / low_52w were declared here but NOTHING in the tree ever wrote
+  // them — the only readers were the dead ScreenerTable mirrors. Removed rather
+  // than left as a decoy beside the real week_52_high / week_52_low fields.
   analyst?:             string | null
   target_price?:        number | null
   inst_own?:            number | null
@@ -636,8 +637,13 @@ export interface LongTermFundamentalsRow {
   perf_ytd?:            number | null
   perf_year?:           number | null
 
+  // PRICE LEVELS in dollars, from either ingest. The Finviz Elite export gives
+  // percent distance from the extreme; that ingest converts before writing, and
+  // keeps the raw percentages in the *_pct fields below.
   week_52_high?:        number | null
   week_52_low?:         number | null
+  week_52_high_pct?:    number | null   // negative = % below the 52-week high
+  week_52_low_pct?:     number | null   // positive = % above the 52-week low
   sma50?:               number | null
   sma200?:              number | null
   analyst?:             string | null

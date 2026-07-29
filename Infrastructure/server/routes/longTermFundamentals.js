@@ -175,8 +175,13 @@ router.get('/', async (req, res) => {
         perf_ytd: row.perf_ytd,
         perf_year: row.perf_year,
 
+        // Price levels. The Finviz Elite ingest converts its percent-distance
+        // export before writing, so these agree with the CNBC quote path; the
+        // raw percentages ride along so the page can show either.
         week_52_high: raw.week_52_high ?? null,
         week_52_low: raw.week_52_low ?? null,
+        week_52_high_pct: raw.week_52_high_pct ?? null,
+        week_52_low_pct: raw.week_52_low_pct ?? null,
         sma50: row.sma50,
         sma200: row.sma200,
         analyst: row.analyst ?? null,
