@@ -51,6 +51,19 @@ export const V11_PROFILE = {
   minTrailing60Messages: 3,        // >= 3 trailing-60m messages
   minSignalChangePct: 0,           // explicit override threaded into the policy gate
   maxSignalChangePct: 12,
+  // v11 has NO opening gate, and both keys have to say so for different reasons.
+  // openingVolatilityGuardMinutes is set to 20 in the live candidate rule, so
+  // leaving it unpinned would inherit it. openingNoEntryMinutes is not in the
+  // live rule today, so its pin is defensive against a future base that adds one.
+  //
+  // Pinning only the no-entry block is NOT enough. The volatility guard tightens
+  // the pre-move ceiling to 1.5%, scales the message requirement by 1.5x, and
+  // caps abs change at 8% — any one of which can flip a signal v11 historically
+  // took. Measured on real bars: of 48 real v11 crosses re-stamped into the
+  // opening window, pinning only the block changed 4 verdicts; pinning both
+  // changed none.
+  openingNoEntryMinutes: 0,
+  openingVolatilityGuardMinutes: 0,
   activeMoveMinPct: 0,             // the active move itself must be in [0%, 12%]
   activeMoveMaxPct: 12,
   // Exit == V7_PAYOFF_CAPTURE_EXIT (screener.js): 50% at +5%; runner gives back 5%
@@ -214,6 +227,13 @@ async function replayCandidate(db, candidate) {
     // Reuse the production gate with the v11 profile override.
     const synthetic = {
       ...candidate,
+      // The shared gate locates a signal in the session from this field. Without
+      // it any opening rule is silently SKIPPED rather than applied, so a profile
+      // that asks for one would quietly not get it. v11 pins both opening windows
+      // to 0 above, so supplying it is inert here — but it makes the gate honest
+      // and gives any future profile replayed through this route a real opening
+      // evaluation instead of an accidental exemption.
+      threshold_feature_snapshot_sec: bar.minute,
       price_density_correlation: cur,
       previous_price_density_correlation: prev,
       threshold_pre_return_60m_pct: pre60,
