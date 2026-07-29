@@ -256,6 +256,11 @@ const PROFILE_OVERRIDE_KEYS = new Set([
   'minTrailing60Messages',
   'minSignalChangePct',
   'maxSignalChangePct',
+  'openingNoEntryMinutes',
+  'openingVolatilityGuardMinutes',
+  'openingMaxPreSignalReturn60mPct',
+  'openingMinTrailing60MessagesMultiplier',
+  'openingMaxSignalAbsChangePct',
   'maxSignalAbsChangePct',
   'maxSignalAbsChangePctByFloatBucket',
   'minRelVolumeByFloatBucket',
@@ -439,8 +444,10 @@ export function thresholdGuardEvaluation(row = {}, profile = {}, baseMinTrailing
   const signalChangeBandOk = minSignalChangeOk && maxSignalChangeOk
   const signalMinuteEt = signalMinuteOfDayEt(row)
   const marketOpenMinuteEt = 9 * 60 + 30
+  const openingNoEntryMinutes = Math.max(0, Number(profile.openingNoEntryMinutes || 0))
   const openingGuardMinutes = Math.max(0, Number(profile.openingVolatilityGuardMinutes || 0))
   const minutesSinceOpen = signalMinuteEt == null ? null : signalMinuteEt - marketOpenMinuteEt
+  const inOpeningNoEntryWindow = minutesSinceOpen != null && minutesSinceOpen >= 0 && minutesSinceOpen < openingNoEntryMinutes
   const inOpeningVolatilityGuard = minutesSinceOpen != null && minutesSinceOpen >= 0 && minutesSinceOpen < openingGuardMinutes
   const openingRequiredMessages = Math.ceil(requiredTrailingMessages * Math.max(1, Number(profile.openingMinTrailing60MessagesMultiplier || 1)))
   const openingMaxPre60 = Number(profile.openingMaxPreSignalReturn60mPct ?? profile.maxPreSignalReturn60mPct ?? Infinity)
@@ -449,8 +456,10 @@ export function thresholdGuardEvaluation(row = {}, profile = {}, baseMinTrailing
   const openingPreMoveOk = pre60 == null || !Number.isFinite(openingMaxPre60) || pre60 <= openingMaxPre60
   const openingAbsMoveOk = !Number.isFinite(openingMaxAbsChange) || openingMaxAbsChange <= 0 || absChange <= openingMaxAbsChange
   const openingEvidenceOk = hasCatalyst || socialOk || shortOk
-  const openingVolatilityOk = !inOpeningVolatilityGuard ||
+  const openingVolatilityOk = !inOpeningNoEntryWindow && (
+    !inOpeningVolatilityGuard ||
     (openingMessageOk && openingPreMoveOk && openingAbsMoveOk && openingEvidenceOk)
+  )
   const rejectionReasons = []
   if (!overextensionOk) rejectionReasons.push(`overextended_${absChange.toFixed(2)}pct_gt_${maxAbsChange}pct_${floatBucket}`)
   if (!minSignalChangeOk) rejectionReasons.push(`active_move_${activeChange.toFixed(2)}pct_lt_${minSignalChange}pct`)
@@ -458,12 +467,17 @@ export function thresholdGuardEvaluation(row = {}, profile = {}, baseMinTrailing
   if (!evidenceOk) rejectionReasons.push(`${floatBucketLabel(floatBucket).replace(/\s+/g, '_')}_${tier.toLowerCase()}_needs_catalyst_positive_social_or_short_interest`)
   if (!relVolumeOk) rejectionReasons.push(`${floatBucketLabel(floatBucket).replace(/\s+/g, '_')}_needs_rel_volume_${minRelVolume}`)
   if (!openingVolatilityOk) {
+    if (inOpeningNoEntryWindow) {
+      rejectionReasons.push(`opening_no_entry_window_${minutesSinceOpen}m_after_open_lt_${openingNoEntryMinutes}m`)
+    }
     const misses = []
     if (!openingMessageOk) misses.push(`messages_${trailing60Messages ?? 'missing'}_lt_${openingRequiredMessages}`)
     if (!openingPreMoveOk) misses.push(`pre60_${pre60 ?? 'missing'}_gt_${openingMaxPre60}`)
     if (!openingAbsMoveOk) misses.push(`active_abs_${absChange.toFixed(2)}pct_gt_${openingMaxAbsChange}pct`)
     if (!openingEvidenceOk) misses.push('needs_catalyst_social_or_short_interest')
-    rejectionReasons.push(`opening_volatility_guard_${minutesSinceOpen}m_after_open_${misses.join('_')}`)
+    if (!inOpeningNoEntryWindow) {
+      rejectionReasons.push(`opening_volatility_guard_${minutesSinceOpen}m_after_open_${misses.join('_')}`)
+    }
   }
   return {
     floatBucket,
@@ -489,6 +503,8 @@ export function thresholdGuardEvaluation(row = {}, profile = {}, baseMinTrailing
     catalystCount: catalystCount(row),
     signalMinuteEt,
     minutesSinceRegularOpen: minutesSinceOpen,
+    inOpeningNoEntryWindow,
+    openingNoEntryMinutes,
     inOpeningVolatilityGuard,
     openingGuardMinutes,
     openingRequiredTrailingMessages: inOpeningVolatilityGuard ? openingRequiredMessages : null,
@@ -511,27 +527,29 @@ export function predictionThresholdProfile(row = {}, profileOverride = null) {
   const baseProfile = PREDICTION_THRESHOLD_POLICY.candidateRule || {}
   const tierProfile = PREDICTION_THRESHOLD_POLICY.tierRules?.[tier] || {}
   const override = isPlainObject(profileOverride) ? profileOverride : {}
+  const defaults = { ...baseProfile, ...tierProfile }
+  const overridden = key => Object.prototype.hasOwnProperty.call(override, key) ? override[key] : defaults[key]
   const profile = {
-    ...baseProfile,
-    ...tierProfile,
+    ...defaults,
     ...override,
-    exitStrategy: override.exitStrategy ?? baseProfile.exitStrategy,
-    partialExitFraction: override.partialExitFraction ?? baseProfile.partialExitFraction,
-    partialProfitTargetPct: override.partialProfitTargetPct ?? baseProfile.partialProfitTargetPct,
-    profitGivebackPct: override.profitGivebackPct ?? baseProfile.profitGivebackPct,
-    profitGivebackActivationPct: override.profitGivebackActivationPct ?? baseProfile.profitGivebackActivationPct,
-    runnerTrailingStopPct: override.runnerTrailingStopPct ?? baseProfile.runnerTrailingStopPct,
-    legacyFallbackTrailingStopPct: override.legacyFallbackTrailingStopPct ?? baseProfile.legacyFallbackTrailingStopPct,
-    maxSignalAbsChangePct: override.maxSignalAbsChangePct ?? baseProfile.maxSignalAbsChangePct,
-    maxSignalAbsChangePctByFloatBucket: override.maxSignalAbsChangePctByFloatBucket ?? baseProfile.maxSignalAbsChangePctByFloatBucket,
-    minSignalChangePct: override.minSignalChangePct ?? baseProfile.minSignalChangePct,
-    maxSignalChangePct: override.maxSignalChangePct ?? baseProfile.maxSignalChangePct,
-    openingVolatilityGuardMinutes: override.openingVolatilityGuardMinutes ?? baseProfile.openingVolatilityGuardMinutes,
-    openingMaxPreSignalReturn60mPct: override.openingMaxPreSignalReturn60mPct ?? baseProfile.openingMaxPreSignalReturn60mPct,
-    openingMinTrailing60MessagesMultiplier: override.openingMinTrailing60MessagesMultiplier ?? baseProfile.openingMinTrailing60MessagesMultiplier,
-    openingMaxSignalAbsChangePct: override.openingMaxSignalAbsChangePct ?? baseProfile.openingMaxSignalAbsChangePct,
-    minRelVolumeByFloatBucket: override.minRelVolumeByFloatBucket ?? baseProfile.minRelVolumeByFloatBucket,
-    floatEvidenceGates: override.floatEvidenceGates ?? baseProfile.floatEvidenceGates,
+    exitStrategy: overridden('exitStrategy'),
+    partialExitFraction: overridden('partialExitFraction'),
+    partialProfitTargetPct: overridden('partialProfitTargetPct'),
+    profitGivebackPct: overridden('profitGivebackPct'),
+    profitGivebackActivationPct: overridden('profitGivebackActivationPct'),
+    runnerTrailingStopPct: overridden('runnerTrailingStopPct'),
+    legacyFallbackTrailingStopPct: overridden('legacyFallbackTrailingStopPct'),
+    maxSignalAbsChangePct: overridden('maxSignalAbsChangePct'),
+    maxSignalAbsChangePctByFloatBucket: overridden('maxSignalAbsChangePctByFloatBucket'),
+    minSignalChangePct: overridden('minSignalChangePct'),
+    maxSignalChangePct: overridden('maxSignalChangePct'),
+    openingNoEntryMinutes: overridden('openingNoEntryMinutes'),
+    openingVolatilityGuardMinutes: overridden('openingVolatilityGuardMinutes'),
+    openingMaxPreSignalReturn60mPct: overridden('openingMaxPreSignalReturn60mPct'),
+    openingMinTrailing60MessagesMultiplier: overridden('openingMinTrailing60MessagesMultiplier'),
+    openingMaxSignalAbsChangePct: overridden('openingMaxSignalAbsChangePct'),
+    minRelVolumeByFloatBucket: overridden('minRelVolumeByFloatBucket'),
+    floatEvidenceGates: overridden('floatEvidenceGates'),
   }
   return {
     policyVersion: override.policyVersion || PREDICTION_THRESHOLD_POLICY_VERSION,
@@ -634,11 +652,13 @@ export function evaluatePredictionEntryThreshold(row = {}, featuresOrOverride = 
         : setupStatus === 'late_setup_rejected'
           ? `Late setup rejected: correlation crossed above ${profile.thresholdC}, but prior 60m move was ${pre60.toFixed(2)}%, above the ${profile.maxPreSignalReturn60mPct}% limit.`
           : setupStatus === 'active_momentum_band_rejected'
-            ? `Active momentum band rejected: active move was ${guard.activeSignalChangePct}%, outside the ${guard.minSignalChangePct ?? '-inf'}% to ${guard.maxSignalChangePct ?? '+inf'}% v11 range.`
+            ? `Active momentum band rejected: active move was ${guard.activeSignalChangePct}%, outside the ${guard.minSignalChangePct ?? '-inf'}% to ${guard.maxSignalChangePct ?? '+inf'}% policy range.`
             : setupStatus === 'entry_passed'
               ? `Entry passed: correlation crossed above ${profile.thresholdC}, prior 60m move was ${pre60.toFixed(2)}%, and trailing messages met the ${minTrailing60Messages} minimum.`
               : setupStatus === 'opening_volatility_rejected'
-                ? `Opening volatility rejected: signal formed ${guard.minutesSinceRegularOpen} minutes after 9:30 ET and failed the stricter open guard.`
+                ? guard.inOpeningNoEntryWindow
+                  ? `Opening entry blocked: signal formed ${guard.minutesSinceRegularOpen} minutes after 9:30 ET, inside the first-${guard.openingNoEntryMinutes}-minute no-entry window.`
+                  : `Opening volatility rejected: signal formed ${guard.minutesSinceRegularOpen} minutes after 9:30 ET and failed the stricter open guard.`
               : `Inactive: ${profile.windowMinutes}m corr(price,density) ${prevCorr.toFixed(3)} -> ${corr.toFixed(3)} has not formed an entry setup.`
     : 'Setup diagnostics require current/previous rolling corr(price,density), prior 60m price return, and trailing 60m message count.'
 
@@ -661,8 +681,10 @@ export function evaluatePredictionEntryThreshold(row = {}, featuresOrOverride = 
     signalChangeBandOk: guard.signalChangeBandOk,
     openingVolatilityOk: guard.openingVolatilityOk,
     openingVolatilityGuard: {
-      active: guard.inOpeningVolatilityGuard,
+      active: guard.inOpeningNoEntryWindow || guard.inOpeningVolatilityGuard,
+      no_entry_active: guard.inOpeningNoEntryWindow,
       minutes_since_regular_open: guard.minutesSinceRegularOpen,
+      no_entry_minutes: guard.openingNoEntryMinutes,
       guard_minutes: guard.openingGuardMinutes,
       required_trailing_messages: guard.openingRequiredTrailingMessages,
       max_pre_signal_return_60m_pct: guard.openingMaxPreSignalReturn60mPct,
@@ -691,7 +713,7 @@ export function evaluatePredictionEntryThreshold(row = {}, featuresOrOverride = 
     trailingStopPct: profile.trailingStopPct,
     protectiveStopPct: profile.protectiveStopPct,
     reason: hasCorr && hasPrev && hasPre60
-      ? `${profile.windowMinutes}m corr(price,density) ${prevCorr.toFixed(3)} -> ${corr.toFixed(3)}; required cross above ${profile.thresholdC}; prior 60m move ${pre60.toFixed(2)}% must be <= ${profile.maxPreSignalReturn60mPct}%; trailing 60m messages ${hasTrailing60Messages ? trailing60Messages : 'missing'} must be >= ${minTrailing60Messages}; active move ${guard.activeSignalChangePct}% must be between ${guard.minSignalChangePct ?? '-inf'}% and ${guard.maxSignalChangePct ?? '+inf'}% and abs move ${guard.activeSignalAbsChangePct}% must be <= ${guard.maxSignalAbsChangePct}% for ${guard.floatBucketLabel}; opening guard ${guard.inOpeningVolatilityGuard ? (guard.openingVolatilityOk ? 'passed' : `failed (${guard.rejectionReasons.join(', ')})`) : 'not active'}; evidence gate ${guard.evidenceOk ? 'passed' : `failed (${guard.rejectionReasons.join(', ')})`}.`
+      ? `${profile.windowMinutes}m corr(price,density) ${prevCorr.toFixed(3)} -> ${corr.toFixed(3)}; required cross above ${profile.thresholdC}; prior 60m move ${pre60.toFixed(2)}% must be <= ${profile.maxPreSignalReturn60mPct}%; trailing 60m messages ${hasTrailing60Messages ? trailing60Messages : 'missing'} must be >= ${minTrailing60Messages}; active move ${guard.activeSignalChangePct}% must be between ${guard.minSignalChangePct ?? '-inf'}% and ${guard.maxSignalChangePct ?? '+inf'}% and abs move ${guard.activeSignalAbsChangePct}% must be <= ${guard.maxSignalAbsChangePct}% for ${guard.floatBucketLabel}; opening gate ${guard.inOpeningNoEntryWindow || guard.inOpeningVolatilityGuard ? (guard.openingVolatilityOk ? 'passed' : `failed (${guard.rejectionReasons.join(', ')})`) : 'not active'}; evidence gate ${guard.evidenceOk ? 'passed' : `failed (${guard.rejectionReasons.join(', ')})`}.`
       : 'Candidate threshold requires current/previous rolling corr(price,density), prior 60m price return, and trailing 60m message count; one or more inputs are unavailable.',
   }
 }

@@ -1,0 +1,12 @@
+{
+  "extends": "config_v12_final_confirmation_mongo_ohlc.json",
+  "outputDir": "backtests/message_density_thresholds/outputs_v12_frozen_oos_july27_mongo_ohlc",
+  "analysisStartSec": 1785124800,
+  "analysisEndSec": 1785211200,
+  "promotionMinTrades": 1,
+  "promotionMinValidationTrades": 0,
+  "promotionMinTestTrades": 0,
+  "promotionMinTemporalDevTrades": 0,
+  "promotionMinTemporalValidationTrades": 0,
+  "promotionMinTemporalTestTrades": 0
+}

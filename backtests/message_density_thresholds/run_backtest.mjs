@@ -103,6 +103,48 @@ function pct(value, decimals = 4) {
   return value == null || !Number.isFinite(Number(value)) ? null : Number(Number(value).toFixed(decimals))
 }
 
+function summarizePairedValues(values) {
+  const finite = values.map(Number).filter(Number.isFinite)
+  if (!finite.length) return { observations: 0, meanPct: null, medianPct: null, positiveRate: null }
+  const sorted = [...finite].sort((a, b) => a - b)
+  const middle = Math.floor(sorted.length / 2)
+  const median = sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
+  return {
+    observations: finite.length,
+    meanPct: pct(finite.reduce((sum, value) => sum + value, 0) / finite.length),
+    medianPct: pct(median),
+    positiveRate: pct(finite.filter(value => value > 0).length / finite.length, 6),
+  }
+}
+
+function summarizeTradesWithBenchmarks(trades) {
+  const strategy = summarizeTrades(trades)
+  const benchmarkSummary = (grossField, netField, reason) => summarizeTrades(trades.map(trade => ({
+    grossReturnPct: trade[grossField],
+    netReturnPct: trade[netField],
+    exitReason: reason,
+    mfePct: null,
+    maePct: null,
+  })))
+  return {
+    ...strategy,
+    pairedBenchmarks: {
+      sameExitBarBuyHold: benchmarkSummary(
+        'benchmarkSameWindowGrossReturnPct',
+        'benchmarkSameWindowNetReturnPct',
+        'same_exit_bar_buy_hold',
+      ),
+      sessionEndBuyHold: benchmarkSummary(
+        'benchmarkEodGrossReturnPct',
+        'benchmarkEodNetReturnPct',
+        'session_end_buy_hold',
+      ),
+      strategyMinusSameExitBar: summarizePairedValues(trades.map(trade => trade.strategyVsSameWindowAlphaPct)),
+      strategyMinusSessionEnd: summarizePairedValues(trades.map(trade => trade.strategyVsEodAlphaPct)),
+    },
+  }
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -209,11 +251,24 @@ async function loadCachedYahooCandles(ticker, range, interval) {
 }
 
 function buildStatsRows(group, tradesByName) {
-  return Object.entries(tradesByName).map(([name, trades]) => ({
-    group,
-    name,
-    ...summarizeTrades(trades),
-  }))
+  return Object.entries(tradesByName).map(([name, trades]) => {
+    const stats = summarizeTradesWithBenchmarks(trades)
+    const benchmarks = stats.pairedBenchmarks
+    delete stats.pairedBenchmarks
+    return {
+      group,
+      name,
+      ...stats,
+      benchmarkSameWindowMeanNetReturnPct: benchmarks.sameExitBarBuyHold.meanNetReturnPct,
+      benchmarkSameWindowMedianNetReturnPct: benchmarks.sameExitBarBuyHold.medianNetReturnPct,
+      benchmarkEodMeanNetReturnPct: benchmarks.sessionEndBuyHold.meanNetReturnPct,
+      benchmarkEodMedianNetReturnPct: benchmarks.sessionEndBuyHold.medianNetReturnPct,
+      strategyVsSameWindowMeanAlphaPct: benchmarks.strategyMinusSameExitBar.meanPct,
+      strategyVsSameWindowMedianAlphaPct: benchmarks.strategyMinusSameExitBar.medianPct,
+      strategyVsEodMeanAlphaPct: benchmarks.strategyMinusSessionEnd.meanPct,
+      strategyVsEodMedianAlphaPct: benchmarks.strategyMinusSessionEnd.medianPct,
+    }
+  })
 }
 
 async function loadPriceBars(db) {
@@ -398,71 +453,91 @@ async function persistOhlcBarsToMongo(db, barsByTicker) {
 async function loadMongoOhlcvBars(db) {
   const collectionName = config.ohlcCollection || 'ohlcv_bars'
   const { snapshots, latestMeta } = await loadLatestTickerMeta(db)
-  const tickers = [...latestMeta.keys()].slice(0, Math.max(1, Number(config.maxChartTickers || config.maxTickers || 300)))
+  let tickers = [...latestMeta.keys()]
+  if (config.requireSocialHistory) {
+    const socialTickerSet = new Set()
+    const socialDocs = await db.collection(config.socialCollection).find({}, {
+      projection: { _id: 0, ticker: 1, symbol: 1, cashtag: 1, tickers_mentioned: 1 },
+    }).toArray()
+    for (const doc of socialDocs) {
+      for (const ticker of candidateTickers(doc)) socialTickerSet.add(ticker)
+    }
+    tickers = tickers.filter(ticker => socialTickerSet.has(ticker))
+  }
+  tickers = tickers.slice(0, Math.max(1, Number(config.maxChartTickers || config.maxTickers || 300)))
   const source = config.ohlcSource || 'yahoo_chart_ohlcv'
   const byTicker = new Map()
   const intervalCounts = new Map()
   let rawRows = 0
   let acceptedRows = 0
-  const readTickerDocs = async (ticker, attempt = 1) => {
-    try {
-      return await db.collection(collectionName)
-        .find({ ticker, source }, {
-          projection: {
-            _id: 0, ticker: 1, minute: 1, open: 1, high: 1, low: 1, close: 1,
-            price: 1, volume: 1, providerRange: 1, providerInterval: 1, providerIntervalSec: 1,
-          },
-        })
-        .sort({ minute: 1, providerIntervalSec: 1 })
-        .toArray()
-    } catch (err) {
-      if (attempt >= 3) throw err
-      await sleep(500 * attempt)
-      return readTickerDocs(ticker, attempt + 1)
-    }
-  }
-  for (let idx = 0; idx < tickers.length; idx += 1) {
-    const ticker = tickers[idx]
-    const docs = await readTickerDocs(ticker)
-    rawRows += docs.length
-    const minuteMap = new Map()
-    for (const doc of docs) {
-      const minute = floorMinute(doc.minute)
-      const open = Number(doc.open)
-      const high = Number(doc.high)
-      const low = Number(doc.low)
-      const close = Number(doc.close)
-      if (!minute || ![open, high, low, close].every(Number.isFinite)) continue
-      if (open <= 0 || high <= 0 || low <= 0 || close <= 0) continue
-      if (high < Math.max(open, close, low) || low > Math.min(open, close, high)) continue
-      const meta = latestMeta.get(ticker) || {}
-      const bar = {
-        ticker,
-        minute,
-        open,
-        high,
-        low,
-        close,
-        price: Number(doc.price ?? close),
-        volume: Number(doc.volume || 0),
-        changePct: null,
-        relVolume: null,
-        rank: meta.rank,
-        marketCap: meta.marketCap,
-        tier: meta.tier || 'Unknown',
-        source,
-        providerRange: doc.providerRange || null,
-        providerInterval: doc.providerInterval || null,
-        providerIntervalSec: Number(doc.providerIntervalSec || 0) || null,
+  const minuteFilter = {}
+  if (Number.isFinite(Number(config.analysisStartSec))) minuteFilter.$gte = Number(config.analysisStartSec)
+  if (Number.isFinite(Number(config.analysisEndSec))) minuteFilter.$lte = Number(config.analysisEndSec)
+  const query = { ticker: { $in: tickers }, source }
+  if (Object.keys(minuteFilter).length) query.minute = minuteFilter
+  const cursor = db.collection(collectionName)
+    .find(query, {
+      projection: {
+        _id: 0, ticker: 1, minute: 1, open: 1, high: 1, low: 1, close: 1,
+        price: 1, volume: 1, providerRange: 1, providerInterval: 1, providerIntervalSec: 1,
+      },
+    })
+    .sort({ ticker: 1, minute: 1 })
+    .hint({ source: 1, ticker: 1, minute: 1 })
+    .batchSize(Math.max(1000, Number(config.mongoReadBatchSize || 10000)))
+  let lastTicker = null
+  let completed = 0
+  for await (const doc of cursor) {
+    rawRows += 1
+    const ticker = safeTicker(doc.ticker)
+    if (!ticker) continue
+    if (lastTicker !== ticker) {
+      if (lastTicker != null) {
+        completed += 1
+        if (completed % 100 === 0) progress(`loaded Mongo OHLC for ${completed}/${tickers.length} tickers`)
       }
-      const existing = minuteMap.get(minute)
-      if (!existing || Number(existing.providerIntervalSec || Infinity) > Number(bar.providerIntervalSec || Infinity)) minuteMap.set(minute, bar)
-      intervalCounts.set(bar.providerInterval || 'unknown', (intervalCounts.get(bar.providerInterval || 'unknown') || 0) + 1)
-      acceptedRows += 1
+      lastTicker = ticker
     }
-    if (minuteMap.size) byTicker.set(ticker, minuteMap)
-    if ((idx + 1) % 100 === 0) progress(`loaded Mongo OHLC for ${idx + 1}/${tickers.length} tickers`)
+    const minute = floorMinute(doc.minute)
+    const open = Number(doc.open)
+    const high = Number(doc.high)
+    const low = Number(doc.low)
+    const close = Number(doc.close)
+    if (!minute || ![open, high, low, close].every(Number.isFinite)) continue
+    if (open <= 0 || high <= 0 || low <= 0 || close <= 0) continue
+    if (high < Math.max(open, close, low) || low > Math.min(open, close, high)) continue
+    const meta = latestMeta.get(ticker) || {}
+    const bar = {
+      ticker,
+      minute,
+      open,
+      high,
+      low,
+      close,
+      price: Number(doc.price ?? close),
+      volume: Number(doc.volume || 0),
+      changePct: null,
+      relVolume: null,
+      rank: meta.rank,
+      marketCap: meta.marketCap,
+      tier: meta.tier || 'Unknown',
+      source,
+      providerRange: doc.providerRange || null,
+      providerInterval: doc.providerInterval || null,
+      providerIntervalSec: Number(doc.providerIntervalSec || 0) || null,
+    }
+    let minuteMap = byTicker.get(ticker)
+    if (!minuteMap) {
+      minuteMap = new Map()
+      byTicker.set(ticker, minuteMap)
+    }
+    const existing = minuteMap.get(minute)
+    if (!existing || Number(existing.providerIntervalSec || Infinity) > Number(bar.providerIntervalSec || Infinity)) minuteMap.set(minute, bar)
+    intervalCounts.set(bar.providerInterval || 'unknown', (intervalCounts.get(bar.providerInterval || 'unknown') || 0) + 1)
+    acceptedRows += 1
   }
+  if (lastTicker != null) completed += 1
+  progress(`loaded Mongo OHLC for ${completed}/${tickers.length} tickers with stored bars`)
   for (const [ticker, minuteMap] of byTicker.entries()) {
     const meta = latestMeta.get(ticker) || {}
     const sortedBars = [...minuteMap.values()].sort((a, b) => a.minute - b.minute)
@@ -479,6 +554,8 @@ async function loadMongoOhlcvBars(db) {
       ohlcSource: source,
       snapshotMetaRows: snapshots.length,
       requestedTickers: tickers.length,
+      analysisStartSec: Number(config.analysisStartSec) || null,
+      analysisEndSec: Number(config.analysisEndSec) || null,
       rawRows,
       acceptedRows,
       intervalCounts: Object.fromEntries([...intervalCounts.entries()].sort()),
@@ -654,6 +731,8 @@ async function loadSocialEvents(db, priceTickers, startSec, endSec) {
   let multiTickerDocs = 0
   let futureDatedDocs = 0
   let publishAfterFetchDocs = 0
+  let matchedStartSec = Infinity
+  let matchedEndSec = -Infinity
   const nowSec = Math.floor(Date.now() / 1000)
 
   const inc = (map, key, amount = 1) => map.set(key, (map.get(key) || 0) + amount)
@@ -689,6 +768,8 @@ async function loadSocialEvents(db, priceTickers, startSec, endSec) {
     }
     if (candidates.length > 1) multiTickerDocs += 1
     inRangeDocs += 1
+    matchedStartSec = Math.min(matchedStartSec, sec)
+    matchedEndSec = Math.max(matchedEndSec, sec)
     inc(platformCounts, doc.platform || doc.collector || 'Unknown')
     const dk = dedupeKey(doc)
     inc(duplicateGroups, dk)
@@ -739,6 +820,8 @@ async function loadSocialEvents(db, priceTickers, startSec, endSec) {
       futureDatedDocs,
       publishAfterFetchDocs,
       duplicateMessageGroupsInRange: [...duplicateGroups.values()].filter(n => n > 1).length,
+      matchedStartSec: Number.isFinite(matchedStartSec) ? matchedStartSec : null,
+      matchedEndSec: Number.isFinite(matchedEndSec) ? matchedEndSec : null,
       platformCounts: Object.fromEntries([...platformCounts.entries()].sort((a, b) => b[1] - a[1])),
     },
   }
@@ -1082,7 +1165,30 @@ function passesQualityGate(context, bar, smoothed, gate = null) {
   if (!requireMaxPreMove(15, gate.maxPre15Pct)) return false
   if (!requireMaxPreMove(30, gate.maxPre30Pct)) return false
   if (!requireMaxPreMove(60, gate.maxPre60Pct)) return false
-  if (gate.minTrailing60Messages != null && countTrailing(context, bar.minute, 60) < gate.minTrailing60Messages) return false
+  const tier = bar.tier || 'Unknown'
+  const tierMessageMinimum = gate.minTrailing60MessagesByTier?.[tier]
+  const effectiveMinTrailing60Messages = Math.max(
+    Number(gate.minTrailing60Messages || 0),
+    Number(tierMessageMinimum || 0),
+  )
+  const trailing60Messages = countTrailing(context, bar.minute, 60)
+  if (effectiveMinTrailing60Messages > 0 && trailing60Messages < effectiveMinTrailing60Messages) return false
+  const et = etParts(bar.minute)
+  const minutesSinceRegularOpen = (Number(et.hour) * 60 + Number(et.minute)) - (9 * 60 + 30)
+  const openingGuardMinutes = Number(gate.openingGuardMinutes || 0)
+  if (openingGuardMinutes > 0 && minutesSinceRegularOpen >= 0 && minutesSinceRegularOpen < openingGuardMinutes) {
+    if (gate.rejectOpeningSignals) return false
+    if (!requireMaxPreMove(60, gate.openingMaxPre60Pct)) return false
+    const openingMessageMultiplier = Number(gate.openingMinTrailing60MessagesMultiplier || 1)
+    if (
+      effectiveMinTrailing60Messages > 0 &&
+      trailing60Messages < Math.ceil(effectiveMinTrailing60Messages * openingMessageMultiplier)
+    ) return false
+    if (
+      gate.openingMaxSignalChangePct != null &&
+      Number(bar.changePct) > Number(gate.openingMaxSignalChangePct)
+    ) return false
+  }
   const sentimentLookback = Number(gate.sentimentLookbackMinutes || gate.peerSentimentLookbackMinutes || 60)
   const sentimentTotals = trailingSocialTotals(context, bar.minute, sentimentLookback)
   if (gate.minSocialTaggedMessages != null && sentimentTotals.tagged < Number(gate.minSocialTaggedMessages)) return false
@@ -1093,6 +1199,12 @@ function passesQualityGate(context, bar, smoothed, gate = null) {
   }
   const catalystLookback = Number(gate.catalystLookbackMinutes || 240)
   const catalysts = trailingCatalystTotals(context, bar.minute, catalystLookback)
+  if (
+    Array.isArray(gate.requireCatalystOrPositiveSocialTiers) &&
+    gate.requireCatalystOrPositiveSocialTiers.includes(tier) &&
+    catalysts.total <= 0 &&
+    sentimentTotals.bull <= sentimentTotals.bear
+  ) return false
   if (gate.minTrailingCatalysts != null && catalysts.total < Number(gate.minTrailingCatalysts)) return false
   if (gate.minPositiveCatalysts != null && catalysts.positive < Number(gate.minPositiveCatalysts)) return false
   if (gate.minCatalystScore != null && catalysts.score < Number(gate.minCatalystScore)) return false
@@ -1234,7 +1346,9 @@ function simulateSignal({ context, signalBar, ruleName, group, thresholdC, corre
       profitGivebackPct < 100 &&
       Number.isFinite(peakProfitPct) &&
       peakProfitPct >= profitGivebackActivationPct
-        ? entry + (nextPeak - entry) * (1 - profitGivebackPct / 100)
+        // Production payoffCapture defines giveback as a percentage decline
+        // from the post-entry peak, not a percentage of accumulated profit.
+        ? nextPeak * (1 - profitGivebackPct / 100)
         : null
     const rangeGivebackStop = Number.isFinite(rangeGivebackMultiple) &&
       rangeGivebackMultiple > 0 &&
@@ -1308,6 +1422,15 @@ function simulateSignal({ context, signalBar, ruleName, group, thresholdC, corre
   const slippagePct = Number(config.slippagePctByTier[tier] ?? config.slippagePctByTier.Unknown ?? 0)
   const slippageRoundTrips = partialGrossReturnPct == null ? 1 : 1
   const netReturnPct = grossReturnPct == null ? null : grossReturnPct - slippagePct * 2 * slippageRoundTrips
+  const eodBar = dayBars[dayBars.length - 1]
+  const benchmarkSameWindowGrossReturnPct = pctReturn(entry, exitBar.close)
+  const benchmarkSameWindowNetReturnPct = benchmarkSameWindowGrossReturnPct == null
+    ? null
+    : benchmarkSameWindowGrossReturnPct - slippagePct * 2
+  const benchmarkEodGrossReturnPct = pctReturn(entry, eodBar.close)
+  const benchmarkEodNetReturnPct = benchmarkEodGrossReturnPct == null
+    ? null
+    : benchmarkEodGrossReturnPct - slippagePct * 2
   const diag = signalDiagnostics(context, bars, signalBar, entryBar, exitBars)
   const entryLagMinutes = Math.round((entryBar.minute - signalBar.minute) / 60)
   return {
@@ -1335,6 +1458,20 @@ function simulateSignal({ context, signalBar, ruleName, group, thresholdC, corre
     finalGrossReturnPct: pct(finalGrossReturnPct),
     partialGrossReturnPct: pct(partialGrossReturnPct),
     netReturnPct: pct(netReturnPct),
+    benchmarkSameWindowExitSec: exitBar.minute,
+    benchmarkSameWindowExitPrice: pct(exitBar.close),
+    benchmarkSameWindowGrossReturnPct: pct(benchmarkSameWindowGrossReturnPct),
+    benchmarkSameWindowNetReturnPct: pct(benchmarkSameWindowNetReturnPct),
+    benchmarkEodExitSec: eodBar.minute,
+    benchmarkEodExitPrice: pct(eodBar.close),
+    benchmarkEodGrossReturnPct: pct(benchmarkEodGrossReturnPct),
+    benchmarkEodNetReturnPct: pct(benchmarkEodNetReturnPct),
+    strategyVsSameWindowAlphaPct: pct(netReturnPct == null || benchmarkSameWindowNetReturnPct == null
+      ? null
+      : netReturnPct - benchmarkSameWindowNetReturnPct),
+    strategyVsEodAlphaPct: pct(netReturnPct == null || benchmarkEodNetReturnPct == null
+      ? null
+      : netReturnPct - benchmarkEodNetReturnPct),
     slippagePctOneWay: slippagePct,
     trailingStopPct,
     protectiveStopPct,
@@ -1730,6 +1867,7 @@ function runCorrelationRuleWithSignalGate(context, rule, { group, ruleName, qual
         windowMinutes: rule.windowMinutes,
         densitySmoothedAtSignal: pct(densityAt(context, smoothed, bar.minute), 6),
         minTrailing60Messages: qualityGate?.minTrailing60Messages ?? null,
+        actualTrailing60Messages: countTrailing(context, bar.minute, 60),
         maxPre60Pct: qualityGate?.maxPre60Pct ?? null,
         minRelVolumeAtSignal: qualityGate?.minRelVolumeAtSignal ?? null,
         maxRankAtSignal: qualityGate?.maxRankAtSignal ?? null,
@@ -1903,6 +2041,13 @@ function v6WinRateQualityVariants() {
               const gate = {
                 maxPre60Pct: base.maxPre60Pct,
                 minTrailing60Messages: base.minTrailing60Messages,
+                minTrailing60MessagesByTier: base.minTrailing60MessagesByTier,
+                requireCatalystOrPositiveSocialTiers: base.requireCatalystOrPositiveSocialTiers,
+                openingGuardMinutes: base.openingGuardMinutes,
+                rejectOpeningSignals: base.rejectOpeningSignals,
+                openingMaxPre60Pct: base.openingMaxPre60Pct,
+                openingMinTrailing60MessagesMultiplier: base.openingMinTrailing60MessagesMultiplier,
+                openingMaxSignalChangePct: base.openingMaxSignalChangePct,
                 minDashboardScore,
                 maxRankAtSignal,
                 minRelVolumeAtSignal,
@@ -2459,6 +2604,22 @@ function buildReport(summary, statsRows, sensitivityRows, promotion = []) {
     lines.push(`- ${row.name}: trades=${row.trades}, winRate=${row.winRate}, meanNet=${row.meanNetReturnPct}, PF=${row.profitFactor}`)
   }
   lines.push('')
+  lines.push('## Selected Candidate Paired Buy-And-Hold Comparison')
+  if (summary.selectedCandidate?.name && summary.selectedCandidate?.stats) {
+    const selected = summary.selectedCandidate
+    const strategy = selected.stats
+    const paired = strategy.pairedBenchmarks || {}
+    lines.push(`- Candidate: ${selected.group}/${selected.name}; entries=${strategy.trades}.`)
+    lines.push(`- Strategy: mean net=${strategy.meanNetReturnPct}%, median net=${strategy.medianNetReturnPct}%, win rate=${strategy.winRate}, PF=${strategy.profitFactor}.`)
+    lines.push(`- Same-exit-bar buy-and-hold: mean net=${paired.sameExitBarBuyHold?.meanNetReturnPct}%, median net=${paired.sameExitBarBuyHold?.medianNetReturnPct}%, win rate=${paired.sameExitBarBuyHold?.winRate}.`)
+    lines.push(`- Session-end buy-and-hold: mean net=${paired.sessionEndBuyHold?.meanNetReturnPct}%, median net=${paired.sessionEndBuyHold?.medianNetReturnPct}%, win rate=${paired.sessionEndBuyHold?.winRate}.`)
+    lines.push(`- Strategy minus same-exit-bar benchmark: mean=${paired.strategyMinusSameExitBar?.meanPct} percentage points, median=${paired.strategyMinusSameExitBar?.medianPct}.`)
+    lines.push(`- Strategy minus session-end benchmark: mean=${paired.strategyMinusSessionEnd?.meanPct} percentage points, median=${paired.strategyMinusSessionEnd?.medianPct}.`)
+    lines.push('- Both passive comparisons use the exact same entries. The first exits at the close of the strategy exit bar; the second holds through the final real bar of that trading session. Both include the same configured round-trip slippage as the strategy.')
+  } else {
+    lines.push('- No selected candidate was configured for a paired benchmark.')
+  }
+  lines.push('')
   lines.push('## Robustness Snapshot')
   const top = [...sensitivityRows].filter(r => r.trades >= 5).sort((a, b) => (b.meanNetReturnPct ?? -999) - (a.meanNetReturnPct ?? -999)).slice(0, 10)
   if (top.length) {
@@ -2585,7 +2746,13 @@ async function main() {
     progress(`loading article catalysts for ${priceTickers.length} tickers`)
     const catalysts = await loadCatalystEvents(db, priceTickers, price.diagnostics.priceStartSec, price.diagnostics.priceEndSec)
     progress('building ticker contexts')
-    const contexts = [...barsByTicker.entries()].map(([ticker, bars]) => buildTickerContext(ticker, bars, social, catalysts))
+    let contexts = [...barsByTicker.entries()].map(([ticker, bars]) => buildTickerContext(ticker, bars, social, catalysts))
+    if (config.requireSocialHistory) {
+      contexts = contexts.filter(context => context.socialMinutes.length > 0)
+      progress(`retained ${contexts.length} tickers with matched social history`)
+    }
+    const evaluationStartSec = social.diagnostics.matchedStartSec || price.diagnostics.priceStartSec
+    const evaluationEndSec = social.diagnostics.matchedEndSec || price.diagnostics.priceEndSec
 
     progress('running exact tier rules')
     const tier = runTierRules(contexts)
@@ -2601,18 +2768,18 @@ async function main() {
     progress('running peer research entry/exit threshold rules')
     const peerResearch = runPeerResearchGrid(contexts)
     const peerResearchRows = buildStatsRows('peer_research', peerResearch)
-    const peerResearchPromotion = promotionRows(peerResearch, price.diagnostics.priceStartSec, price.diagnostics.priceEndSec)
+    const peerResearchPromotion = promotionRows(peerResearch, evaluationStartSec, evaluationEndSec)
     const peerResearchTrades = Object.values(peerResearch).flat().sort((a, b) => a.signalSec - b.signalSec)
     progress('running optimization grid')
     const optimization = runOptimizationGrid(contexts)
     const optimizationRows = buildStatsRows('optimization', optimization)
-    const promotion = promotionRows(optimization, price.diagnostics.priceStartSec, price.diagnostics.priceEndSec)
+    const promotion = promotionRows(optimization, evaluationStartSec, evaluationEndSec)
     const bestPromotionName = promotion[0]?.name || null
     const bestPromotionTrades = bestPromotionName ? (optimization[bestPromotionName] || []) : []
     progress('running v6 full improvement grid')
     const v6FullImprovement = runV6FullImprovementGrid(contexts)
     const v6FullImprovementRows = buildStatsRows('v6_full_improvement', v6FullImprovement)
-    const v6FullImprovementPromotion = promotionRows(v6FullImprovement, price.diagnostics.priceStartSec, price.diagnostics.priceEndSec)
+    const v6FullImprovementPromotion = promotionRows(v6FullImprovement, evaluationStartSec, evaluationEndSec)
     const bestV6FullImprovementName = v6FullImprovementPromotion[0]?.name || null
     const bestV6FullImprovementTrades = bestV6FullImprovementName ? (v6FullImprovement[bestV6FullImprovementName] || []) : []
     const v6FullImprovementTrades = Object.values(v6FullImprovement).flat().sort((a, b) => a.signalSec - b.signalSec)
@@ -2620,9 +2787,22 @@ async function main() {
     const v6WinRateQuality = runV6WinRateQualityGrid(contexts)
     const v6WinRateQualityRows = buildStatsRows('v6_winrate_quality', v6WinRateQuality)
     const v6WinRateQualityCandidates = winRateRows(v6WinRateQuality)
+    const v6WinRateQualityPromotion = promotionRows(v6WinRateQuality, evaluationStartSec, evaluationEndSec)
     const bestV6WinRateQualityName = v6WinRateQualityCandidates[0]?.name || null
     const bestV6WinRateQualityTrades = bestV6WinRateQualityName ? (v6WinRateQuality[bestV6WinRateQualityName] || []) : []
     const v6WinRateQualityTrades = Object.values(v6WinRateQuality).flat().sort((a, b) => a.signalSec - b.signalSec)
+    const selectedCandidateGroup = String(config.selectedCandidate?.group || '')
+    const selectedCandidateName = String(config.selectedCandidate?.name || '')
+    const selectedCandidateGroups = {
+      tier_exact: tier,
+      pooled_exact: pooled,
+      improvement: improvements,
+      peer_research: peerResearch,
+      optimization,
+      v6_full_improvement: v6FullImprovement,
+      v6_winrate_quality: v6WinRateQuality,
+    }
+    const selectedCandidateTrades = selectedCandidateGroups[selectedCandidateGroup]?.[selectedCandidateName] || []
     progress('running baselines')
     const baselines = runBaselines(contexts, exactTierTrades.length || exactPooledTrades.length || 50)
     const baselineTrades = Object.values(baselines).flat().sort((a, b) => a.signalSec - b.signalSec)
@@ -2651,23 +2831,30 @@ async function main() {
       price: price.diagnostics,
       social: social.diagnostics,
       catalysts: catalysts.diagnostics,
-      exactTier: Object.fromEntries(Object.entries(tier).map(([k, v]) => [k, summarizeTrades(v)])),
-      exactPooled: Object.fromEntries(Object.entries(pooled).map(([k, v]) => [k, summarizeTrades(v)])),
-      improvements: Object.fromEntries(Object.entries(improvements).map(([k, v]) => [k, summarizeTrades(v)])),
+      exactTier: Object.fromEntries(Object.entries(tier).map(([k, v]) => [k, summarizeTradesWithBenchmarks(v)])),
+      exactPooled: Object.fromEntries(Object.entries(pooled).map(([k, v]) => [k, summarizeTradesWithBenchmarks(v)])),
+      improvements: Object.fromEntries(Object.entries(improvements).map(([k, v]) => [k, summarizeTradesWithBenchmarks(v)])),
       improvementWalkForward: Object.fromEntries(Object.entries(improvements).map(([k, v]) => [k, splitStats(v)])),
-      peerResearch: Object.fromEntries(Object.entries(peerResearch).map(([k, v]) => [k, summarizeTrades(v)])),
+      peerResearch: Object.fromEntries(Object.entries(peerResearch).map(([k, v]) => [k, summarizeTradesWithBenchmarks(v)])),
       peerResearchPromotion: peerResearchPromotion.slice(0, 50),
       bestPeerResearchCandidate: peerResearchPromotion[0] || null,
-      optimization: Object.fromEntries(Object.entries(optimization).map(([k, v]) => [k, summarizeTrades(v)])),
+      optimization: Object.fromEntries(Object.entries(optimization).map(([k, v]) => [k, summarizeTradesWithBenchmarks(v)])),
       optimizationPromotion: promotion.slice(0, 50),
       bestOptimizationCandidate: promotion[0] || null,
-      v6FullImprovement: Object.fromEntries(Object.entries(v6FullImprovement).map(([k, v]) => [k, summarizeTrades(v)])),
+      v6FullImprovement: Object.fromEntries(Object.entries(v6FullImprovement).map(([k, v]) => [k, summarizeTradesWithBenchmarks(v)])),
       v6FullImprovementPromotion: v6FullImprovementPromotion.slice(0, 50),
       bestV6FullImprovementCandidate: v6FullImprovementPromotion[0] || null,
-      v6WinRateQuality: Object.fromEntries(Object.entries(v6WinRateQuality).map(([k, v]) => [k, summarizeTrades(v)])),
+      v6WinRateQuality: Object.fromEntries(Object.entries(v6WinRateQuality).map(([k, v]) => [k, summarizeTradesWithBenchmarks(v)])),
       v6WinRateQualityCandidates: v6WinRateQualityCandidates.slice(0, 50),
+      v6WinRateQualityPromotion: v6WinRateQualityPromotion.slice(0, 50),
       bestV6WinRateQualityCandidate: v6WinRateQualityCandidates[0] || null,
-      baselines: Object.fromEntries(Object.entries(baselines).map(([k, v]) => [k, summarizeTrades(v)])),
+      baselines: Object.fromEntries(Object.entries(baselines).map(([k, v]) => [k, summarizeTradesWithBenchmarks(v)])),
+      selectedCandidate: selectedCandidateName ? {
+        group: selectedCandidateGroup,
+        name: selectedCandidateName,
+        found: selectedCandidateTrades.length > 0,
+        stats: summarizeTradesWithBenchmarks(selectedCandidateTrades),
+      } : null,
       signalAudit,
       walkForward: splitStats(allExact),
     }
@@ -2682,6 +2869,7 @@ async function main() {
     writeCsv('best_v6_full_improvement_trades.csv', bestV6FullImprovementTrades.sort((a, b) => a.signalSec - b.signalSec))
     writeCsv('v6_winrate_quality_trades.csv', v6WinRateQualityTrades)
     writeCsv('best_v6_winrate_quality_trades.csv', bestV6WinRateQualityTrades.sort((a, b) => a.signalSec - b.signalSec))
+    writeCsv('selected_candidate_trades.csv', selectedCandidateTrades.sort((a, b) => a.signalSec - b.signalSec))
     writeCsv('strategy_summary.csv', statsRows)
     writeCsv('improvement_summary.csv', buildStatsRows('improvement', improvements))
     writeCsv('peer_research_summary.csv', peerResearchRows)
@@ -2692,6 +2880,7 @@ async function main() {
     writeCsv('v6_full_improvement_candidates.csv', v6FullImprovementPromotion)
     writeCsv('v6_winrate_quality_summary.csv', v6WinRateQualityRows)
     writeCsv('v6_winrate_quality_candidates.csv', v6WinRateQualityCandidates)
+    writeCsv('v6_winrate_quality_promotion.csv', v6WinRateQualityPromotion)
     writeCsv('sensitivity_summary.csv', sensitivityRows)
     fs.writeFileSync(path.join(outputDir, 'summary.json'), JSON.stringify(summary, null, 2) + '\n')
     fs.writeFileSync(path.join(outputDir, 'report.md'), buildReport(summary, statsRows, sensitivityRows, promotion))

@@ -14,79 +14,116 @@ import {
   loadRawSocialCountsFor,
 } from '../lib/thresholdFeatures.js'
 
-// GET /api/v11-screener?limit=30&maxCandidates=120
+// GET /api/v12-screener?limit=30&maxCandidates=120
 //
 // EXPERIMENTAL PROFILE PROBE — not a third interchangeable screener.
 //
-// Evaluates one specific backtest strategy profile ("v11") over the
-// catalyst-enriched prediction universe (daily_prediction_snapshots), POSTMORTEM
-// only: for each enriched candidate it replays the candidate's completed target
-// session and asks "would v11 have entered, and how would its multi-leg exit have
-// played out?". It reuses the exact production functions rather than porting math:
-//   - evaluatePredictionEntryThreshold(row, V11_PROFILE)  → cross + pre-move + msg gate
-//   - simulatePayoffCapture(entry, candles, V11_PROFILE)  → 50%@+5% / giveback / stop / EOD
-// plus two v11-only gates layered on top: the active-move (0–12%) band and the
-// low-float/Nano evidence guard (catalyst OR social OR short-interest support).
+// Direct sibling of routes/v11Screener.js: same universe, same postmortem-only
+// framing, same discipline of reusing production functions rather than porting
+// math. For each catalyst-enriched candidate it replays the completed target
+// session and asks "would v12 have entered, and how would its runner exit have
+// played out?".
+//   - evaluatePredictionEntryThreshold(row, V12_PROFILE) → cross + pre-move
+//     + message + opening-block gate
+//   - simulatePayoffCapture(entry, candles, V12_PROFILE) → full-position runner
+// plus the same two probe-only gates v11 layers on top: the active-move band and
+// the low-float/Nano evidence guard.
 //
-// v11 needs a 120-minute correlation window, which no STORED tier feature uses,
-// so the 120m corr / pre-60m return / trailing-60m message features are recomputed
-// live per candidate from Mongo ohlcv_bars + socials (chart-service is NOT touched).
+// v12 IS NOT THE LIVE POLICY. The shared prediction-threshold policy is v11 and
+// stays v11; v12 exists only as the explicit profileOverride below. Any caller
+// that does not pass V12_PROFILE — the main screener, the prediction pipeline,
+// the squeeze screener — resolves v11. tests/defaultPolicyIsV11.test.js enforces
+// that, because installing a v12 policy file wholesale once made v12 the silent
+// default for all of them.
+//
+// HOW v12 DIFFERS FROM v11 (the whole point of the probe):
+//   - 180-minute correlation window vs 120, crossing 0.40 vs 0.38
+//   - >= 5 trailing-60m messages vs >= 3
+//   - active-move band widened to 0–20% from 0–12%
+//   - NO new entries in the first 20 regular-session minutes (v11 has no opening gate)
+//   - full-position runner: no 50%-at-+5% partial leg; 4% giveback vs 5%
+//
+// ── HONESTY BANNER ────────────────────────────────────────────────────────────
+// v12's headline backtest (38 trades, 60.53% win rate, +2.7306% mean net, PF
+// 4.4833) is RETROSPECTIVE and was NOT independently reproduced. Re-running the
+// config against locally held OHLC yields a handful of trades, not 38, because
+// the backtest window needs history this environment does not have.
+//
+// What WAS verified is narrower and worth stating precisely: every headline
+// number and the entire buy-and-hold table recompute exactly from the delivered
+// raw trade rows, with identical per-trade costs applied to the strategy and to
+// both passive benchmarks. That proves the report matches its own trade data. It
+// does not prove the trade data faithfully reflects the market.
+//
+// Two corrections are already folded into the numbers reported here:
+//   1. The original harness computed profit giveback as a percentage of
+//      ACCUMULATED PROFIT; production defines it as a percentage decline from the
+//      post-entry peak. The harness was corrected and the earlier +3.2828% mean
+//      was withdrawn — +2.7306% is the corrected, production-parity figure.
+//   2. The published -7.8429 max drawdown was an artifact of accumulating equity
+//      in ticker-grouped array order. In signal-time order it is -8.6274.
+//
+// And the finding that most limits this probe: v12 does NOT beat passive holding
+// from the same entries. Holding to the strategy's own exit bar returns +3.0054%
+// versus v12's +2.7306%, and holding to session end returns +2.6728%. Day-block
+// bootstrap intervals for both alphas cross zero. The evidence supports the
+// ticker-days this entry gate selects, NOT the exit overlay layered on them.
+//
+// Promotion criteria are unmet: 38 of 60 required trades. This route exists to
+// accumulate forward evidence, not to justify a switch.
 //
 // CONFIDENTIALITY BOUNDARY: reads only Mongo (daily_prediction_snapshots,
-// ohlcv_bars, socials) via this repo's own math. It must never read from or import
-// anything under ~/dev/research-students (confidential student research data).
+// ohlcv_bars, socials) via this repo's own math. It must never read from or
+// import anything under ~/dev/research-students (confidential student research
+// data).
 
 const router = Router()
 
-// ── The v11 profile (fixed; this is what we are testing) ──────────────────────
-export const V11_PROFILE = {
-  label: 'v11',
-  policyVersion: 'v11_experimental_profile',
-  entrySignal: 'corr120_crosses_above_0.38_with_premove_active_move_message_and_lowfloat_evidence_gates',
-  windowMinutes: 120,
-  smoothingMinutes: 120,
-  thresholdC: 0.38,
-  setupNearThresholdBand: 0.05,
+// ── The v12 profile (fixed; this is what we are testing) ──────────────────────
+export const V12_PROFILE = {
+  label: 'v12',
+  policyVersion: 'v12_experimental_profile',
+  entrySignal: 'corr180_crosses_above_0.40_with_premove_active_move_message_opening_block_and_lowfloat_evidence_gates',
+  windowMinutes: 180,
+  smoothingMinutes: 180,
+  thresholdC: 0.4,
+  setupNearThresholdBand: 0.04,
   maxPreSignalReturn60mPct: 4,     // prior 60m return must be <= +4%
-  minTrailing60Messages: 3,        // >= 3 trailing-60m messages
+  minTrailing60Messages: 5,        // >= 5 trailing-60m (Small 8 / Nano 12 via floatEvidenceGates)
   minSignalChangePct: 0,           // explicit override threaded into the policy gate
-  maxSignalChangePct: 12,
-  // v11 has NO opening gate, and both keys have to say so for different reasons.
-  // openingVolatilityGuardMinutes is set to 20 in the live candidate rule, so
-  // leaving it unpinned would inherit it. openingNoEntryMinutes is not in the
-  // live rule today, so its pin is defensive against a future base that adds one.
-  //
-  // Pinning only the no-entry block is NOT enough. The volatility guard tightens
-  // the pre-move ceiling to 1.5%, scales the message requirement by 1.5x, and
-  // caps abs change at 8% — any one of which can flip a signal v11 historically
-  // took. Measured on real bars: of 48 real v11 crosses re-stamped into the
-  // opening window, pinning only the block changed 4 verdicts; pinning both
-  // changed none.
-  openingNoEntryMinutes: 0,
-  openingVolatilityGuardMinutes: 0,
-  activeMoveMinPct: 0,             // the active move itself must be in [0%, 12%]
-  activeMoveMaxPct: 12,
-  // Exit == V7_PAYOFF_CAPTURE_EXIT (screener.js): 50% at +5%; runner gives back 5%
-  // after reaching +10%; 3% protective stop on the whole position; EOD flatten.
-  exitStrategy: 'partial_profit_then_profit_giveback_runner',
-  partialExitFraction: 0.5,
-  partialProfitTargetPct: 5,
-  profitGivebackPct: 5,
+  maxSignalChangePct: 20,
+  // v12's defining entry change: no new positions in the first 20 regular-session
+  // minutes. Pinned explicitly rather than inherited — the live base is v11 and
+  // sets no opening block at all, so without this the probe would not have one.
+  openingNoEntryMinutes: 20,
+  openingVolatilityGuardMinutes: 20,
+  openingMaxPreSignalReturn60mPct: 1.5,
+  openingMinTrailing60MessagesMultiplier: 1.5,
+  openingMaxSignalAbsChangePct: 8,
+  activeMoveMinPct: 0,             // the active move itself must be in [0%, 20%]
+  activeMoveMaxPct: 20,
+  // Exit: FULL-POSITION runner. partialExitFraction is explicitly 0, not null and
+  // not omitted — simulatePayoffCapture treats an OMITTED value as v11's legacy
+  // 0.5 partial leg, so dropping the key would silently simulate v11's exit.
+  exitStrategy: 'profit_giveback_runner',
+  partialExitFraction: 0,
+  partialProfitTargetPct: null,
+  profitGivebackPct: 4,
   profitGivebackActivationPct: 10,
   protectiveStopPct: 3,
   runnerTrailingStopPct: 99,
   trailingStopPct: 10,
-  exitPlan: 'sell 50% at +5%; hold the runner until it gives back 5% after reaching +10%; keep the 3% protective stop and flatten by end of day',
+  exitPlan: 'hold the full position until it gives back 4% from a peak that reached +10%; keep the 3% protective stop and flatten by end of day',
 }
 
-// Correlation floor: require at least this many observations in the rolling window
-// before a corr is defined. Mirrors the feature-writer's default (30); v11's
-// 120m window still needs a warm-up but does not demand a strictly full window.
-const V11_MIN_OBSERVATIONS = 30
+// Correlation floor: require at least this many observations in the rolling
+// window before a corr is defined. Mirrors v11's floor and the feature-writer's
+// default; v12's 180m window needs a longer warm-up but does not demand a
+// strictly full window.
+const V12_MIN_OBSERVATIONS = 30
 
 // Evidence-gate thresholds — kept in sync with routes/screener.js's fuller
-// recognized*Catalyst gates (SQUEEZE_WATCHER_MIN, PREDICTION_PEOPLE_MIN_MESSAGES,
-// verifiedShortInterest). This is a compact proxy of that logic for the probe.
+// recognized*Catalyst gates, same as the v11 probe.
 const SQUEEZE_WATCHER_MIN = Math.max(1000, Number(process.env.SQUEEZE_WATCHER_MIN || 5000))
 const PEOPLE_MIN_MESSAGES = Math.max(1, Number(process.env.PREDICTION_PEOPLE_MIN_MESSAGES || 12))
 
@@ -94,6 +131,10 @@ const DEFAULT_LIMIT = 30
 const MAX_LIMIT = 100
 const DEFAULT_MAX_CANDIDATES = 120
 const CONCURRENCY = 6
+
+// Regular session opens 09:30 ET. Bars are naive-ET-encoded-as-UTC, so the
+// minute-of-day arithmetic below is ET by construction.
+const REGULAR_OPEN_MINUTE_OF_DAY = 9 * 60 + 30
 
 function clamp(value, min, max) {
   const n = Number(value)
@@ -106,26 +147,27 @@ function num(value) {
   return Number.isFinite(n) ? n : null
 }
 
-// ── v11-only evidence guard: for low-float (Nano) names, require >= 1 of
-// {catalyst support, social support, short-interest support}. Non-low-float tiers
-// are not gated by this rule. When the underlying fields are entirely absent the
-// guard FAILS CLOSED (evidence_unavailable) rather than silently passing. ──
-function v11EvidenceGate(row, tier) {
+function minutesSinceRegularOpen(minuteSec) {
+  const d = new Date(Number(minuteSec) * 1000)
+  if (Number.isNaN(d.getTime())) return null
+  return d.getUTCHours() * 60 + d.getUTCMinutes() - REGULAR_OPEN_MINUTE_OF_DAY
+}
+
+// ── Probe-only evidence guard: for low-float (Nano) names, require >= 1 of
+// {catalyst support, social support, short-interest support}. Identical to the
+// v11 probe's guard, including failing CLOSED when the fields are absent. ──
+function v12EvidenceGate(row, tier) {
   const lowFloat = tier === 'Nano'
   const shortInterestPct = num(row.short_interest_pct ?? row.short_interest_pct_shares_out ?? row.short_interest_pct_float)
   const floatShort = num(row.float_short)
   const catalystPower = num(row.catalyst_power_score) || 0
   const catalystArticles = num(row.catalyst_window_article_count ?? row.news_article_count) || 0
   const watcherCount = num(row.stocktwits_watcher_count) || 0
-  // Prefer threshold_trailing_60m_messages: it comes from lib/thresholdFeatures.js,
-  // whose candidateTickers has always deduped ticker/symbol/cashtag. message_count
-  // comes from the screener.js aggregation, which counted one real message three
-  // times until the $setUnion fix. Reading the inflated field first made
-  // PEOPLE_MIN_MESSAGES mean two different things depending on which branch fired.
-  // Today this is a no-op — save_daily_prediction_snapshot.js's compactRow writes
-  // threshold_trailing_60m_messages and never writes message_count, so the
-  // fallback already resolved to the correct field — but the order is now right
-  // by construction rather than by accident of what the snapshot happens to store.
+  // Same field-ordering rule as the v11 probe: threshold_trailing_60m_messages
+  // comes from lib/thresholdFeatures.js, whose candidateTickers has always
+  // deduped ticker/symbol/cashtag. message_count comes from the screener.js
+  // aggregation, which counted one real message three times until the $setUnion
+  // fix. Read the deduped field first so PEOPLE_MIN_MESSAGES means one thing.
   const messages = num(row.threshold_trailing_60m_messages ?? row.message_count) || 0
 
   const shortSupport = (shortInterestPct != null && shortInterestPct >= 10) || (floatShort != null && floatShort >= 10)
@@ -163,7 +205,6 @@ async function loadSessionBars(db, ticker, startSec, endSec) {
     .limit(2000)
     .toArray()
     .catch(() => [])
-  // Normalize to {minute, close, high, low, open, ...}; keep epoch-sec `minute`.
   return docs
     .map(doc => {
       const candle = normalizeCandle(doc, 'mongo_ohlcv_bars')
@@ -172,7 +213,7 @@ async function loadSessionBars(db, ticker, startSec, endSec) {
     .filter(Boolean)
 }
 
-// Replay one candidate's completed target session through the v11 profile.
+// Replay one candidate's completed target session through the v12 profile.
 async function replayCandidate(db, candidate) {
   const ticker = String(candidate.ticker || '').toUpperCase()
   const sessionDate = candidate.targetDate || candidate.predictionDate
@@ -193,21 +234,22 @@ async function replayCandidate(db, candidate) {
   if (!bounds) return { ...base, status: 'bad_session_date' }
 
   const bars = await loadSessionBars(db, ticker, bounds.startSec, bounds.endSec)
-  if (bars.length < V11_MIN_OBSERVATIONS + 2) {
+  if (bars.length < V12_MIN_OBSERVATIONS + 2) {
     return { ...base, status: 'insufficient_bars', bars: bars.length }
   }
 
   // Evidence guard is a candidate-level property (not per-minute); evaluate once.
-  const evidence = v11EvidenceGate(candidate, tier)
+  const evidence = v12EvidenceGate(candidate, tier)
 
-  // 120m causal density + rolling correlation over the session.
+  // 180m causal density + rolling correlation over the session.
   const rawCounts = await loadRawSocialCountsFor(db, new Set([ticker]), bounds.startSec, bounds.endSec)
-  const densityByMinute = densityByMinuteFor(ticker, bars, rawCounts, V11_PROFILE.smoothingMinutes)
-  const corrByMinute = rollingCorrelation(bars, densityByMinute, V11_PROFILE.windowMinutes, V11_MIN_OBSERVATIONS)
+  const densityByMinute = densityByMinuteFor(ticker, bars, rawCounts, V12_PROFILE.smoothingMinutes)
+  const corrByMinute = rollingCorrelation(bars, densityByMinute, V12_PROFILE.windowMinutes, V12_MIN_OBSERVATIONS)
 
   const sessionOpen = bars[0].close
   let entered = null
   let lastReject = null
+  let openingBlocked = 0
 
   // Scan for the FIRST minute where corr crosses up through the threshold AND all
   // gates pass. The entry executes at the next real bar's close (t+1), per policy.
@@ -216,7 +258,7 @@ async function replayCandidate(db, candidate) {
     const prev = corrByMinute.get(bars[i - 1].minute)
     const cur = corrByMinute.get(bar.minute)
     if (prev == null || cur == null) continue
-    const crossedUp = prev <= V11_PROFILE.thresholdC && cur > V11_PROFILE.thresholdC
+    const crossedUp = prev <= V12_PROFILE.thresholdC && cur > V12_PROFILE.thresholdC
     if (!crossedUp) continue
 
     const prior = findBarAtOrBefore(bars, bar.minute - 60 * 60)
@@ -224,23 +266,21 @@ async function replayCandidate(db, candidate) {
     const activeMove = pctReturn(sessionOpen, bar.close)
     const trailing60 = trailingMessageCount(ticker, bar.minute, rawCounts, 60)
 
-    // Reuse the production gate with the v11 profile override.
+    // Reuse the production gate with the v12 profile override. The signal minute
+    // is what makes the opening block evaluable — without it the gate cannot know
+    // where in the session it is, and v12's defining rule would be skipped.
     const synthetic = {
       ...candidate,
-      // The shared gate locates a signal in the session from this field. Without
-      // it any opening rule is silently SKIPPED rather than applied, so a profile
-      // that asks for one would quietly not get it. v11 pins both opening windows
-      // to 0 above, so supplying it is inert here — but it makes the gate honest
-      // and gives any future profile replayed through this route a real opening
-      // evaluation instead of an accidental exemption.
       threshold_feature_snapshot_sec: bar.minute,
       price_density_correlation: cur,
       previous_price_density_correlation: prev,
       threshold_pre_return_60m_pct: pre60,
       threshold_trailing_60m_messages: trailing60,
     }
-    const gate = evaluatePredictionEntryThreshold(synthetic, V11_PROFILE)
-    const activeMoveOk = activeMove != null && activeMove >= V11_PROFILE.activeMoveMinPct && activeMove <= V11_PROFILE.activeMoveMaxPct
+    const gate = evaluatePredictionEntryThreshold(synthetic, V12_PROFILE)
+    const activeMoveOk = activeMove != null && activeMove >= V12_PROFILE.activeMoveMinPct && activeMove <= V12_PROFILE.activeMoveMaxPct
+
+    if (gate.openingVolatilityGuard?.no_entry_active) openingBlocked += 1
 
     if (gate.passed && activeMoveOk && evidence.ok) {
       const entryBar = bars[i + 1] || bar     // execute at next real bar close (t+1)
@@ -254,8 +294,9 @@ async function replayCandidate(db, candidate) {
       pre60,
       activeMove,
       trailing60,
+      minutes_since_open: minutesSinceRegularOpen(bar.minute),
       reason: !activeMoveOk
-        ? `active move ${activeMove == null ? 'n/a' : `${activeMove.toFixed(2)}%`} outside [${V11_PROFILE.activeMoveMinPct}, ${V11_PROFILE.activeMoveMaxPct}]%`
+        ? `active move ${activeMove == null ? 'n/a' : `${activeMove.toFixed(2)}%`} outside [${V12_PROFILE.activeMoveMinPct}, ${V12_PROFILE.activeMoveMaxPct}]%`
         : !evidence.ok
           ? `low-float evidence: ${evidence.status}`
           : gate.status,
@@ -268,26 +309,30 @@ async function replayCandidate(db, candidate) {
       status: 'no_entry',
       evidence,
       reject: lastReject,
-      note: lastReject ? `Closest: ${lastReject.reason}` : 'No 120m correlation cross above 0.38 this session.',
+      opening_blocked_crosses: openingBlocked,
+      note: lastReject
+        ? `Closest: ${lastReject.reason}`
+        : 'No 180m correlation cross above 0.40 this session.',
     }
   }
 
-  // Simulate the multi-leg exit forward from the entry bar over the rest of the session.
+  // Simulate the full-position runner exit forward from the entry bar.
   const forward = bars.filter(b => b.minute > entered.entryBar.minute)
-  const sim = simulatePayoffCapture(entered.entryBar.close, forward, V11_PROFILE)
+  const sim = simulatePayoffCapture(entered.entryBar.close, forward, V12_PROFILE)
 
   const entryPrice = entered.entryBar.close
-  const partialPnl = sim?.partial_exit_price != null ? pctReturn(entryPrice, sim.partial_exit_price) : null
   const runnerPnl = sim?.exit_price != null ? pctReturn(entryPrice, sim.exit_price) : null
 
   return {
     ...base,
     status: 'entered',
     evidence,
+    opening_blocked_crosses: openingBlocked,
     entry: {
       price: Number(entryPrice.toFixed(4)),
       signal_sec: entered.signalBar.minute,
       entry_sec: entered.entryBar.minute,
+      minutes_since_open: minutesSinceRegularOpen(entered.signalBar.minute),
       corr: Number(entered.corr.toFixed(4)),
       prev_corr: Number(entered.prevCorr.toFixed(4)),
       pre_return_60m_pct: entered.pre60 == null ? null : Number(entered.pre60.toFixed(3)),
@@ -296,17 +341,17 @@ async function replayCandidate(db, candidate) {
       gate_status: entered.gate.status,
       gate_reason: entered.gate.reason,
     },
-    // Two exit legs, as v11's exit is a partial + runner.
+    // ONE leg, unlike v11. The partial is reported as explicitly disabled rather
+    // than omitted, so a client diffing v11 against v12 sees why the blended
+    // return it knows from v11 is absent here.
     legs: {
       partial: {
-        target_pct: V11_PROFILE.partialProfitTargetPct,
-        fraction: V11_PROFILE.partialExitFraction,
-        filled: sim?.partial_exit_price != null,
-        price: sim?.partial_exit_price ?? null,
-        exit_sec: sim?.partial_exit_sec ?? null,
-        pnl_pct: partialPnl == null ? null : Number(partialPnl.toFixed(3)),
+        enabled: false,
+        reason: 'v12 holds the full position; there is no partial profit leg',
+        fraction: 0,
       },
       runner: {
+        fraction: 1,
         price: sim?.exit_price ?? null,
         exit_sec: sim?.exit_sec ?? null,
         exit_reason: sim?.exit_reason ?? null,
@@ -315,7 +360,7 @@ async function replayCandidate(db, candidate) {
     },
     outcome: sim
       ? {
-          realized_return_pct: sim.return_pct,          // 50/50 blended across the two legs
+          realized_return_pct: sim.return_pct,          // whole position, single leg
           won: sim.won,
           exit_reason: sim.exit_reason,
           peak_return_pct: sim.peak_return_pct,
@@ -328,10 +373,8 @@ async function replayCandidate(db, candidate) {
 //
 // Deliberately does NOT go through screener.js's normalizeStoredPredictionRow:
 // that normalizer returns a curated allow-list that strips market_cap_tier,
-// market_cap, short_interest_pct*, float_short, and catalyst_power_score — exactly
-// the fields v11's tier classification and low-float evidence guard need. We keep
-// the raw doc (augmented with resolved prediction/target dates) so those fields
-// survive to replayCandidate.
+// market_cap, short_interest_pct*, float_short, and catalyst_power_score —
+// exactly the fields tier classification and the low-float evidence guard need.
 async function loadEnrichedCandidates(db, maxCandidates) {
   const snapshots = await db.collection('daily_prediction_snapshots')
     .find({})
@@ -383,6 +426,23 @@ async function mapPool(items, limit, fn) {
   return out
 }
 
+// Shipped with every response so the caveats travel with the data rather than
+// living only in this file's header, where an API consumer never sees them.
+const BACKTEST_PROVENANCE = {
+  headline: '38 trades, 60.53% win rate, +2.7306% mean net, PF 4.4833, -8.6274 chronological max drawdown',
+  source_backtest: 'backtests/message_density_thresholds/outputs_v12_final_confirmation_mongo_ohlc',
+  independently_reproduced: false,
+  reproduction_note: 'The 38-trade result was NOT re-derived locally: the backtest window requires OHLC history not held in this environment, so re-running the config produces a handful of trades, not 38. Verified instead: every headline number and the full buy-and-hold table recompute exactly from the delivered raw trade rows, with identical per-trade costs on the strategy and both passive benchmarks.',
+  corrections_applied: [
+    'The original harness computed profit giveback as a percentage of ACCUMULATED PROFIT; production defines it as a percentage decline from the post-entry peak. The harness was corrected and the earlier +3.2828% mean was WITHDRAWN. +2.7306% is the corrected production-parity figure.',
+    'The published -7.8429 max drawdown was an artifact of accumulating equity in ticker-grouped array order rather than signal-time order. Chronologically it is -8.6274.',
+  ],
+  passive_benchmark_warning: 'v12 does NOT beat passive holding from the same 38 entries: holding to the strategy exit bar returns +3.0054% and holding to session end +2.6728%, versus v12 +2.7306%. Day-block bootstrap intervals for both alphas cross zero. The evidence supports the ticker-days this entry gate selects, not the exit overlay.',
+  v11_comparison_warning: 'The commonly quoted v11 comparison (+1.5719% mean, PF 2.3875, -18.5464 chronological drawdown) is v11 ENTRY GATE + v12 EXIT OVERLAY, not v11 as deployed. v11 with its real live exit (50% at +5%, 5% giveback) over the same 40 entries returns +1.0692% mean, PF 2.0327.',
+  promotion_status: 'unmet: 38 of 60 required trades, 16 of 20 temporal-development, 6 of 8 temporal-validation',
+  live_policy_note: 'v12 is NOT the live threshold policy. The shared policy is v11; v12 is reachable only through this route\'s explicit profile override.',
+}
+
 router.get('/', async (req, res) => {
   try {
     const limit = Math.round(clamp(req.query.limit ?? DEFAULT_LIMIT, 1, MAX_LIMIT))
@@ -398,10 +458,12 @@ router.get('/', async (req, res) => {
     if (!candidates.length) {
       return res.json({
         ok: true,
-        profile: V11_PROFILE,
+        profile: V12_PROFILE,
         universe: 'catalyst_enriched_daily_prediction_snapshots',
         mode: 'postmortem_completed_sessions',
         experimental: true,
+        probe_status: 'historically_validated_probe_requires_forward_evidence',
+        backtest_provenance: BACKTEST_PROVENANCE,
         count: 0,
         entered: 0,
         rows: [],
@@ -409,7 +471,7 @@ router.get('/', async (req, res) => {
       })
     }
 
-    // 2. Replay each through the v11 profile.
+    // 2. Replay each through the v12 profile.
     const replayed = await mapPool(candidates, CONCURRENCY, c => replayCandidate(db, c))
 
     // 3. Entered rows first (by realized return desc), then the rest.
@@ -421,11 +483,14 @@ router.get('/', async (req, res) => {
 
     res.json({
       ok: true,
-      profile: V11_PROFILE,
+      profile: V12_PROFILE,
       universe: 'catalyst_enriched_daily_prediction_snapshots',
       mode: 'postmortem_completed_sessions',
       experimental: true,
-      disclaimer: 'Testing a single fixed backtest profile (v11) over the catalyst-enriched set only — NOT a live trading screener and not comparable to the Entry/Exit Screeners.',
+      probe_status: 'historically_validated_probe_requires_forward_evidence',
+      disclaimer: 'Testing a single fixed backtest profile (v12) over the catalyst-enriched set only — NOT a live trading screener, not trading advice, and not comparable to the Entry/Exit Screeners. v12 is a PROBE: its backtest was not independently reproduced, and it has not been shown to beat passive holding from the same entries. See backtest_provenance.',
+      backtest_provenance: BACKTEST_PROVENANCE,
+      compare_with: '/api/v11-screener runs the same universe and the same postmortem replay through the v11 profile; v11 remains the live policy and the reference, not the loser of a settled comparison.',
       candidates_scanned: candidates.length,
       count: ordered.length,
       entered: entered.length,

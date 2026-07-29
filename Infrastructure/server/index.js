@@ -14,6 +14,7 @@ import screenerRouter    from './routes/screener.js'
 import entryScreenerRouter from './routes/entryScreener.js'
 import exitScreenerRouter from './routes/exitScreener.js'
 import v11ScreenerRouter from './routes/v11Screener.js'
+import v12ScreenerRouter from './routes/v12Screener.js'
 import longTermFundamentalsRouter from './routes/longTermFundamentals.js'
 import squeezeScreenerRouter from './routes/squeezeScreener.js'
 import positionScreenerRouter from './routes/positionScreener.js'
@@ -3450,6 +3451,10 @@ app.use('/api/screener',    screenerRouter)
 app.use('/api/entry-screener', entryScreenerRouter)
 app.use('/api/exit-screener', exitScreenerRouter)
 app.use('/api/v11-screener', v11ScreenerRouter)
+// Sibling probe, same postmortem-only framing. Deliberately its own route
+// rather than a mode flag on v11: the two profiles must stay independently
+// readable, and v11's numbers must not move when v12 changes.
+app.use('/api/v12-screener', v12ScreenerRouter)
 app.use('/api/long-term-fundamentals', longTermFundamentalsRouter)
 app.use('/api/squeeze-screener', squeezeScreenerRouter)
 app.use('/api/position-screener', positionScreenerRouter)

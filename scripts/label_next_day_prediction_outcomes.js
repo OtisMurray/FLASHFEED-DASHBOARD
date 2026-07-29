@@ -97,12 +97,15 @@ async function fetchMongoIntradayCandles(db, ticker, snapshotSec) {
 function simulatePayoffCapture(entryPrice, candles = [], options = {}) {
   const entry = Number(entryPrice)
   if (!Number.isFinite(entry) || entry <= 0 || !candles.length) return null
-  const partialFraction = Number(options.partialExitFraction ?? 0.5)
+  const hasPartialOverride = Object.prototype.hasOwnProperty.call(options, 'partialExitFraction')
+  const partialFraction = Math.max(0, Math.min(1, Number(hasPartialOverride ? (options.partialExitFraction ?? 0) : 0.5)))
   const partialTargetPct = Number(options.partialProfitTargetPct ?? 5)
   const activationPct = Number(options.profitGivebackActivationPct ?? 10)
   const givebackPct = Number(options.profitGivebackPct ?? 5)
   const protectiveStopPct = Number(options.protectiveStopPct ?? 3)
-  const partialTarget = entry * (1 + partialTargetPct / 100)
+  const partialTarget = partialFraction > 0 && partialFraction < 1
+    ? entry * (1 + partialTargetPct / 100)
+    : Infinity
   const protectiveStop = entry * (1 - protectiveStopPct / 100)
   let peak = entry
   let partialExitPrice = null

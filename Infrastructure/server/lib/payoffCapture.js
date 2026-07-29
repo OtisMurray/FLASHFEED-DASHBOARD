@@ -8,7 +8,7 @@
 // if you change the exit rule, change it in BOTH places.
 //
 // Exit rule (the "V7_PAYOFF_CAPTURE_EXIT" profile, == v11):
-//   - sell `partialExitFraction` (50%) at `partialProfitTargetPct` (+5%)
+//   - optionally sell `partialExitFraction` (50% in v11) at `partialProfitTargetPct`
 //   - hold the runner until it gives back `profitGivebackPct` (5%) from a peak
 //     that reached at least `profitGivebackActivationPct` (+10%)
 //   - `protectiveStopPct` (3%) protective stop on the whole position
@@ -62,12 +62,15 @@ export function normalizeCandle(doc = {}, source = 'mongo_ohlcv_bars') {
 export function simulatePayoffCapture(entryPrice, candles = [], options = {}) {
   const entry = Number(entryPrice)
   if (!Number.isFinite(entry) || entry <= 0 || !candles.length) return null
-  const partialFraction = Number(options.partialExitFraction ?? 0.5)
+  const hasPartialOverride = Object.prototype.hasOwnProperty.call(options, 'partialExitFraction')
+  const partialFraction = Math.max(0, Math.min(1, Number(hasPartialOverride ? (options.partialExitFraction ?? 0) : 0.5)))
   const partialTargetPct = Number(options.partialProfitTargetPct ?? 5)
   const activationPct = Number(options.profitGivebackActivationPct ?? 10)
   const givebackPct = Number(options.profitGivebackPct ?? 5)
   const protectiveStopPct = Number(options.protectiveStopPct ?? 3)
-  const partialTarget = entry * (1 + partialTargetPct / 100)
+  const partialTarget = partialFraction > 0 && partialFraction < 1
+    ? entry * (1 + partialTargetPct / 100)
+    : Infinity
   const protectiveStop = entry * (1 - protectiveStopPct / 100)
   let peak = entry
   let partialExitPrice = null

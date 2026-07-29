@@ -1,0 +1,48 @@
+{
+  "extends": "config_v12_exhaustive_mongo_ohlc.json",
+  "outputDir": "backtests/message_density_thresholds/outputs_v12_targeted_mongo_ohlc",
+  "optimizationGrid": {
+    "windowsMinutes": [180],
+    "thresholds": [0.4],
+    "trailingStopsPct": [11],
+    "maxPre60Pct": [4],
+    "minTrailing60Messages": [5],
+    "minRelVolumeAtSignal": [0],
+    "maxAbsChangePctAtSignal": [null]
+  },
+  "v6WinRateQualityGrid": {
+    "enabled": true,
+    "baseRules": [
+      { "name": "w180_c036_pre4_msg5_ps3_guard", "windowMinutes": 180, "thresholdC": 0.36, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w180_c036_pre4_msg5_ps3_noopen", "windowMinutes": 180, "thresholdC": 0.36, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "rejectOpeningSignals": true },
+      { "name": "w180_c038_pre4_msg5_ps3_guard", "windowMinutes": 180, "thresholdC": 0.38, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w180_c038_pre4_msg5_ps3_noopen", "windowMinutes": 180, "thresholdC": 0.38, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "rejectOpeningSignals": true },
+      { "name": "w180_c040_pre4_msg5_ps3_guard", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w180_c040_pre4_msg5_ps35_guard", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 3.5, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w180_c040_pre4_msg5_ps4_guard", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 4, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w180_c040_pre4_msg5_ps3_noopen", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "rejectOpeningSignals": true },
+      { "name": "w180_c040_pre4_msg5_ps35_noopen", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 3.5, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "rejectOpeningSignals": true },
+      { "name": "w180_c040_pre4_msg5_ps4_noopen", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 4, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "rejectOpeningSignals": true }
+    ],
+    "dashboardScores": [0],
+    "rankMax": [null],
+    "relVolumeMin": [null],
+    "changeBands": [
+      { "name": "momn4to16", "min": -4, "max": 16 },
+      { "name": "momn2to16", "min": -2, "max": 16 },
+      { "name": "mom0to16", "min": 0, "max": 16 },
+      { "name": "momn4to20", "min": -4, "max": 20 },
+      { "name": "mom0to20", "min": 0, "max": 20 },
+      { "name": "anymom", "min": null, "max": null }
+    ],
+    "exitOverlays": [
+      { "name": "gb4_a10", "overlay": { "profitGivebackPct": 4, "profitGivebackActivationPct": 10 } },
+      { "name": "gb5_a10", "overlay": { "profitGivebackPct": 5, "profitGivebackActivationPct": 10 } },
+      { "name": "partial33_pt4_gb4a10", "overlay": { "partialExitFraction": 0.33, "partialProfitTargetPct": 4, "profitGivebackPct": 4, "profitGivebackActivationPct": 10 } }
+    ],
+    "dashboardScore": { "enabledChecks": ["correlation"] },
+    "minWinRateTrades": 30,
+    "targetWinRate": 0.4,
+    "maxVariants": 180
+  }
+}

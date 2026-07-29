@@ -1,0 +1,46 @@
+{
+  "extends": "config_v12_exhaustive_mongo_ohlc.json",
+  "outputDir": "backtests/message_density_thresholds/outputs_v12_final_confirmation_mongo_ohlc",
+  "selectedCandidate": {
+    "group": "v6_winrate_quality",
+    "name": "v12_w180_c040_ps3_score0_rankany_rvany_mom0to20_gb4_a10"
+  },
+  "optimizationGrid": {
+    "windowsMinutes": [180],
+    "thresholds": [0.4],
+    "trailingStopsPct": [11],
+    "maxPre60Pct": [4],
+    "minTrailing60Messages": [5],
+    "minRelVolumeAtSignal": [0],
+    "maxAbsChangePctAtSignal": [null]
+  },
+  "v6WinRateQualityGrid": {
+    "enabled": true,
+    "baseRules": [
+      { "name": "current_v11_exact", "windowMinutes": 120, "thresholdC": 0.38, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 3, "minTrailing60MessagesByTier": { "Small": 8, "Nano": 12 }, "requireCatalystOrPositiveSocialTiers": ["Small", "Nano"], "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "v12_w180_c036_ps3", "windowMinutes": 180, "thresholdC": 0.36, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "minTrailing60MessagesByTier": { "Small": 8, "Nano": 12 }, "requireCatalystOrPositiveSocialTiers": ["Small", "Nano"], "openingGuardMinutes": 20, "rejectOpeningSignals": true },
+      { "name": "v12_w180_c040_ps3", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "minTrailing60MessagesByTier": { "Small": 8, "Nano": 12 }, "requireCatalystOrPositiveSocialTiers": ["Small", "Nano"], "openingGuardMinutes": 20, "rejectOpeningSignals": true },
+      { "name": "v12_w180_c040_ps35", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 3.5, "maxPre60Pct": 4, "minTrailing60Messages": 5, "minTrailing60MessagesByTier": { "Small": 8, "Nano": 12 }, "requireCatalystOrPositiveSocialTiers": ["Small", "Nano"], "openingGuardMinutes": 20, "rejectOpeningSignals": true },
+      { "name": "v12_w180_c040_ps4", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 4, "maxPre60Pct": 4, "minTrailing60Messages": 5, "minTrailing60MessagesByTier": { "Small": 8, "Nano": 12 }, "requireCatalystOrPositiveSocialTiers": ["Small", "Nano"], "openingGuardMinutes": 20, "rejectOpeningSignals": true },
+      { "name": "v12_w180_c042_ps3", "windowMinutes": 180, "thresholdC": 0.42, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "minTrailing60MessagesByTier": { "Small": 8, "Nano": 12 }, "requireCatalystOrPositiveSocialTiers": ["Small", "Nano"], "openingGuardMinutes": 20, "rejectOpeningSignals": true }
+    ],
+    "dashboardScores": [0],
+    "rankMax": [null],
+    "relVolumeMin": [null],
+    "changeBands": [
+      { "name": "mom0to12", "min": 0, "max": 12 },
+      { "name": "mom0to16", "min": 0, "max": 16 },
+      { "name": "mom0to20", "min": 0, "max": 20 },
+      { "name": "anymom", "min": null, "max": null }
+    ],
+    "exitOverlays": [
+      { "name": "gb4_a10", "overlay": { "profitGivebackPct": 4, "profitGivebackActivationPct": 10 } },
+      { "name": "gb5_a10", "overlay": { "profitGivebackPct": 5, "profitGivebackActivationPct": 10 } },
+      { "name": "partial50_pt5_gb5a10", "overlay": { "partialExitFraction": 0.5, "partialProfitTargetPct": 5, "profitGivebackPct": 5, "profitGivebackActivationPct": 10 } }
+    ],
+    "dashboardScore": { "enabledChecks": ["correlation"] },
+    "minWinRateTrades": 25,
+    "targetWinRate": 0.4,
+    "maxVariants": 72
+  }
+}
