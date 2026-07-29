@@ -25,12 +25,14 @@ const NAV = [
   { href: '/decision-map', label: 'Decision Map' },
   { href: '/social', label: 'Social' },
   { href: '/charts', label: 'Charts' },
-  { href: '/entry-screener', label: 'Entry Screener' },
-  // Positions takes the slot Exit Screener held. It is a strict superset of that
-  // page (same sim, same universe, plus recorded history and the entry side), so
-  // promoting it costs no nav width. Exit Screener drops to More for a one-week
-  // overlap rather than being removed, so the professor can compare the two
-  // before it retires.
+  // Positions replaced BOTH Entry Screener and Exit Screener. It is a strict
+  // superset — same sim, same universe, same canonical parameters, plus the entry
+  // side, recorded history, and server-bound sliders that fix a real defect the
+  // Exit Screener had (its stop slider moved the displayed stop while status,
+  // exit price and P&L stayed frozen at the server's 5% sim). The planned
+  // one-week overlap was cut short once Positions was verified against both, so
+  // neither predecessor appears in the nav any more; /entry-screener and
+  // /exit-screener now redirect here.
   { href: '/positions', label: 'Positions' },
   // Sits with Entry/Positions rather than in More: it is a live, market-facing screener
   // on the same clean universe and the same request cadence, whereas v11 is an
@@ -40,7 +42,6 @@ const NAV = [
   { href: '/squeeze-screener', label: 'Short Squeeze' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
-  { href: '/exit-screener', label: 'Exit Screener (retiring)' },
   { href: '/v11-screener', label: 'v11 Profile (test)' },
   { href: '/prediction-audit', label: 'Prediction Audit' },
   { href: '/system-health', label: 'System Health' },
@@ -51,9 +52,13 @@ const NAV = [
 // Short Squeeze both sit ahead of v11 Profile specifically so this cut promotes
 // them rather than v11. Moving the boundary without also moving the entries
 // promotes whichever item happens to sit at the old index — the cut moved from 12
-// to 13 when Short Squeeze was inserted, purely to keep the same set promoted.
-const PRIMARY_NAV = NAV.slice(0, 13)
-const MORE_NAV = NAV.slice(13)
+// to 13 when Short Squeeze was inserted, and back to 11 when Entry Screener (a
+// promoted item) and Exit Screener (a More item) both retired. Net effect on who
+// is promoted: unchanged. Correlation is still the last primary item and v11
+// Profile is still the first in More. Only ONE entry left the primary set, so the
+// cut drops by one, not two — Exit Screener was already past the boundary.
+const PRIMARY_NAV = NAV.slice(0, 12)
+const MORE_NAV = NAV.slice(12)
 const ROUTE_PREFETCHERS: Record<string, () => Promise<unknown>> = {
   '/overview': () => import('@/pages/OverviewPage'),
   '/ai': () => import('@/pages/AIPage'),
@@ -62,8 +67,6 @@ const ROUTE_PREFETCHERS: Record<string, () => Promise<unknown>> = {
   '/decision-map': () => import('@/pages/DecisionMapPanel'),
   '/social': () => import('@/pages/SocialPage'),
   '/charts': () => import('@/pages/sentchart/ChartsPage'),
-  '/entry-screener': () => import('@/pages/sentchart/EntryScreenerPage'),
-  '/exit-screener': () => import('@/pages/sentchart/ExitScreenerPage'),
   '/positions': () => import('@/pages/sentchart/PositionsPage'),
   '/squeeze-screener': () => import('@/pages/sentchart/SqueezeScreenerPage'),
   '/momentum': () => import('@/pages/MomentumPage'),

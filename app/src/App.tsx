@@ -11,8 +11,11 @@ const DecisionMapPanel = lazy(() => import('./pages/DecisionMapPanel').then(m =>
 const SocialPage = lazy(() => import('./pages/SocialPage'))
 const ChartsPage = lazy(() => import('./pages/sentchart/ChartsPage').then(m => ({ default: m.ChartsPage })))
 const ChartsGridPage = lazy(() => import('./pages/ChartsGridPage').then(m => ({ default: m.ChartsGridPage })))
-const EntryScreenerPage = lazy(() => import('./pages/sentchart/EntryScreenerPage').then(m => ({ default: m.EntryScreenerPage })))
-const ExitScreenerPage = lazy(() => import('./pages/sentchart/ExitScreenerPage').then(m => ({ default: m.ExitScreenerPage })))
+// EntryScreenerPage and ExitScreenerPage are deliberately NOT imported. Both
+// retired in favour of Positions, which is a strict superset of each. The source
+// files stay in the tree (unrouted and unreferenced, so Vite drops them from the
+// bundle) rather than being deleted, matching how earlier retirements were
+// handled here — recoverable from git without shipping dead chunks.
 const PositionsPage = lazy(() => import('./pages/sentchart/PositionsPage').then(m => ({ default: m.PositionsPage })))
 const V11ScreenerPage = lazy(() => import('./pages/sentchart/V11ScreenerPage').then(m => ({ default: m.V11ScreenerPage })))
 const LongTermFundamentalsPage = lazy(() => import('./pages/sentchart/LongTermFundamentalsPage').then(m => ({ default: m.LongTermFundamentalsPage })))
@@ -47,9 +50,14 @@ export default function App() {
             <Route path="/social"      element={<SocialPage />} />
             <Route path="/mirror"      element={<MirrorPage />} />
             <Route path="/charts"      element={<ChartsPage />} />
-            <Route path="/entry-screener" element={<EntryScreenerPage />} />
-            <Route path="/exit-screener"  element={<ExitScreenerPage />} />
             <Route path="/positions"      element={<PositionsPage />} />
+            {/* Retired in favour of Positions. Redirect rather than 404: both had
+                been linked and bookmarked for weeks, and Positions answers the
+                same question with the same sim, so dropping someone on an error
+                page would be worse than landing them on the superset. Same
+                pattern as /window-mirror below. */}
+            <Route path="/entry-screener" element={<Navigate to="/positions" replace />} />
+            <Route path="/exit-screener"  element={<Navigate to="/positions" replace />} />
             <Route path="/squeeze-screener" element={<SqueezeScreenerPage />} />
             <Route path="/v11-screener"   element={<V11ScreenerPage />} />
             <Route path="/long-term-fundamentals" element={<LongTermFundamentalsPage />} />
