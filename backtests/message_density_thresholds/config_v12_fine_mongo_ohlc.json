@@ -1,0 +1,52 @@
+{
+  "extends": "config_v12_exhaustive_mongo_ohlc.json",
+  "outputDir": "backtests/message_density_thresholds/outputs_v12_fine_mongo_ohlc",
+  "optimizationGrid": {
+    "windowsMinutes": [150, 165, 180, 195, 210],
+    "thresholds": [0.34, 0.36, 0.38, 0.4, 0.42, 0.44],
+    "trailingStopsPct": [8, 9, 10, 11, 12],
+    "maxPre60Pct": [3, 4, 5],
+    "minTrailing60Messages": [4, 5, 6, 8],
+    "minRelVolumeAtSignal": [0],
+    "maxAbsChangePctAtSignal": [null]
+  },
+  "v6WinRateQualityGrid": {
+    "enabled": true,
+    "baseRules": [
+      { "name": "live_w120_c038_pre4_msg3_ps3_open", "windowMinutes": 120, "thresholdC": 0.38, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 3, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w165_c038_pre4_msg5_ps3_open", "windowMinutes": 165, "thresholdC": 0.38, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w180_c036_pre4_msg5_ps3_open", "windowMinutes": 180, "thresholdC": 0.36, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w180_c038_pre4_msg5_ps3_open", "windowMinutes": 180, "thresholdC": 0.38, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w180_c040_pre4_msg5_ps25_open", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 2.5, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w180_c040_pre4_msg5_ps3_open", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w180_c040_pre4_msg5_ps4_open", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 4, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w180_c040_pre4_msg6_ps3_open", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 6, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w180_c040_pre4_msg8_ps3_open", "windowMinutes": 180, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 8, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 },
+      { "name": "w195_c040_pre4_msg5_ps3_open", "windowMinutes": 195, "thresholdC": 0.4, "trailingStopPct": 99, "protectiveStopPct": 3, "maxPre60Pct": 4, "minTrailing60Messages": 5, "openingGuardMinutes": 20, "openingMaxPre60Pct": 1.5, "openingMinTrailing60MessagesMultiplier": 1.5, "openingMaxSignalChangePct": 8 }
+    ],
+    "dashboardScores": [0],
+    "rankMax": [null],
+    "relVolumeMin": [null],
+    "changeBands": [
+      { "name": "mom0to8", "min": 0, "max": 8 },
+      { "name": "mom0to10", "min": 0, "max": 10 },
+      { "name": "mom0to12", "min": 0, "max": 12 },
+      { "name": "mom0to16", "min": 0, "max": 16 },
+      { "name": "anymom", "min": null, "max": null }
+    ],
+    "exitOverlays": [
+      { "name": "gb3_a8", "overlay": { "profitGivebackPct": 3, "profitGivebackActivationPct": 8 } },
+      { "name": "gb4_a8", "overlay": { "profitGivebackPct": 4, "profitGivebackActivationPct": 8 } },
+      { "name": "gb4_a10", "overlay": { "profitGivebackPct": 4, "profitGivebackActivationPct": 10 } },
+      { "name": "gb5_a10", "overlay": { "profitGivebackPct": 5, "profitGivebackActivationPct": 10 } },
+      { "name": "partial25_pt4_gb4a8", "overlay": { "partialExitFraction": 0.25, "partialProfitTargetPct": 4, "profitGivebackPct": 4, "profitGivebackActivationPct": 8 } },
+      { "name": "partial33_pt4_gb4a8", "overlay": { "partialExitFraction": 0.33, "partialProfitTargetPct": 4, "profitGivebackPct": 4, "profitGivebackActivationPct": 8 } },
+      { "name": "partial50_pt5_gb4a8", "overlay": { "partialExitFraction": 0.5, "partialProfitTargetPct": 5, "profitGivebackPct": 4, "profitGivebackActivationPct": 8 } },
+      { "name": "partial50_pt5_gb5a10", "overlay": { "partialExitFraction": 0.5, "partialProfitTargetPct": 5, "profitGivebackPct": 5, "profitGivebackActivationPct": 10 } }
+    ],
+    "dashboardScore": { "enabledChecks": ["correlation"] },
+    "minWinRateTrades": 30,
+    "targetWinRate": 0.4,
+    "maxVariants": 400
+  }
+}
