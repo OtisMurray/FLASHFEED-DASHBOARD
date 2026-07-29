@@ -166,6 +166,76 @@ export function PositionsPage() {
   const offCanonical = data ? !data.is_canonical : false
   const watchRows = grouped.watch ?? []
 
+  // Overall P&L. Three buckets, kept apart on purpose:
+  //
+  //   realized   — pnl_is_realized === true. The trade reached a conclusion, so
+  //                the number is final. Covers today's closed rows (simulated
+  //                live) and earlier sessions (read back from history).
+  //   unrealized — still open, marked to the latest bar. Moves until it closes.
+  //   unsettled  — data_status 'stale': a position the scheduler stopped
+  //                observing mid-session. It carries a pnl_pct, but that figure
+  //                is a frozen mark, NOT an outcome — it never stopped out and
+  //                was never closed at the bell. Counting it in a headline total
+  //                would launder an unresolved trade into a settled-looking
+  //                result, so it is excluded and reported separately.
+  //
+  // Watch rows have no P&L at all and fall out naturally.
+  //
+  // DEDUPLICATION IS REQUIRED, not defensive. Once a session closes, the same
+  // trade is returned TWICE: once in closed_today, simulated live in this
+  // request, and again in closed_earlier, read back from screener_position_history.
+  // The table shows both on purpose — the Data badge is how provenance is made
+  // visible — but a total that adds them counts one trade as two. On the current
+  // production response that is 6 of 18 rows, and summing naively reports +5.46%
+  // instead of the true +24.94%.
+  //
+  // Identity is ticker + session + entry time + entry price: the same strategy
+  // entry, however it was reconstructed. Where a trade appears as both, the
+  // RECORDED row wins — it is the settled figure written at the canonical
+  // parameters, whereas the live row reflects whatever the sliders currently say.
+  //
+  // UNITS: every pnl_pct is a per-trade percentage return, and the API carries no
+  // position size. Summing them is only meaningful if each trade got the same
+  // capital, so the total is labelled in percentage points and the assumption is
+  // stated in the UI rather than implied by a dollar sign.
+  const pnl = useMemo(() => {
+    const rows = data?.rows ?? []
+    const identity = (r: PositionScreenerRow) =>
+      [r.ticker, r.date ?? '', r.entry_time ?? '', r.entry_price ?? ''].join('|')
+    const dedupe = (subset: PositionScreenerRow[]) => {
+      const byTrade = new Map<string, PositionScreenerRow>()
+      for (const row of subset) {
+        const k = identity(row)
+        const held = byTrade.get(k)
+        if (!held || (held.data_status !== 'recorded' && row.data_status === 'recorded')) byTrade.set(k, row)
+      }
+      return [...byTrade.values()]
+    }
+    const bucket = (subset: PositionScreenerRow[]) => {
+      const unique = dedupe(subset)
+      const values = unique.map(r => r.pnl_pct).filter((v): v is number => v != null)
+      const sum = values.reduce((a, b) => a + b, 0)
+      return {
+        n: values.length,
+        sum,
+        mean: values.length ? sum / values.length : null,
+        wins: values.filter(v => v > 0).length,
+        collapsed: subset.length - unique.length,
+      }
+    }
+    const realized = bucket(rows.filter(r => r.pnl_is_realized === true))
+    const unrealized = bucket(rows.filter(r => r.group === 'open' && r.pnl_is_realized !== true))
+    const unsettled = bucket(rows.filter(r => r.data_status === 'stale'))
+    return {
+      realized,
+      unrealized,
+      unsettled,
+      combined: realized.sum + unrealized.sum,
+      collapsed: realized.collapsed + unrealized.collapsed,
+      sessions: new Set(rows.map(r => r.date).filter(Boolean)).size,
+    }
+  }, [data])
+
   const COLUMNS: Array<{ key: string; label: string; title?: string }> = [
     { key: 'ticker', label: 'TICKER' },
     { key: 'date', label: 'SESSION' },
@@ -192,6 +262,83 @@ export function PositionsPage() {
           {counts ? `${counts.open} open · ${counts.closed_today} closed today · ${counts.closed_earlier} earlier` : '—'}
         </span>
       </div>
+
+      {/* Overall P&L. Sits above the fold because it is the question the page
+          exists to answer, but every figure is qualified in place rather than in
+          a footnote: realized vs unrealized are never merged into a single
+          number without both being shown, and unsettled rows are called out as
+          excluded instead of silently dropped. */}
+      {data && (pnl.realized.n > 0 || pnl.unrealized.n > 0 || pnl.unsettled.n > 0) && (
+        <div className="bg-surface border border-border rounded-lg px-4 py-3 mb-3">
+          <div className="flex flex-wrap items-stretch gap-x-8 gap-y-3">
+            <PnlStat
+              label="Realized"
+              hint="Closed positions that reached a conclusion — stopped out, correlation break, or closed at the bell. Final."
+              sum={pnl.realized.sum}
+              n={pnl.realized.n}
+              mean={pnl.realized.mean}
+              wins={pnl.realized.wins}
+            />
+            <PnlStat
+              label="Unrealized"
+              hint="Open positions, marked to the latest bar. Moves until the position closes."
+              sum={pnl.unrealized.sum}
+              n={pnl.unrealized.n}
+              mean={pnl.unrealized.mean}
+              wins={pnl.unrealized.wins}
+              emptyLabel={pnl.unrealized.n === 0 ? 'No open positions' : undefined}
+            />
+            <div className="border-l border-border pl-8">
+              <PnlStat
+                label="Combined"
+                hint="Realized + unrealized. Excludes unsettled rows, which never reached an outcome."
+                sum={pnl.combined}
+                n={pnl.realized.n + pnl.unrealized.n}
+                emphasis
+              />
+            </div>
+          </div>
+
+          {/* The two things that would otherwise make the headline misleading. */}
+          <div className="text-[10px] text-slate-500 mt-3 leading-relaxed border-t border-border pt-2 space-y-1">
+            <div>
+              Percentage points, summed across distinct trades — equivalent to equal capital per position. The API
+              carries no position size, so this is deliberately not shown as a dollar figure.
+              {pnl.sessions === 1 && ' All rows are from a single session, so this is one day, not a track record.'}
+            </div>
+            {pnl.collapsed > 0 && (
+              <div>
+                {pnl.collapsed} duplicate row{pnl.collapsed === 1 ? '' : 's'} collapsed. A trade from a session that has
+                since closed is returned twice — once simulated live, once read back from recorded history. The table
+                shows both so the Data badge stays meaningful; the total counts each trade once.
+              </div>
+            )}
+            {pnl.unsettled.n > 0 && (
+              <div className="text-fuchsia-200/80">
+                <span className="font-semibold">
+                  {pnl.unsettled.n} unsettled position{pnl.unsettled.n === 1 ? '' : 's'} excluded
+                </span>
+                {' '}({fmtPct(pnl.unsettled.sum, true)} if counted). The scheduler stopped observing these mid-session,
+                so their P&amp;L is a frozen mark rather than an outcome — including it would present an unresolved
+                trade as a settled one.
+              </div>
+            )}
+            {offCanonical ? (
+              <div className="text-amber-200/80">
+                Sliders are off canonical ({data.threshold} / {data.stopPct}%). Only today&apos;s live rows were
+                re-simulated at these settings — recorded history is still at the canonical{' '}
+                {data.canonical.threshold} / {data.canonical.stop_pct}%, so this total mixes two parameter sets and is
+                not a what-if for the full period.
+              </div>
+            ) : (
+              <div>
+                Canonical {data.canonical.threshold} / {data.canonical.stop_pct}% history only. Moving a slider
+                re-simulates today but cannot re-simulate past sessions, so this total is not a what-if.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Simulated, never executed. The first thing to say on a page whose
           headline column is profit. */}
@@ -347,6 +494,40 @@ export function PositionsPage() {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+function PnlStat({
+  label, hint, sum, n, mean, wins, emphasis, emptyLabel,
+}: {
+  label: string
+  hint: string
+  sum: number
+  n: number
+  mean?: number | null
+  wins?: number
+  emphasis?: boolean
+  emptyLabel?: string
+}) {
+  // A zero total from zero trades is not a flat result — it is an absent one.
+  // Showing "0.00%" for both would make "no open positions" read as "open
+  // positions are breaking even".
+  const empty = n === 0
+  const tone = empty ? 'text-neutral' : sum > 0 ? 'text-emerald-400' : sum < 0 ? 'text-red-400' : 'text-slate-300'
+  return (
+    <div title={hint}>
+      <div className="text-[10px] text-neutral uppercase tracking-wide font-medium">{label}</div>
+      <div className={clsx('font-mono tabular-nums leading-tight', emphasis ? 'text-2xl' : 'text-xl', tone)}>
+        {empty ? (emptyLabel ?? '—') : fmtPct(sum, true)}
+      </div>
+      <div className="text-[10px] text-slate-500 mt-0.5">
+        {empty
+          ? '0 trades'
+          : `${n} trade${n === 1 ? '' : 's'}`
+            + (mean != null ? ` · avg ${fmtPct(mean, true)}` : '')
+            + (wins != null ? ` · ${wins}/${n} up` : '')}
+      </div>
     </div>
   )
 }
