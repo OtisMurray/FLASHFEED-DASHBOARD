@@ -829,6 +829,13 @@ export interface PositionScreenerResponse {
   newest_history_date: string | null
   stale_rows:          number
   superseded_rows:     number
+  // Live rows dropped because recorded history already described the same trade.
+  live_rows_superseded_by_history?: number
+  // The session the simulator actually covered. Between midnight ET and the next
+  // premarket open this is YESTERDAY, not today — which is why the page must not
+  // assume the live sim describes the current calendar day.
+  live_session_date?:    string | null
+  live_session_is_today?: boolean | null
   count:               number
   rows:                PositionScreenerRow[]
   simulation_note:     string

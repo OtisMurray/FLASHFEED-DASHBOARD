@@ -75,14 +75,16 @@ const GROUPS: Array<{ key: PositionGroup; title: string; blurb: string; sortKey:
   {
     key: 'closed_today',
     title: 'Closed today',
-    blurb: 'Exited during the current session. P&L is realized at the fill.',
+    blurb: 'Exited during the CURRENT calendar session, simulated live. Empty outside market hours — once the date '
+      + 'rolls past midnight ET the session that just ended is a previous session, and its trades move down.',
     sortKey: 'exit_time',
     dir: 'desc',
   },
   {
     key: 'closed_earlier',
     title: 'Closed earlier',
-    blurb: 'Recorded from previous sessions. These never disappear — they only move down.',
+    blurb: 'Sessions that are over, read back from recorded history at the canonical parameters. Strictly before '
+      + 'today\'s date — a trade is never in both groups. These never disappear; they only move down.',
     sortKey: 'date',
     dir: 'desc',
   },
@@ -181,13 +183,19 @@ export function PositionsPage() {
   //
   // Watch rows have no P&L at all and fall out naturally.
   //
-  // DEDUPLICATION IS REQUIRED, not defensive. Once a session closes, the same
-  // trade is returned TWICE: once in closed_today, simulated live in this
-  // request, and again in closed_earlier, read back from screener_position_history.
-  // The table shows both on purpose — the Data badge is how provenance is made
-  // visible — but a total that adds them counts one trade as two. On the current
-  // production response that is 6 of 18 rows, and summing naively reports +5.46%
-  // instead of the true +24.94%.
+  // DEDUPLICATION IS NOW DEFENCE IN DEPTH. It was originally load-bearing: the
+  // route hardcoded live rows as closed_today regardless of which session the
+  // simulator had actually covered, so after midnight ET the same trade came
+  // back twice — once live, once from recorded history — and summing them
+  // reported +5.46% where the truth was +24.94%.
+  //
+  // positionScreener.js now classifies live rows by their real session date and
+  // drops any that recorded history already describes, so the response should no
+  // longer contain a duplicate at all. This stays because the cost is one Map
+  // and the failure it prevents is silent and financial: a total that
+  // double-counts looks entirely plausible. `collapsed` is surfaced in the UI,
+  // so if the server ever regresses, the page says so instead of quietly
+  // inflating. Expect it to read 0.
   //
   // Identity is ticker + session + entry time + entry price: the same strategy
   // entry, however it was reconstructed. Where a trade appears as both, the
@@ -349,6 +357,24 @@ export function PositionsPage() {
             ?? 'No order was placed and no fill is real. These are the entries and exits the strategy would have taken.'}
         </div>
       </div>
+
+      {/* Session boundary. Between midnight ET and the next premarket open the
+          simulator is still covering YESTERDAY, so "Closed today" is legitimately
+          empty and the most recent trades sit under Closed earlier. Without this
+          the page looks broken for those hours — the professor checking at 1am
+          sees an empty top group and 16 rows below it with no explanation. */}
+      {data?.live_session_is_today === false && data.live_session_date && (
+        <div className="bg-slate-500/10 border border-slate-500/40 rounded-lg px-4 py-3 mb-3">
+          <div className="text-slate-200 text-xs font-semibold mb-1">
+            Between sessions — the latest simulated session is {data.live_session_date}, not today
+          </div>
+          <div className="text-[11px] text-slate-300/80 leading-relaxed">
+            Today&apos;s session has not produced bars yet, so &ldquo;Closed today&rdquo; is empty and {data.live_session_date}&apos;s
+            trades appear under &ldquo;Closed earlier&rdquo; from recorded history. They will stay there. This is the
+            normal state outside market hours, not missing data.
+          </div>
+        </div>
+      )}
 
       {/* Parameter provenance. Only shown when it actually matters — at the
           canonical settings live and recorded rows agree and the banner would
