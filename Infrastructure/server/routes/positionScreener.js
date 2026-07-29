@@ -62,6 +62,35 @@ function round(value, decimals = 2) {
   return Number.isFinite(n) ? Number(n.toFixed(decimals)) : null
 }
 
+// Group for a LIVE simulated trade, given the session the simulator actually
+// covered. Mirrors classifyRow's date rule so a live row and the recorded row
+// for the same trade can never land in different groups:
+//   - session is today   -> a risk exit is closed_today; anything else is still open
+//   - session is earlier -> the session is over, so the position is closed
+//                           whichever way it ended (a session_end row on a past
+//                           date is a real flatten at the close, not an open position)
+// An unparseable or future date is treated as today: that is the conservative
+// direction, since calling a live position "closed earlier" would assert a
+// settlement that never happened.
+export function liveGroupFor(sessionDate, riskExit, today) {
+  const date = String(sessionDate || '')
+  const isPast = /^\d{4}-\d{2}-\d{2}$/.test(date) && today && date < today
+  if (isPast) return 'closed_earlier'
+  return riskExit ? 'closed_today' : 'open'
+}
+
+// Identity of a simulated trade, independent of how it was reconstructed. The
+// entry epoch is the discriminator — a ticker can enter more than once in a
+// session, and the same entry minute at the same fill IS the same trade whether
+// it arrived from the live sim or from recorded history.
+export function tradeIdentity(row = {}) {
+  return [
+    String(row.ticker || '').toUpperCase(),
+    String(row.date || ''),
+    row.entry_epoch ?? row.entry_time ?? '',
+  ].join('|')
+}
+
 function todayKeyET() {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: process.env.MARKET_WINDOW_TIMEZONE || 'America/New_York',
@@ -213,7 +242,15 @@ router.get('/', async (req, res) => {
         const refPrice = riskExit ? trade.exit_price : currentPrice
         const stopPrice = trade.peak_price != null ? trade.peak_price * (1 - stopPct / 100) : null
         rows.push({
-          group: riskExit ? 'closed_today' : 'open',
+          // Classified from the SESSION THE SIM ACTUALLY RETURNED, not assumed to
+          // be today. The chart-service simulates the most recent session that
+          // has bars, which stops being today the moment the clock rolls past
+          // midnight ET: between 00:00 and the next premarket open, todayKeyET()
+          // has already advanced while the sim still returns yesterday. Hardcoding
+          // 'closed_today' here labelled a past session as today's AND collided
+          // with recorded history, which correctly serves the same session as
+          // closed_earlier — so every trade rendered twice, under both headings.
+          group: liveGroupFor(result.date, riskExit, today),
           provenance: 'live',
           data_status: 'live',
           ticker: row.ticker,
@@ -312,7 +349,34 @@ router.get('/', async (req, res) => {
       }
     }
 
-    const all = [...rows, ...historyRows]
+    // The two sources overlap by construction whenever the simulator is still
+    // returning a session that recorded history has already settled — which is
+    // every request between midnight ET and the next premarket open. Both
+    // descriptions are of the SAME trade, so exactly one must survive.
+    //
+    // Recorded wins. It is the settled figure, written at the canonical
+    // parameters and frozen once final, whereas the live row is a re-simulation
+    // that reflects whatever the caller's sliders currently say. Keeping the
+    // live copy would also silently re-price closed history at off-canonical
+    // settings, which the parameter_note explicitly promises does not happen.
+    //
+    // A live row for a past session with NO recorded counterpart still survives:
+    // that is the scheduler-was-down case, where the live sim is the only
+    // description of the trade that exists.
+    // The session the simulator actually covered, for the response. Between
+    // midnight ET and the next premarket open this is YESTERDAY, and a client
+    // that says "closed today" without checking would be wrong.
+    const liveSessionDate = rows.map(row => row.date).find(date => /^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) || null
+
+    const recordedIdentities = new Set(historyRows.map(tradeIdentity))
+    const supersededByHistory = rows.filter(
+      row => row.group !== 'watch' && recordedIdentities.has(tradeIdentity(row)),
+    ).length
+    const liveRows = rows.filter(
+      row => row.group === 'watch' || !recordedIdentities.has(tradeIdentity(row)),
+    )
+
+    const all = [...liveRows, ...historyRows]
     const counts = { open: 0, closed_today: 0, closed_earlier: 0, watch: 0 }
     for (const row of all) counts[row.group] = (counts[row.group] || 0) + 1
 
@@ -341,6 +405,12 @@ router.get('/', async (req, res) => {
       newest_history_date: newestHistoryDate,
       stale_rows: staleRows,
       superseded_rows: supersededCount,
+      // Live rows dropped because recorded history already described the same
+      // trade. Normal and expected outside market hours; surfaced rather than
+      // hidden so "why is the live count lower than the sim found" is answerable.
+      live_rows_superseded_by_history: supersededByHistory,
+      live_session_date: liveSessionDate,
+      live_session_is_today: liveSessionDate ? liveSessionDate === today : null,
       count: all.length,
       rows: all,
       sorted_by: 'client: open by distance_to_stop asc, closed_today by exit_time desc, closed_earlier by date desc',
