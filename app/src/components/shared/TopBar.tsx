@@ -17,14 +17,13 @@ const NAV = [
   { href: '/ai', label: 'AI' },
   { href: '/news', label: 'News' },
   { href: '/screener', label: 'Screener' },
-  // Placed here rather than at the end of the main bar on purpose. The nav row
-  // overflows horizontally below ~1920px, so whatever sits last needs a scroll to
-  // reach. Sitting fourth keeps this reachable without scrolling down to 1280px,
-  // and pushes Correlation (less frequently used) to the overflow edge instead.
+  // Long-Term remains a primary workflow, but desktop sizing below is compact
+  // enough that it no longer forces the navigation into horizontal scrolling.
   { href: '/long-term-fundamentals', label: 'Long-Term Fundamentals' },
   { href: '/decision-map', label: 'Decision Map' },
   { href: '/social', label: 'Social' },
   { href: '/charts', label: 'Charts' },
+  { href: '/cvd', label: 'CVD' },
   // Positions replaced BOTH Entry Screener and Exit Screener. It is a strict
   // superset — same sim, same universe, same canonical parameters, plus the entry
   // side, recorded history, and server-bound sliders that fix a real defect the
@@ -34,11 +33,8 @@ const NAV = [
   // neither predecessor appears in the nav any more; /entry-screener and
   // /exit-screener now redirect here.
   { href: '/positions', label: 'Positions' },
-  // Sits with Entry/Positions rather than in More: it is a live, market-facing screener
-  // on the same clean universe and the same request cadence, whereas v11 is an
-  // explicitly experimental postmortem probe. The cost is real — this is the 13th
-  // primary item and the row already overflows horizontally below ~1920px, so
-  // Correlation now needs a scroll slightly sooner than it did.
+  // Sits with Positions rather than in More: it is a live market-facing screener,
+  // whereas v11 is an explicitly experimental postmortem probe.
   { href: '/squeeze-screener', label: 'Short Squeeze' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
@@ -47,18 +43,10 @@ const NAV = [
   { href: '/system-health', label: 'System Health' },
   { href: '/settings', label: 'Settings' },
 ]
-// The split index is an ORDER-dependent cut, not a per-item flag: PRIMARY_NAV is
-// everything before it, MORE_NAV everything after. Long-Term Fundamentals and
-// Short Squeeze both sit ahead of v11 Profile specifically so this cut promotes
-// them rather than v11. Moving the boundary without also moving the entries
-// promotes whichever item happens to sit at the old index — the cut moved from 12
-// to 13 when Short Squeeze was inserted, and back to 11 when Entry Screener (a
-// promoted item) and Exit Screener (a More item) both retired. Net effect on who
-// is promoted: unchanged. Correlation is still the last primary item and v11
-// Profile is still the first in More. Only ONE entry left the primary set, so the
-// cut drops by one, not two — Exit Screener was already past the boundary.
-const PRIMARY_NAV = NAV.slice(0, 12)
-const MORE_NAV = NAV.slice(12)
+// The split is order-dependent: all live workflows through Correlation stay in
+// the compact desktop row; experimental and administrative views live in More.
+const PRIMARY_NAV = NAV.slice(0, 13)
+const MORE_NAV = NAV.slice(13)
 const ROUTE_PREFETCHERS: Record<string, () => Promise<unknown>> = {
   '/overview': () => import('@/pages/OverviewPage'),
   '/ai': () => import('@/pages/AIPage'),
@@ -67,6 +55,7 @@ const ROUTE_PREFETCHERS: Record<string, () => Promise<unknown>> = {
   '/decision-map': () => import('@/pages/DecisionMapPanel'),
   '/social': () => import('@/pages/SocialPage'),
   '/charts': () => import('@/pages/sentchart/ChartsPage'),
+  '/cvd': () => import('@/pages/CVDPage'),
   '/positions': () => import('@/pages/sentchart/PositionsPage'),
   '/squeeze-screener': () => import('@/pages/sentchart/SqueezeScreenerPage'),
   '/momentum': () => import('@/pages/MomentumPage'),
@@ -522,18 +511,18 @@ export function TopBar() {
             </div>
           </div>
         )}
-        <div className="flex min-h-14 items-center gap-2 px-3 py-2 md:px-4">
+        <div className="flex min-h-14 items-center gap-1.5 px-3 py-2 md:px-4">
           <NavLink
             to="/overview"
             onMouseEnter={() => prefetchRoute('/overview')}
             onFocus={() => prefetchRoute('/overview')}
             className="flex-shrink-0"
           >
-            <div className="text-accent font-bold text-lg tracking-tight font-mono leading-none">FlashFeed</div>
+            <div className="text-accent font-bold text-base tracking-normal font-mono leading-none 2xl:text-lg">FlashFeed</div>
             <div className="text-neutral text-[10px] mt-1 uppercase tracking-wide">Financial Intelligence</div>
           </NavLink>
 
-          <nav className="hidden min-w-0 flex-1 items-center gap-1 overflow-x-auto lg:flex">
+          <nav className="hidden min-w-0 flex-1 items-center justify-center gap-0.5 overflow-visible xl:flex">
             {PRIMARY_NAV.map(({ href, label }) => {
               const active = pathname === href || pathname.startsWith(`${href}/`)
               return (
@@ -543,7 +532,7 @@ export function TopBar() {
                   onMouseEnter={() => prefetchRoute(href)}
                   onFocus={() => prefetchRoute(href)}
                   className={clsx(
-                    'flex-none whitespace-nowrap px-2 py-2 text-xs rounded-md border transition-colors xl:px-3',
+                    'flex-none whitespace-nowrap rounded-md border px-1.5 py-2 text-[10px] transition-colors 2xl:px-2 2xl:text-[11px]',
                     active
                       ? 'bg-accent/15 border-accent/50 text-white'
                       : 'border-transparent text-neutral hover:text-white hover:bg-bg/60'
@@ -560,7 +549,7 @@ export function TopBar() {
                 onFocus={() => MORE_NAV.forEach(({ href }) => prefetchRoute(href))}
                 onClick={() => setShowMoreNav(v => !v)}
                 className={clsx(
-                  'whitespace-nowrap px-2 py-2 text-xs rounded-md border transition-colors xl:px-3',
+                  'whitespace-nowrap rounded-md border px-1.5 py-2 text-[10px] transition-colors 2xl:px-2 2xl:text-[11px]',
                   MORE_NAV.some(({ href }) => pathname === href || pathname.startsWith(`${href}/`))
                     ? 'bg-accent/15 border-accent/50 text-white'
                     : 'border-transparent text-neutral hover:text-white hover:bg-bg/60'
@@ -571,7 +560,7 @@ export function TopBar() {
             </div>
           </nav>
 
-          <div className="ml-auto flex flex-none items-center justify-end gap-2">
+          <div className="ml-auto flex flex-none items-center justify-end gap-1.5">
             {fetchResult && (
               <span className="hidden max-w-[12rem] truncate text-xs text-emerald-400 animate-in lg:inline">
                 +{fetchResult.new_articles ?? 0} new{fetchResult.updated_articles !== undefined ? `, ${fetchResult.updated_articles} refreshed` : fetchResult.refreshed_articles !== undefined ? `, ${fetchResult.refreshed_articles} refreshed` : ''} ({((fetchResult.ms ?? 0) / 1000).toFixed(1)}s)
@@ -581,7 +570,7 @@ export function TopBar() {
               onClick={doFetch}
               disabled={fetching || cooldownRemaining > 0}
               title={cooldownRemaining > 0 ? `Fetch available in ${cooldownRemaining}s` : `${fetchMode === 'fast' ? 'Fast trader refresh' : 'Full source refresh'}`}
-              className="min-w-[6.75rem] px-3 py-1.5 bg-accent text-white text-xs font-medium rounded hover:bg-sky-400 disabled:opacity-50 transition-colors whitespace-nowrap"
+              className="min-w-[5.75rem] px-2.5 py-1.5 bg-accent text-white text-[11px] font-medium rounded hover:bg-sky-400 disabled:opacity-50 transition-colors whitespace-nowrap 2xl:min-w-[6.75rem] 2xl:px-3 2xl:text-xs"
             >
               {fetching ? `Fetching ${fetchElapsed}s...` : cooldownRemaining > 0 ? `Fetch ${cooldownRemaining}s` : 'Run Now'}
             </button>
@@ -589,7 +578,7 @@ export function TopBar() {
             <div className="relative">
               <button
                 onClick={() => setShowControls(v => !v)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded border border-border text-neutral hover:text-white hover:border-accent transition-colors"
+                className="inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-medium rounded border border-border text-neutral hover:text-white hover:border-accent transition-colors 2xl:gap-1.5 2xl:px-3 2xl:text-xs"
                 title={`Refresh, auto-watch, sentiment, and storage controls. ${serverAutoTitle}`}
               >
                 Controls
@@ -712,13 +701,13 @@ export function TopBar() {
             </div>
           </div>
 
-          <div className="hidden min-w-0 items-center justify-end gap-2 sm:flex">
+          <div className="hidden min-w-0 items-center justify-end gap-2 2xl:flex">
             {(status || stats) && <StatusBadge ok={status?.ok !== false} label={`${compactCount(stats?.total ?? status?.database?.recent_articles ?? status?.database?.articles)} 3d cache`} />}
             {marketStatus && <StatusBadge ok={marketStatus.open} label={marketStatus.open ? 'Open' : 'Closed'} />}
           </div>
         </div>
 
-        <nav className="lg:hidden flex items-center gap-1 overflow-x-auto px-3 pb-2 md:px-4">
+        <nav className="flex items-center gap-1 overflow-x-auto px-3 pb-2 md:px-4 xl:hidden">
           {NAV.map(({ href, label }) => {
             const active = pathname === href || pathname.startsWith(`${href}/`)
             return (

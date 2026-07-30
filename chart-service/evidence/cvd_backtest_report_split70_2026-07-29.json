@@ -1,0 +1,624 @@
+{
+  "generated_at": "2026-07-29T19:58:07.474268+00:00",
+  "status": "research_only_not_validated",
+  "ai_ranking_integration_allowed": false,
+  "data_contract": {
+    "cvd_source": "estimated_from_ohlcv_bars",
+    "bar_interval_seconds": 300,
+    "signal_features_are_causal": true,
+    "transaction_cost_bps_round_trip": 10.0,
+    "limitations": [
+      "Bar CVD estimates aggressor direction; it is not measured trade-side flow.",
+      "Stored ticker coverage is availability-biased and is not a point-in-time full-market universe.",
+      "The policy is selected on early dates only; later dates are untouched holdout data."
+    ]
+  },
+  "coverage": {
+    "sessions": 6300,
+    "tickers": 150,
+    "trading_dates": 42,
+    "train_dates": [
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13",
+      "2026-05-14",
+      "2026-05-15",
+      "2026-05-18",
+      "2026-05-19",
+      "2026-05-20",
+      "2026-05-21",
+      "2026-05-22",
+      "2026-05-26",
+      "2026-05-27",
+      "2026-05-28",
+      "2026-05-29",
+      "2026-06-01",
+      "2026-06-02",
+      "2026-06-03",
+      "2026-06-04",
+      "2026-06-05",
+      "2026-06-08",
+      "2026-06-09",
+      "2026-06-10",
+      "2026-06-11",
+      "2026-06-12",
+      "2026-06-15",
+      "2026-06-16",
+      "2026-06-17",
+      "2026-06-18",
+      "2026-06-22"
+    ],
+    "holdout_dates": [
+      "2026-06-23",
+      "2026-06-24",
+      "2026-06-25",
+      "2026-06-26",
+      "2026-06-29",
+      "2026-06-30",
+      "2026-07-01",
+      "2026-07-02",
+      "2026-07-06",
+      "2026-07-07",
+      "2026-07-08",
+      "2026-07-09",
+      "2026-07-10"
+    ],
+    "train_sessions": 4350,
+    "holdout_sessions": 1950,
+    "train_fraction": 0.7
+  },
+  "selected_policy": {
+    "window_minutes": 30,
+    "flow_threshold_pct": 6.0,
+    "price_threshold_pct": 0.25,
+    "divergence_price_threshold_pct": 0.25,
+    "agreement_threshold": 0.55,
+    "reliability_threshold": 0.38,
+    "opening_no_entry_minutes": 15,
+    "opening_caution_minutes": 30,
+    "opening_caution_multiplier": 1.35,
+    "event_cooldown_minutes": 15
+  },
+  "train_leaderboard": [
+    {
+      "selection_score": 0.0004,
+      "train_incremental_net_mean_pct": -0.0167,
+      "train_sessions_with_positive_lift_pct": 43.53,
+      "train_cvd_events": 35461,
+      "train_paired_sessions": 4328,
+      "policy": {
+        "window_minutes": 30,
+        "flow_threshold_pct": 6.0,
+        "price_threshold_pct": 0.25,
+        "divergence_price_threshold_pct": 0.25,
+        "agreement_threshold": 0.55,
+        "reliability_threshold": 0.38,
+        "opening_no_entry_minutes": 15,
+        "opening_caution_minutes": 30,
+        "opening_caution_multiplier": 1.35,
+        "event_cooldown_minutes": 15
+      }
+    },
+    {
+      "selection_score": 0.0004,
+      "train_incremental_net_mean_pct": -0.0167,
+      "train_sessions_with_positive_lift_pct": 43.53,
+      "train_cvd_events": 35461,
+      "train_paired_sessions": 4328,
+      "policy": {
+        "window_minutes": 30,
+        "flow_threshold_pct": 6.0,
+        "price_threshold_pct": 0.25,
+        "divergence_price_threshold_pct": 0.25,
+        "agreement_threshold": 0.55,
+        "reliability_threshold": 0.42,
+        "opening_no_entry_minutes": 15,
+        "opening_caution_minutes": 30,
+        "opening_caution_multiplier": 1.35,
+        "event_cooldown_minutes": 15
+      }
+    },
+    {
+      "selection_score": 0.0002,
+      "train_incremental_net_mean_pct": -0.0168,
+      "train_sessions_with_positive_lift_pct": 43.51,
+      "train_cvd_events": 35471,
+      "train_paired_sessions": 4328,
+      "policy": {
+        "window_minutes": 30,
+        "flow_threshold_pct": 6.0,
+        "price_threshold_pct": 0.25,
+        "divergence_price_threshold_pct": 0.25,
+        "agreement_threshold": 0.45,
+        "reliability_threshold": 0.38,
+        "opening_no_entry_minutes": 15,
+        "opening_caution_minutes": 30,
+        "opening_caution_multiplier": 1.35,
+        "event_cooldown_minutes": 15
+      }
+    },
+    {
+      "selection_score": 0.0002,
+      "train_incremental_net_mean_pct": -0.0168,
+      "train_sessions_with_positive_lift_pct": 43.51,
+      "train_cvd_events": 35471,
+      "train_paired_sessions": 4328,
+      "policy": {
+        "window_minutes": 30,
+        "flow_threshold_pct": 6.0,
+        "price_threshold_pct": 0.25,
+        "divergence_price_threshold_pct": 0.25,
+        "agreement_threshold": 0.45,
+        "reliability_threshold": 0.42,
+        "opening_no_entry_minutes": 15,
+        "opening_caution_minutes": 30,
+        "opening_caution_multiplier": 1.35,
+        "event_cooldown_minutes": 15
+      }
+    },
+    {
+      "selection_score": -0.0004,
+      "train_incremental_net_mean_pct": -0.0174,
+      "train_sessions_with_positive_lift_pct": 43.51,
+      "train_cvd_events": 35394,
+      "train_paired_sessions": 4328,
+      "policy": {
+        "window_minutes": 30,
+        "flow_threshold_pct": 6.0,
+        "price_threshold_pct": 0.25,
+        "divergence_price_threshold_pct": 0.25,
+        "agreement_threshold": 0.65,
+        "reliability_threshold": 0.38,
+        "opening_no_entry_minutes": 15,
+        "opening_caution_minutes": 30,
+        "opening_caution_multiplier": 1.35,
+        "event_cooldown_minutes": 15
+      }
+    },
+    {
+      "selection_score": -0.0004,
+      "train_incremental_net_mean_pct": -0.0174,
+      "train_sessions_with_positive_lift_pct": 43.51,
+      "train_cvd_events": 35394,
+      "train_paired_sessions": 4328,
+      "policy": {
+        "window_minutes": 30,
+        "flow_threshold_pct": 6.0,
+        "price_threshold_pct": 0.25,
+        "divergence_price_threshold_pct": 0.25,
+        "agreement_threshold": 0.65,
+        "reliability_threshold": 0.42,
+        "opening_no_entry_minutes": 15,
+        "opening_caution_minutes": 30,
+        "opening_caution_multiplier": 1.35,
+        "event_cooldown_minutes": 15
+      }
+    },
+    {
+      "selection_score": -0.0014,
+      "train_incremental_net_mean_pct": -0.0201,
+      "train_sessions_with_positive_lift_pct": 44.35,
+      "train_cvd_events": 37849,
+      "train_paired_sessions": 4336,
+      "policy": {
+        "window_minutes": 30,
+        "flow_threshold_pct": 6.0,
+        "price_threshold_pct": 0.15,
+        "divergence_price_threshold_pct": 0.25,
+        "agreement_threshold": 0.55,
+        "reliability_threshold": 0.38,
+        "opening_no_entry_minutes": 15,
+        "opening_caution_minutes": 30,
+        "opening_caution_multiplier": 1.35,
+        "event_cooldown_minutes": 15
+      }
+    },
+    {
+      "selection_score": -0.0014,
+      "train_incremental_net_mean_pct": -0.0201,
+      "train_sessions_with_positive_lift_pct": 44.35,
+      "train_cvd_events": 37849,
+      "train_paired_sessions": 4336,
+      "policy": {
+        "window_minutes": 30,
+        "flow_threshold_pct": 6.0,
+        "price_threshold_pct": 0.15,
+        "divergence_price_threshold_pct": 0.25,
+        "agreement_threshold": 0.55,
+        "reliability_threshold": 0.42,
+        "opening_no_entry_minutes": 15,
+        "opening_caution_minutes": 30,
+        "opening_caution_multiplier": 1.35,
+        "event_cooldown_minutes": 15
+      }
+    },
+    {
+      "selection_score": -0.0014,
+      "train_incremental_net_mean_pct": -0.0191,
+      "train_sessions_with_positive_lift_pct": 43.84,
+      "train_cvd_events": 33749,
+      "train_paired_sessions": 4325,
+      "policy": {
+        "window_minutes": 30,
+        "flow_threshold_pct": 8.0,
+        "price_threshold_pct": 0.25,
+        "divergence_price_threshold_pct": 0.25,
+        "agreement_threshold": 0.55,
+        "reliability_threshold": 0.38,
+        "opening_no_entry_minutes": 15,
+        "opening_caution_minutes": 30,
+        "opening_caution_multiplier": 1.35,
+        "event_cooldown_minutes": 15
+      }
+    },
+    {
+      "selection_score": -0.0014,
+      "train_incremental_net_mean_pct": -0.0191,
+      "train_sessions_with_positive_lift_pct": 43.84,
+      "train_cvd_events": 33749,
+      "train_paired_sessions": 4325,
+      "policy": {
+        "window_minutes": 30,
+        "flow_threshold_pct": 8.0,
+        "price_threshold_pct": 0.25,
+        "divergence_price_threshold_pct": 0.25,
+        "agreement_threshold": 0.55,
+        "reliability_threshold": 0.42,
+        "opening_no_entry_minutes": 15,
+        "opening_caution_minutes": 30,
+        "opening_caution_multiplier": 1.35,
+        "event_cooldown_minutes": 15
+      }
+    }
+  ],
+  "train_results": {
+    "forward_returns": {
+      "15": {
+        "cvd_confirmation": {
+          "n": 37192,
+          "gross_mean_pct": -0.0055,
+          "net_mean_pct": -0.1055,
+          "median_pct": -0.1133,
+          "hit_rate_pct": 41.14,
+          "total_equal_weighted_net_pct": -3922.7688
+        },
+        "price_only_momentum": {
+          "n": 48129,
+          "gross_mean_pct": -0.0068,
+          "net_mean_pct": -0.1068,
+          "median_pct": -0.1136,
+          "hit_rate_pct": 41.4,
+          "total_equal_weighted_net_pct": -5138.933
+        },
+        "incremental_net_mean_pct": 0.0013,
+        "incremental_hit_rate_points": -0.26,
+        "paired_session_incremental": {
+          "n": 4329,
+          "gross_mean_pct": -0.0133,
+          "net_mean_pct": -0.0133,
+          "median_pct": -0.0028,
+          "hit_rate_pct": 45.07,
+          "total_equal_weighted_net_pct": -57.5341,
+          "mean_lift_95pct_cluster_bootstrap_ci": [
+            -0.0204,
+            -0.0063
+          ],
+          "sessions_with_positive_lift_pct": 45.07,
+          "cvd_session_mean": {
+            "n": 4329,
+            "gross_mean_pct": -0.0573,
+            "net_mean_pct": -0.1573,
+            "median_pct": -0.1313,
+            "hit_rate_pct": 28.81,
+            "total_equal_weighted_net_pct": -681.0021
+          },
+          "price_session_mean": {
+            "n": 4329,
+            "gross_mean_pct": -0.044,
+            "net_mean_pct": -0.144,
+            "median_pct": -0.1258,
+            "hit_rate_pct": 27.3,
+            "total_equal_weighted_net_pct": -623.468
+          }
+        }
+      },
+      "30": {
+        "cvd_confirmation": {
+          "n": 35461,
+          "gross_mean_pct": 0.0039,
+          "net_mean_pct": -0.0961,
+          "median_pct": -0.1353,
+          "hit_rate_pct": 42.95,
+          "total_equal_weighted_net_pct": -3408.5848
+        },
+        "price_only_momentum": {
+          "n": 46058,
+          "gross_mean_pct": -0.0027,
+          "net_mean_pct": -0.1027,
+          "median_pct": -0.1364,
+          "hit_rate_pct": 43.0,
+          "total_equal_weighted_net_pct": -4728.5877
+        },
+        "incremental_net_mean_pct": 0.0066,
+        "incremental_hit_rate_points": -0.05,
+        "paired_session_incremental": {
+          "n": 4328,
+          "gross_mean_pct": -0.0167,
+          "net_mean_pct": -0.0167,
+          "median_pct": -0.0098,
+          "hit_rate_pct": 43.53,
+          "total_equal_weighted_net_pct": -72.3524,
+          "mean_lift_95pct_cluster_bootstrap_ci": [
+            -0.026,
+            -0.0069
+          ],
+          "sessions_with_positive_lift_pct": 43.53,
+          "cvd_session_mean": {
+            "n": 4328,
+            "gross_mean_pct": -0.093,
+            "net_mean_pct": -0.193,
+            "median_pct": -0.1651,
+            "hit_rate_pct": 33.6,
+            "total_equal_weighted_net_pct": -835.312
+          },
+          "price_session_mean": {
+            "n": 4328,
+            "gross_mean_pct": -0.0763,
+            "net_mean_pct": -0.1763,
+            "median_pct": -0.1649,
+            "hit_rate_pct": 33.62,
+            "total_equal_weighted_net_pct": -762.9595
+          }
+        }
+      },
+      "60": {
+        "cvd_confirmation": {
+          "n": 32826,
+          "gross_mean_pct": 0.0222,
+          "net_mean_pct": -0.0778,
+          "median_pct": -0.1338,
+          "hit_rate_pct": 44.92,
+          "total_equal_weighted_net_pct": -2552.2279
+        },
+        "price_only_momentum": {
+          "n": 42700,
+          "gross_mean_pct": 0.0035,
+          "net_mean_pct": -0.0965,
+          "median_pct": -0.1474,
+          "hit_rate_pct": 44.67,
+          "total_equal_weighted_net_pct": -4120.7675
+        },
+        "incremental_net_mean_pct": 0.0187,
+        "incremental_hit_rate_points": 0.25,
+        "paired_session_incremental": {
+          "n": 4322,
+          "gross_mean_pct": -0.0322,
+          "net_mean_pct": -0.0322,
+          "median_pct": -0.0206,
+          "hit_rate_pct": 40.91,
+          "total_equal_weighted_net_pct": -138.9647,
+          "mean_lift_95pct_cluster_bootstrap_ci": [
+            -0.0444,
+            -0.0199
+          ],
+          "sessions_with_positive_lift_pct": 40.91,
+          "cvd_session_mean": {
+            "n": 4322,
+            "gross_mean_pct": -0.1795,
+            "net_mean_pct": -0.2795,
+            "median_pct": -0.2215,
+            "hit_rate_pct": 35.59,
+            "total_equal_weighted_net_pct": -1207.8197
+          },
+          "price_session_mean": {
+            "n": 4322,
+            "gross_mean_pct": -0.1473,
+            "net_mean_pct": -0.2473,
+            "median_pct": -0.2173,
+            "hit_rate_pct": 36.07,
+            "total_equal_weighted_net_pct": -1068.855
+          }
+        }
+      }
+    },
+    "bullish_divergence_30m": {
+      "n": 6949,
+      "gross_mean_pct": 0.0315,
+      "net_mean_pct": -0.0685,
+      "median_pct": -0.1,
+      "hit_rate_pct": 44.67,
+      "total_equal_weighted_net_pct": -475.6591
+    },
+    "bearish_divergence_30m": {
+      "n": 6475,
+      "gross_mean_pct": 0.0295,
+      "net_mean_pct": -0.0705,
+      "median_pct": -0.0527,
+      "hit_rate_pct": 47.72,
+      "total_equal_weighted_net_pct": -456.17
+    },
+    "session_buy_and_hold": {
+      "n": 4350,
+      "gross_mean_pct": -0.1344,
+      "net_mean_pct": -0.2344,
+      "median_pct": -0.4994,
+      "hit_rate_pct": 44.16,
+      "total_equal_weighted_net_pct": -1019.8388
+    }
+  },
+  "untouched_holdout_results": {
+    "forward_returns": {
+      "15": {
+        "cvd_confirmation": {
+          "n": 16314,
+          "gross_mean_pct": -0.0225,
+          "net_mean_pct": -0.1225,
+          "median_pct": -0.1405,
+          "hit_rate_pct": 39.78,
+          "total_equal_weighted_net_pct": -1998.5231
+        },
+        "price_only_momentum": {
+          "n": 21204,
+          "gross_mean_pct": -0.0245,
+          "net_mean_pct": -0.1245,
+          "median_pct": -0.1405,
+          "hit_rate_pct": 40.0,
+          "total_equal_weighted_net_pct": -2639.7526
+        },
+        "incremental_net_mean_pct": 0.002,
+        "incremental_hit_rate_points": -0.22,
+        "paired_session_incremental": {
+          "n": 1949,
+          "gross_mean_pct": -0.0189,
+          "net_mean_pct": -0.0189,
+          "median_pct": -0.0101,
+          "hit_rate_pct": 43.36,
+          "total_equal_weighted_net_pct": -36.7956,
+          "mean_lift_95pct_cluster_bootstrap_ci": [
+            -0.028,
+            -0.0101
+          ],
+          "sessions_with_positive_lift_pct": 43.36,
+          "cvd_session_mean": {
+            "n": 1949,
+            "gross_mean_pct": -0.0743,
+            "net_mean_pct": -0.1743,
+            "median_pct": -0.1486,
+            "hit_rate_pct": 25.6,
+            "total_equal_weighted_net_pct": -339.7716
+          },
+          "price_session_mean": {
+            "n": 1949,
+            "gross_mean_pct": -0.0555,
+            "net_mean_pct": -0.1555,
+            "median_pct": -0.1338,
+            "hit_rate_pct": 24.73,
+            "total_equal_weighted_net_pct": -302.976
+          }
+        }
+      },
+      "30": {
+        "cvd_confirmation": {
+          "n": 15496,
+          "gross_mean_pct": -0.0637,
+          "net_mean_pct": -0.1637,
+          "median_pct": -0.1763,
+          "hit_rate_pct": 41.35,
+          "total_equal_weighted_net_pct": -2536.2304
+        },
+        "price_only_momentum": {
+          "n": 20250,
+          "gross_mean_pct": -0.0533,
+          "net_mean_pct": -0.1533,
+          "median_pct": -0.1658,
+          "hit_rate_pct": 41.77,
+          "total_equal_weighted_net_pct": -3105.0079
+        },
+        "incremental_net_mean_pct": -0.0104,
+        "incremental_hit_rate_points": -0.42,
+        "paired_session_incremental": {
+          "n": 1948,
+          "gross_mean_pct": -0.048,
+          "net_mean_pct": -0.048,
+          "median_pct": -0.0239,
+          "hit_rate_pct": 39.63,
+          "total_equal_weighted_net_pct": -93.5863,
+          "mean_lift_95pct_cluster_bootstrap_ci": [
+            -0.0615,
+            -0.034
+          ],
+          "sessions_with_positive_lift_pct": 39.63,
+          "cvd_session_mean": {
+            "n": 1948,
+            "gross_mean_pct": -0.1697,
+            "net_mean_pct": -0.2697,
+            "median_pct": -0.2153,
+            "hit_rate_pct": 28.44,
+            "total_equal_weighted_net_pct": -525.4247
+          },
+          "price_session_mean": {
+            "n": 1948,
+            "gross_mean_pct": -0.1217,
+            "net_mean_pct": -0.2217,
+            "median_pct": -0.1897,
+            "hit_rate_pct": 29.26,
+            "total_equal_weighted_net_pct": -431.8384
+          }
+        }
+      },
+      "60": {
+        "cvd_confirmation": {
+          "n": 14129,
+          "gross_mean_pct": -0.0857,
+          "net_mean_pct": -0.1857,
+          "median_pct": -0.2041,
+          "hit_rate_pct": 42.32,
+          "total_equal_weighted_net_pct": -2623.1623
+        },
+        "price_only_momentum": {
+          "n": 18536,
+          "gross_mean_pct": -0.0798,
+          "net_mean_pct": -0.1798,
+          "median_pct": -0.1908,
+          "hit_rate_pct": 43.05,
+          "total_equal_weighted_net_pct": -3333.1636
+        },
+        "incremental_net_mean_pct": -0.0059,
+        "incremental_hit_rate_points": -0.73,
+        "paired_session_incremental": {
+          "n": 1947,
+          "gross_mean_pct": -0.0715,
+          "net_mean_pct": -0.0715,
+          "median_pct": -0.0423,
+          "hit_rate_pct": 38.16,
+          "total_equal_weighted_net_pct": -139.1881,
+          "mean_lift_95pct_cluster_bootstrap_ci": [
+            -0.0894,
+            -0.0545
+          ],
+          "sessions_with_positive_lift_pct": 38.16,
+          "cvd_session_mean": {
+            "n": 1947,
+            "gross_mean_pct": -0.287,
+            "net_mean_pct": -0.387,
+            "median_pct": -0.3123,
+            "hit_rate_pct": 32.77,
+            "total_equal_weighted_net_pct": -753.4032
+          },
+          "price_session_mean": {
+            "n": 1947,
+            "gross_mean_pct": -0.2155,
+            "net_mean_pct": -0.3155,
+            "median_pct": -0.2742,
+            "hit_rate_pct": 33.28,
+            "total_equal_weighted_net_pct": -614.215
+          }
+        }
+      }
+    },
+    "bullish_divergence_30m": {
+      "n": 3001,
+      "gross_mean_pct": -0.072,
+      "net_mean_pct": -0.172,
+      "median_pct": -0.1319,
+      "hit_rate_pct": 42.79,
+      "total_equal_weighted_net_pct": -516.2175
+    },
+    "bearish_divergence_30m": {
+      "n": 2705,
+      "gross_mean_pct": -0.0364,
+      "net_mean_pct": -0.1364,
+      "median_pct": -0.1,
+      "hit_rate_pct": 45.88,
+      "total_equal_weighted_net_pct": -369.009
+    },
+    "session_buy_and_hold": {
+      "n": 1950,
+      "gross_mean_pct": 0.1847,
+      "net_mean_pct": 0.0847,
+      "median_pct": -0.1204,
+      "hit_rate_pct": 48.05,
+      "total_equal_weighted_net_pct": 165.2248
+    }
+  }
+}

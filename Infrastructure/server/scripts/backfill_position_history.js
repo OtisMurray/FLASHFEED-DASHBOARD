@@ -11,19 +11,18 @@
 // caps at 120 pages x 30 messages. For an active ticker that is hours of
 // history, not weeks.
 //
-// So this script backfills EXACTLY the (ticker, day) pairs that already exist in
-// flashfeed.social_history — nothing more. That collection was populated
-// opportunistically, by whoever happened to open a chart, so the seeded history
-// is sparse and viewing-biased. It is a real floor under the page, not a
-// complete record, and the coverage numbers this prints should be quoted
-// alongside it rather than rounded off.
+// So this script can only backfill the (ticker, day) pairs that already exist in
+// flashfeed.social_history. Those are NOT historical AI suggestions: the
+// collection was populated opportunistically by whoever opened a chart. This
+// legacy source is sparse and viewing-biased and must never be presented as an
+// AI-selected Positions history.
 //
 // Everything written here goes through the same normalizeTrade/mergeTradeSnapshot
 // path as the live scheduler, at the same canonical parameters, so a backfilled
 // row and a recorded row are the same kind of row.
 //
 // Usage:
-//   node scripts/backfill_position_history.js [--dry-run] [--limit N]
+//   node scripts/backfill_position_history.js --legacy-social-backfill [--dry-run] [--limit N]
 //        [--chartService http://localhost:5058] [--threshold 0.10] [--stopPct 5]
 
 import mongoose from 'mongoose'
@@ -66,6 +65,7 @@ const STOP_PCT = Number(argValue('stopPct', '5'))
 const BATCH = Math.max(1, Math.min(50, Number(argValue('batch', '25'))))
 const LIMIT = Number(argValue('limit', '0')) || Infinity
 const DRY_RUN = hasFlag('dry-run')
+const LEGACY_SOCIAL_BACKFILL = hasFlag('legacy-social-backfill')
 
 function todayKeyET(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -94,6 +94,12 @@ async function fetchPositionsBatch(tickers, date) {
 }
 
 async function main() {
+  if (!LEGACY_SOCIAL_BACKFILL) {
+    throw new Error(
+      'Historical AI ranking snapshots are unavailable. Refusing to label chart-view social coverage as AI suggestions. ' +
+      'Pass --legacy-social-backfill only for an explicitly labeled legacy research import.',
+    )
+  }
   await mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 10_000 })
   const client = mongoose.connection.getClient()
   const socialColl = client.db(SOCIAL_DB).collection(SOCIAL_COLL)
@@ -166,7 +172,10 @@ async function main() {
         stopPct: STOP_PCT,
         corrExitThreshold: null,
         observedAt: new Date(),
-        collector: 'backfill_position_history_v1',
+        collector: 'legacy_social_backfill_v1',
+        candidateMetadata: new Map(chunk.map(ticker => [ticker, {
+          candidate_source: 'legacy_social_coverage',
+        }])),
       })
       for (const key of Object.keys(dayCoverage)) dayCoverage[key] += coverage[key] || 0
       dayRows += rows.length

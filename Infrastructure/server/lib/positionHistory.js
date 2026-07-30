@@ -132,6 +132,16 @@ export function normalizeTrade(trade = {}, context = {}) {
     company: context.company || null,
     date,
 
+    // Capture why the ticker entered the candidate universe without implying
+    // that the AI score itself caused the correlation entry or strategy exit.
+    candidate_source: context.candidateSource || null,
+    ai_rank: finiteNumber(context.aiRank),
+    ai_rank_score: finiteNumber(context.aiRankScore),
+    ai_direction: context.aiDirection || null,
+    ai_probability_up: finiteNumber(context.aiProbabilityUp),
+    ai_entry_ready: context.aiEntryReady === true,
+    ai_model: context.aiModel || null,
+
     // Parameters this row was simulated under. Without these the row is
     // uninterpretable later — a 5% stop and a 20% stop produce different exits
     // from identical price data.
@@ -246,6 +256,7 @@ export function rowsFromPositionsBatch(results = {}, context = {}) {
   const rows = []
   const coverage = { ok: 0, warming: 0, no_bars: 0, error: 0, other: 0 }
   const companies = context.companies instanceof Map ? context.companies : new Map()
+  const candidateMetadata = context.candidateMetadata instanceof Map ? context.candidateMetadata : new Map()
   const observedAt = context.observedAt instanceof Date ? context.observedAt : new Date()
 
   for (const [rawTicker, result] of Object.entries(results || {})) {
@@ -255,6 +266,7 @@ export function rowsFromPositionsBatch(results = {}, context = {}) {
     if (!result || status !== 'ok') continue
 
     const ticker = String(rawTicker || '').trim().toUpperCase()
+    const meta = candidateMetadata.get(ticker) || {}
     for (const trade of result.trades || []) {
       const row = normalizeTrade(trade, {
         ticker,
@@ -268,6 +280,13 @@ export function rowsFromPositionsBatch(results = {}, context = {}) {
         chartServiceDate: result.date,
         observedAt,
         collector: context.collector,
+        candidateSource: meta.candidate_source,
+        aiRank: meta.ai_rank,
+        aiRankScore: meta.ai_rank_score,
+        aiDirection: meta.ai_direction,
+        aiProbabilityUp: meta.ai_probability_up,
+        aiEntryReady: meta.ai_entry_ready,
+        aiModel: meta.ai_model,
       })
       if (row) rows.push(row)
     }

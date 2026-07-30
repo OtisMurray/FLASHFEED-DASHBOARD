@@ -40,8 +40,17 @@ from zoneinfo import ZoneInfo
 
 from curl_cffi import requests as cffi_requests
 from flask import Flask, jsonify, request
+from pymongo import MongoClient
 
 import social_store   # phase-2b: StockTwits walk + Mongo/in-memory resting store
+from cvd_engine import (
+    DEFAULT_SIGNAL_POLICY,
+    analyze_cvd_rows,
+    compute_bar_cvd,
+    cvd_signal_events,
+    merge_measured_minutes,
+    summarize_cvd,
+)
 
 # ── Constants copied verbatim from sentiment-scout/correlation_engine.py ──────
 # (correlation_engine itself imports social_store + config at module top, which
@@ -913,6 +922,204 @@ def api_charts(ticker):
         "bollinger": _bollinger_series(times, closes, 20, 2),
         "open": closes[0] if closes else None,
         "last": closes[-1] if closes else None,
+    })
+
+
+def _load_cvd_ticks(ticker: str, date_str: str) -> dict:
+    """Load optional classified IBKR ticks without making them mandatory.
+
+    The supplied collector stores ET-naive datetimes in
+    ``finviz_db.raw_ticks``.  FlashFeed deployments that do not run that
+    collector simply receive an estimated CVD response.
+    """
+    uri = (os.environ.get("CVD_MONGODB_URI") or "").strip()
+    if not uri:
+        return {"ticks": [], "status": "disabled", "error": None}
+    client = None
+    try:
+        start = datetime.strptime(date_str, "%Y-%m-%d")
+        end = start + timedelta(days=1)
+        client = MongoClient(uri, serverSelectionTimeoutMS=900, connectTimeoutMS=900)
+        collection = client[os.environ.get("CVD_DB_NAME", "finviz_db")][
+            os.environ.get("CVD_TICKS_COLLECTION", "raw_ticks")
+        ]
+        # Aggregate at the database boundary. Returning one document per
+        # minute avoids loading millions of raw trades into the web process.
+        ticks = list(collection.aggregate([
+            {"$match": {"ticker": ticker, "date": {"$gte": start, "$lt": end}}},
+            {"$project": {
+                "minute": {"$dateTrunc": {"date": "$date", "unit": "minute"}},
+                "size": {"$max": [0, {"$convert": {
+                    "input": {"$ifNull": ["$size", "$volume"]},
+                    "to": "double", "onError": 0, "onNull": 0,
+                }}]},
+                "delta": {"$convert": {
+                    "input": "$delta", "to": "double", "onError": 0, "onNull": 0,
+                }},
+                "auction": {"$or": [
+                    {"$eq": ["$is_auction", True]},
+                    {"$regexMatch": {
+                        "input": {"$convert": {
+                            "input": {"$ifNull": ["$cond", "$special_conditions"]},
+                            "to": "string", "onError": "", "onNull": "",
+                        }},
+                        "regex": r"(^|[ ,])(6|M)($|[ ,])",
+                    }},
+                ]},
+            }},
+            {"$match": {"size": {"$gt": 0}}},
+            {"$group": {
+                "_id": "$minute", "size": {"$sum": "$size"},
+                "delta": {"$sum": "$delta"}, "trades": {"$sum": 1},
+                "is_auction": {"$max": "$auction"},
+            }},
+            {"$sort": {"_id": 1}},
+            {"$project": {
+                "_id": 0, "date": "$_id", "size": 1, "delta": 1,
+                "trades": 1, "is_auction": 1,
+            }},
+        ], allowDiskUse=True))
+        return {"ticks": ticks, "status": "ready" if ticks else "empty", "error": None}
+    except Exception as exc:
+        # Report only the exception class. Connection strings, hosts, and
+        # credentials must never cross the API boundary.
+        return {"ticks": [], "status": "error", "error": exc.__class__.__name__}
+    finally:
+        if client is not None:
+            client.close()
+
+
+def _cvd_bubbles(rows: list[dict], window: int = 20, display_bucket_minutes: int = 5) -> list[dict]:
+    """Return the strongest standardized pressure outlier per display bucket.
+
+    Every minute still participates in CVD and signal calculations. Bucketing
+    applies only to the visual overlay so a volatile session does not imply
+    dozens of independent trade calls.
+    """
+    bucket_seconds = max(1, int(display_bucket_minutes)) * 60
+    strongest_by_bucket = {}
+    deltas = []
+    for row in rows:
+        delta = float(row.get("delta_best") or 0.0)
+        previous = deltas[-window:]
+        deltas.append(delta)
+        if len(previous) < 5:
+            continue
+        mean = sum(previous) / len(previous)
+        variance = sum((value - mean) ** 2 for value in previous) / max(1, len(previous) - 1)
+        sigma = variance ** 0.5
+        if sigma <= 0:
+            continue
+        z_score = (delta - mean) / sigma
+        if abs(z_score) < 1.5:
+            continue
+        bubble = {
+            "time": row["time"],
+            "z": round(z_score, 3),
+            "delta": round(delta, 3),
+            "side": "buy" if delta > 0 else "sell",
+            "quality": row.get("quality", "estimated_bvc"),
+        }
+        bucket = int(row["time"]) // bucket_seconds
+        previous = strongest_by_bucket.get(bucket)
+        if previous is None or abs(bubble["z"]) > abs(previous["z"]):
+            strongest_by_bucket[bucket] = bubble
+    return sorted(strongest_by_bucket.values(), key=lambda row: row["time"])
+
+
+@app.route("/api/sentchart/cvd/<ticker>")
+def api_cvd(ticker):
+    """Session CVD with explicit measured-versus-estimated provenance."""
+    ticker = ticker.upper().strip()
+    date_req = (request.args.get("date") or "").strip()
+    try:
+        analysis_window = min(120, max(10, int(request.args.get("analysis_window", 30))))
+    except (TypeError, ValueError):
+        analysis_window = 30
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", date_req):
+        result = _fetch_intraday_bars(ticker, date_req)
+        if isinstance(result, dict):
+            return jsonify({"ticker": ticker, "date": date_req,
+                            "error": result.get("error"), "candles": [], "rows": []})
+        bars, date_used = (result, date_req) if result else ([], None)
+    else:
+        bars, date_used = _latest_session_bars(ticker)
+    if not date_used or not bars:
+        return jsonify({"ticker": ticker, "date": date_req or None,
+                        "error": f"No intraday data for {ticker} on {date_req or 'recent sessions'}.",
+                        "candles": [], "rows": []})
+
+    def epoch(ts):
+        return int(ts.replace(tzinfo=timezone.utc).timestamp())
+
+    candles = [{
+        "time": epoch(bar["ts"]), "open": bar["open"], "high": bar["high"],
+        "low": bar["low"], "close": bar["close"], "volume": bar["volume"],
+    } for bar in bars]
+    estimated = compute_bar_cvd(candles)
+    tick_source = _load_cvd_ticks(ticker, date_used)
+    if isinstance(tick_source, dict):
+        ticks = tick_source.get("ticks") or []
+        tick_source_status = tick_source.get("status") or "error"
+        tick_source_error = tick_source.get("error")
+    else:
+        # Backward compatibility for test doubles and older local adapters.
+        ticks = tick_source or []
+        tick_source_status = "ready" if ticks else "disabled"
+        tick_source_error = None
+    merged = merge_measured_minutes(estimated["rows"], ticks)
+    analyzed_rows = analyze_cvd_rows(
+        candles,
+        merged["rows"],
+        window_minutes=analysis_window,
+        timestamp_mode="et_wall_clock",
+    )
+    events = cvd_signal_events(
+        analyzed_rows,
+        cooldown_minutes=DEFAULT_SIGNAL_POLICY["event_cooldown_minutes"],
+    )
+    measured_minutes = merged["measured_minutes"]
+    coverage = measured_minutes / len(analyzed_rows) if analyzed_rows else 0.0
+    if coverage >= 0.98:
+        provenance = "measured"
+    elif measured_minutes:
+        provenance = "mixed"
+    else:
+        provenance = "estimated"
+
+    return jsonify({
+        "ticker": ticker,
+        "date": date_used,
+        "candles": candles,
+        "rows": analyzed_rows,
+        "bubbles": _cvd_bubbles(analyzed_rows),
+        "events": events,
+        "analysis": summarize_cvd(analyzed_rows, events),
+        "signal_policy": {
+            **DEFAULT_SIGNAL_POLICY,
+            "window_minutes": analysis_window,
+            "status": "research_only_holdout_not_confirmed",
+        },
+        "auction_minutes": estimated["auction_minutes"],
+        "provenance": provenance,
+        "measured_minutes": measured_minutes,
+        "coverage": round(coverage, 4),
+        "methods": {
+            "best": "IBKR aggressor ticks where available, otherwise BVC estimate",
+            "bvc": "Bulk Volume Classification estimate",
+            "wick": "OHLC wick estimate",
+        },
+        "measured_source": {
+            "configured": bool((os.environ.get("CVD_MONGODB_URI") or "").strip()),
+            "status": tick_source_status,
+            "error": tick_source_error,
+            "contract": "classified trade ticks stored in MongoDB; credentials never enter the browser",
+        },
+        "limitations": [
+            "Bar-based CVD is an estimate, not observed aggressor-side volume.",
+            "Estimated CVD did not show incremental value in the latest chronological holdout replay.",
+            "Research signals remain excluded from AI ranking.",
+        ],
     })
 
 

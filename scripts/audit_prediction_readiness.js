@@ -91,7 +91,7 @@ async function main() {
 
   const urls = {
     health: `${baseUrl}/api/health`,
-    sessionModel: `${baseUrl}/api/prediction/session-model`,
+    sessionModel: `${baseUrl}/api/screener?view=predicted_increases&horizon=1d&limit=1&maxPicks=1&compact=1&require_catalyst_alignment=true`,
     ai: `${baseUrl}/api/ai/rankings?limit=25&days=${recentDays}&window_minutes=4320`,
     high: `${baseUrl}/api/screener?view=high_conviction_next_day&horizon=1d&limit=${maxPicks}&maxPicks=${maxPicks}&require_catalyst_alignment=true`,
     predicted: `${baseUrl}/api/screener?view=predicted_increases&horizon=1d&limit=25&require_catalyst_alignment=true`,
@@ -152,10 +152,10 @@ async function main() {
       live_classifier_reason: api.ai?.model?.live_classifier_reason || null,
     },
     momentum: {
-      status: verdict(Boolean(api.momentum?.ok && (api.momentum?.rows || []).length || Number(api.momentum?.count || 0) > 0)),
-      rows: api.momentum?.count ?? (api.momentum?.rows || []).length ?? 0,
+      status: verdict(Boolean(api.momentum?.ok && (api.momentum?.tickers || api.momentum?.rows || []).length > 0)),
+      rows: (api.momentum?.tickers || api.momentum?.rows || []).length,
       latest_snapshot_sec: latestMomentum?.snapshot_sec ?? null,
-      fallback_counts: api.momentum?.rows ? api.momentum.rows.filter(r => r.momentum_score == null).length : null,
+      fallback_counts: (api.momentum?.tickers || api.momentum?.rows || []).filter(r => r.momentum_score == null).length,
     },
     correlation: {
       status: verdict(Boolean(api.correlation?.summary && api.correlation?.summary?.aligned != null)),
@@ -163,12 +163,13 @@ async function main() {
       missing_rows: api.correlation?.entries ? api.correlation.entries.filter(row => row.correlation == null).length : null,
     },
     next_session_model: {
-      status: api.sessionModel?.model?.status || 'missing',
-      live_enabled: Boolean(api.sessionModel?.model?.live_enabled),
-      samples: api.sessionModel?.model?.samples ?? 0,
-      min_samples: api.sessionModel?.model?.min_samples ?? 0,
-      selected: api.sessionModel?.model?.metrics?.selected || null,
-      outcome_counts: api.sessionModel?.outcome_counts || null,
+      status: api.sessionModel?.next_session_model?.status || 'missing',
+      live_enabled: Boolean(api.sessionModel?.next_session_model?.live_enabled),
+      samples: api.sessionModel?.next_session_model?.samples ?? 0,
+      min_samples: api.sessionModel?.next_session_model?.min_samples ?? 0,
+      selected: api.sessionModel?.next_session_model?.selected_metrics || null,
+      validation_status: api.sessionModel?.next_session_model?.validation_status || null,
+      validation_reason: api.sessionModel?.next_session_model?.validation_reason || null,
     },
     prediction_signals: {
       status: verdict(Boolean(latestSignal?.signal_sec)),
@@ -179,7 +180,7 @@ async function main() {
 
   const warnings = []
   if (!componentHealth.next_session_model.live_enabled) {
-    warnings.push('Next-session model is shadow-only; final list is evidence-ranked, not statistically live-validated yet.')
+    warnings.push('Next-session classifier is inactive; the active validated threshold rules and evidence ranking remain the production decision path.')
   }
   if (finalList.some(row => row.evidence.social_posts === 0)) {
     warnings.push('Some final picks have no direct social support in the selected window; social pipeline is working globally but not contributing to every pick.')

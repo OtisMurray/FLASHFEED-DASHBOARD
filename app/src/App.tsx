@@ -16,6 +16,7 @@ const ChartsGridPage = lazy(() => import('./pages/ChartsGridPage').then(m => ({ 
 // files stay in the tree (unrouted and unreferenced, so Vite drops them from the
 // bundle) rather than being deleted, matching how earlier retirements were
 // handled here — recoverable from git without shipping dead chunks.
+const CVDPage = lazy(() => import('./pages/CVDPage').then(m => ({ default: m.CVDPage })))
 const PositionsPage = lazy(() => import('./pages/sentchart/PositionsPage').then(m => ({ default: m.PositionsPage })))
 const V11ScreenerPage = lazy(() => import('./pages/sentchart/V11ScreenerPage').then(m => ({ default: m.V11ScreenerPage })))
 const LongTermFundamentalsPage = lazy(() => import('./pages/sentchart/LongTermFundamentalsPage').then(m => ({ default: m.LongTermFundamentalsPage })))
@@ -50,6 +51,7 @@ export default function App() {
             <Route path="/social"      element={<SocialPage />} />
             <Route path="/mirror"      element={<MirrorPage />} />
             <Route path="/charts"      element={<ChartsPage />} />
+            <Route path="/cvd"         element={<CVDPage />} />
             <Route path="/positions"      element={<PositionsPage />} />
             {/* Retired in favour of Positions. Redirect rather than 404: both had
                 been linked and bookmarked for weeks, and Positions answers the

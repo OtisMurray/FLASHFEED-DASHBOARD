@@ -236,7 +236,7 @@ function directionTone(direction?: string) {
 function modelShortName(model?: string): string {
   const raw = String(model || '').toLowerCase()
   if (raw.includes('threshold')) return 'threshold'
-  if (raw.includes('linear')) return 'shadow ML'
+  if (raw.includes('linear')) return 'classifier'
   if (raw.includes('baseline')) return 'baseline'
   return model ? 'model' : 'baseline'
 }
@@ -272,7 +272,7 @@ function predictionDisplay(signal?: AiRankingRow['prediction_signal'], model?: A
         ? thresholdStatus
         : modelName === 'baseline'
           ? 'baseline watch'
-          : validationStatus.includes('shadow') ? 'shadow validation' : 'neutral model',
+          : validationStatus.includes('shadow') ? 'classifier inactive' : 'neutral model',
       meta: armed ? 'validated gate' : modelName === 'baseline' ? 'baseline' : 'neutral',
       tone: 'text-sky-200',
       barTone: 'bg-sky-500',
@@ -331,23 +331,27 @@ export function AIPage() {
     { refreshInterval: 60_000 }
   )
   const generated = data?.generated_at ? new Date(data.generated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'
-  const modelStatus = data?.model?.status || 'baseline'
+  const modelStatus = data?.model?.status || 'rules_live'
   const metrics = data?.model?.metrics || {}
   const actionableSamples = Number(metrics.actionable_samples || 0)
   const baselineActionableSamples = Number(metrics.baseline_actionable_samples || 0)
   const baselineAccuracy = Number(metrics.baseline_directional_accuracy_5m)
   const modelAccuracy = Number(metrics.directional_accuracy_5m)
   const modelBeatsBaseline = Number.isFinite(modelAccuracy) && (!Number.isFinite(baselineAccuracy) || modelAccuracy >= baselineAccuracy)
-  const modelTrustLabel = modelStatus === 'trained'
-    ? actionableSamples > 0 ? modelBeatsBaseline ? 'validated' : 'shadow' : baselineActionableSamples > 0 ? 'baseline checked' : 'pending'
-    : 'baseline'
+  const modelTrustLabel = data?.model?.live_classifier_enabled
+    ? 'validated'
+    : data?.model?.threshold_rule_live_enabled
+      ? 'rules live'
+      : modelStatus === 'trained' && actionableSamples > 0 && modelBeatsBaseline
+        ? 'validated'
+        : baselineActionableSamples > 0 ? 'baseline checked' : 'baseline'
   const modelTone = modelTrustLabel === 'validated'
     ? 'text-emerald-300'
     : modelTrustLabel === 'baseline checked'
       ? 'text-sky-300'
-      : modelTrustLabel === 'shadow'
-        ? 'text-yellow-300'
-      : 'text-yellow-300'
+      : modelTrustLabel === 'rules live'
+        ? 'text-emerald-300'
+        : 'text-yellow-300'
 
   return (
     <div className="space-y-4">

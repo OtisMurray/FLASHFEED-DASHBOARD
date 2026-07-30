@@ -81,6 +81,25 @@ test('every stored row stamps the parameters it was simulated under', () => {
   assert.equal(row.corr_exit_threshold, -0.2)
 })
 
+test('AI candidate provenance survives normalization into recorded history', () => {
+  const row = normalizeTrade(holdingTrade(), baseContext({
+    candidateSource: 'ai_suggestion',
+    aiRank: 3,
+    aiRankScore: 71.4,
+    aiDirection: 'bullish',
+    aiProbabilityUp: 0.67,
+    aiEntryReady: true,
+    aiModel: 'validated-threshold-model',
+  }))
+  assert.equal(row.candidate_source, 'ai_suggestion')
+  assert.equal(row.ai_rank, 3)
+  assert.equal(row.ai_rank_score, 71.4)
+  assert.equal(row.ai_direction, 'bullish')
+  assert.equal(row.ai_probability_up, 0.67)
+  assert.equal(row.ai_entry_ready, true)
+  assert.equal(row.ai_model, 'validated-threshold-model')
+})
+
 test('an open position marks to the live price and is not realized', () => {
   const row = normalizeTrade(holdingTrade(), baseContext())
   assert.equal(row.pnl_is_realized, false)

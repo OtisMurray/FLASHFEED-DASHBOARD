@@ -1,8 +1,9 @@
 import { Router } from 'express'
 import mongoose from 'mongoose'
 import Screener from '../models/Screener.js'
-import { normalizeScreenerRow, isCleanListedUsRow, loadAdaptiveSocialStatsForRows } from './screener.js'
+import { normalizeScreenerRow, isCleanListedUsRow } from './screener.js'
 import { classifyRow, POSITION_HISTORY_COLLECTION } from '../lib/positionHistory.js'
+import { loadAiPositionCandidates } from '../lib/aiPositionCandidates.js'
 
 // GET /api/position-screener?threshold=0.1&stopPct=5&limit=30&historyDays=14
 //
@@ -45,6 +46,7 @@ const DEFAULT_LIMIT = 30
 const MAX_LIMIT = 50                     // chart-service batch cap
 const DEFAULT_HISTORY_DAYS = 14
 const MAX_HISTORY_ROWS = 500
+const AI_MIN_SCORE = Number(process.env.POSITION_AI_MIN_SCORE || 50)
 
 // Must match the scheduler's canonical parameters in index.js. History exists
 // only at these values.
@@ -131,8 +133,8 @@ router.get('/', async (req, res) => {
     const isCanonical = round(threshold, 4) === round(CANONICAL_THRESHOLD, 4)
       && round(stopPct, 2) === round(CANONICAL_STOP_PCT, 2)
 
-    // 1. Same clean listed-US universe and deterministic scan order as
-    //    /api/entry-screener and /api/exit-screener.
+    // 1. Start from the same clean listed-US quote universe as the rest of the
+    //    dashboard, then let the canonical AI Rankings feed choose candidates.
     const filter = {
       exchange: { $in: ['NASDAQ', 'NYSE', 'AMEX'] },
       ticker: { $not: /\./ },
@@ -149,15 +151,74 @@ router.get('/', async (req, res) => {
 
     const db = mongoose.connection.db
     let candidates = []
+    let aiStatus = {
+      ok: false,
+      generated_at: null,
+      source_rows: 0,
+      min_score: AI_MIN_SCORE,
+      model: null,
+      error: null,
+    }
     if (db && universe.length) {
-      const socialMap = await loadAdaptiveSocialStatsForRows(db, universe, CORR_WINDOW_MINUTES)
-      candidates = universe
-        .map(row => ({ row, social: socialMap.get(row.ticker) }))
-        .filter(c => Number(c.social?.stocktwits_count || c.social?.count || 0) > 0)
-        .sort((a, b) =>
-          (Number(b.social?.stocktwits_count || 0) - Number(a.social?.stocktwits_count || 0)) ||
-          (Number(b.social?.count || 0) - Number(a.social?.count || 0)))
-        .slice(0, limit)
+      const universeByTicker = new Map(universe.map(row => [row.ticker, row]))
+      let selected = []
+      try {
+        const ai = await loadAiPositionCandidates({ limit, minScore: AI_MIN_SCORE })
+        aiStatus = {
+          ok: true,
+          generated_at: ai.generated_at,
+          source_rows: ai.source_rows,
+          min_score: ai.min_score,
+          model: ai.model,
+          error: null,
+        }
+        selected = ai.candidates
+          .map(meta => ({ row: universeByTicker.get(meta.ticker), meta }))
+          .filter(candidate => candidate.row)
+      } catch (err) {
+        aiStatus.error = String(err.message || err)
+      }
+
+      // Continue observing a position even if its ticker falls out of the next
+      // AI ranking. Otherwise an open trade could disappear before its exit is
+      // recorded. This fallback remains active even during a temporary AI API
+      // failure; it never admits a new non-AI ticker.
+      const pinnedDocs = await db.collection(POSITION_HISTORY_COLLECTION)
+        .find({
+          date: today,
+          finalized: { $ne: true },
+          superseded: { $ne: true },
+          threshold: CANONICAL_THRESHOLD,
+          stop_pct: CANONICAL_STOP_PCT,
+        }, {
+          projection: {
+            ticker: 1,
+            ai_rank: 1,
+            ai_rank_score: 1,
+            ai_direction: 1,
+            ai_probability_up: 1,
+            ai_entry_ready: 1,
+            ai_model: 1,
+          },
+        })
+        .toArray()
+        .catch(() => [])
+      const seen = new Set(selected.map(candidate => candidate.row.ticker))
+      const pinned = pinnedDocs
+        .map(doc => ({
+          row: universeByTicker.get(String(doc.ticker || '').toUpperCase()),
+          meta: {
+            ai_rank: doc.ai_rank ?? null,
+            ai_rank_score: doc.ai_rank_score ?? null,
+            ai_direction: doc.ai_direction ?? null,
+            ai_probability_up: doc.ai_probability_up ?? null,
+            ai_entry_ready: doc.ai_entry_ready === true,
+            ai_model: doc.ai_model ?? null,
+            candidate_source: 'tracked_open_position',
+          },
+        }))
+        .filter(candidate => candidate.row && !seen.has(candidate.row.ticker))
+      candidates = [...pinned, ...selected].slice(0, limit)
     }
 
     // 2. Live sim + correlation for today, in parallel. Correlation is what
@@ -191,7 +252,7 @@ router.get('/', async (req, res) => {
     // 3. Flatten today's live sim.
     const rows = []
     const coverage = { ok: 0, warming: 0, no_bars: 0, error: 0, other: 0 }
-    for (const { row } of candidates) {
+    for (const { row, meta } of candidates) {
       const result = positions[row.ticker]
       const status = String(result?.status || (chartServiceOk ? 'other' : 'error'))
       if (status in coverage) coverage[status] += 1
@@ -213,6 +274,7 @@ router.get('/', async (req, res) => {
           price_density_corr: corrRow?.corr ?? null,
           threshold,
           stop_pct: stopPct,
+          ...meta,
         })
         continue
       }
@@ -233,6 +295,7 @@ router.get('/', async (req, res) => {
           session_messages: result.messages ?? corrRow?.messages ?? null,
           threshold,
           stop_pct: stopPct,
+          ...meta,
         })
         continue
       }
@@ -276,6 +339,7 @@ router.get('/', async (req, res) => {
           pnl_is_realized: riskExit,
           threshold,
           stop_pct: stopPct,
+          ...meta,
         })
       }
     }
@@ -345,6 +409,13 @@ router.get('/', async (req, res) => {
           stop_pct: doc.stop_pct,
           snapshots: doc.snapshots ?? null,
           recorded_at: doc.updated_at ?? null,
+          candidate_source: doc.candidate_source || 'recorded_ai_suggestion',
+          ai_rank: doc.ai_rank ?? null,
+          ai_rank_score: doc.ai_rank_score ?? null,
+          ai_direction: doc.ai_direction ?? null,
+          ai_probability_up: doc.ai_probability_up ?? null,
+          ai_entry_ready: doc.ai_entry_ready === true,
+          ai_model: doc.ai_model ?? null,
         })
       }
     }
@@ -394,6 +465,8 @@ router.get('/', async (req, res) => {
       chart_service_ok: chartServiceOk,
       tickers_scanned: candidates.length,
       universe_size: universe.length,
+      candidate_policy: 'ai_rankings_non_bearish',
+      ai_status: aiStatus,
       coverage,
       tickers_warming: coverage.warming,
       tickers_no_bars: coverage.no_bars,
@@ -424,7 +497,9 @@ router.get('/', async (req, res) => {
           `intraday reaches back about two weeks and old StockTwits messages cannot be rebuilt), so the closed-earlier ` +
           `rows below are NOT a what-if at these settings.`,
       note: !candidates.length
-        ? `No tickers with StockTwits activity in the last ${CORR_WINDOW_MINUTES} minutes.`
+        ? (aiStatus.error
+          ? `AI rankings unavailable: ${aiStatus.error}`
+          : `No non-bearish AI suggestions met the minimum score of ${AI_MIN_SCORE}.`)
         : (!chartServiceOk ? 'chart-service unreachable — no live positions could be simulated' : undefined),
     })
   } catch (err) {

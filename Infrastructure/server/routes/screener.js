@@ -362,7 +362,7 @@ function predictionModelFeature(row = {}, key = '') {
 }
 
 function predictionModelProbability(row = {}, modelDoc = null) {
-  if (!modelDoc?.live_enabled || !Array.isArray(modelDoc.feature_keys) || !Array.isArray(modelDoc.weights)) return null
+  if (!nextSessionModelProductionReady(modelDoc) || !Array.isArray(modelDoc.feature_keys) || !Array.isArray(modelDoc.weights)) return null
   const stats = modelDoc.feature_stats || {}
   let z = Number(modelDoc.intercept || 0)
   modelDoc.feature_keys.forEach((key, index) => {
@@ -371,6 +371,30 @@ function predictionModelProbability(row = {}, modelDoc = null) {
     z += Number(modelDoc.weights[index] || 0) * ((Number(value || 0) - Number(stat.mean || 0)) / (Number(stat.std || 1) || 1))
   })
   return Number(sigmoid(z).toFixed(3))
+}
+
+const NEXT_SESSION_VALIDATION_PROTOCOL = 'purged_market_date_train_validation_test_v2'
+
+function nextSessionModelProductionReady(modelDoc = null) {
+  const test = modelDoc?.metrics?.independent_test || {}
+  const accuracy = nullableNumber(test.accuracy)
+  const balancedAccuracy = nullableNumber(test.balanced_accuracy)
+  const baselineAccuracy = nullableNumber(test.baseline_majority_accuracy)
+  const coverage = nullableNumber(test.coverage)
+  const profitFactor = nullableNumber(test.profit_factor)
+  const actionable = nullableNumber(test.actionable_samples)
+  return Boolean(
+    modelDoc?.live_enabled === true &&
+    modelDoc?.status === 'trained_production' &&
+    modelDoc?.validation_protocol === NEXT_SESSION_VALIDATION_PROTOCOL &&
+    modelDoc?.split_mode === 'market_date' &&
+    actionable != null && actionable >= 100 &&
+    accuracy != null && accuracy >= 0.60 &&
+    balancedAccuracy != null && balancedAccuracy >= 0.55 &&
+    baselineAccuracy != null && accuracy >= baselineAccuracy + 0.02 &&
+    coverage != null && coverage >= 0.10 &&
+    profitFactor != null && profitFactor >= 1.05
+  )
 }
 
 function predictionFreshTriggerState(row = {}, validation = {}) {
@@ -5061,8 +5085,9 @@ function buildEvidencePredictionRows(rows = [], limit = 50, meta = {}) {
   const productionAvgReturn = nullableNumber(modelMetrics.avg_labeled_return)
   const productionAccuracy = nullableNumber(modelMetrics.accuracy)
   const productionThreshold = nullableNumber(modelDoc?.selected_threshold ?? modelMetrics.threshold)
-  const trainedHighTarget = Boolean(modelDoc?.live_enabled && modelDoc?.status === 'trained_production' && modelDoc?.target === 'high' && productionAvgReturn != null && productionAvgReturn > 0)
-  const trainedPayoffTarget = Boolean(modelDoc?.live_enabled && modelDoc?.status === 'trained_production' && String(modelDoc?.target || '').includes('payoff') && productionThreshold != null)
+  const productionModelReady = nextSessionModelProductionReady(modelDoc)
+  const trainedHighTarget = Boolean(productionModelReady && modelDoc?.target === 'high' && productionAvgReturn != null && productionAvgReturn > 0)
+  const trainedPayoffTarget = Boolean(productionModelReady && String(modelDoc?.target || '').includes('payoff') && productionThreshold != null)
   const predictionDate = meta.predictionDate || isoDateKey()
   const targetDate = meta.targetDate || nextTradingDateIso(predictionDate)
 
@@ -6433,7 +6458,7 @@ router.get('/', async (req, res) => {
           developingCandidateMinScore: PREDICTION_DEVELOPING_CANDIDATE_MIN_SCORE,
           activePeopleRows: activeSocialRows.length,
           modelMode: 'fast_developing_people_momentum',
-          calibratorMode: modelDoc?.status || 'calibrator_shadow_fallback',
+          calibratorMode: nextSessionModelProductionReady(modelDoc) ? 'validated_next_session_model' : 'validated_threshold_rules_only',
           predictionRiskFlagCounts,
           predictionReadinessCounts,
           catalystReactionCounts,
@@ -6463,16 +6488,16 @@ router.get('/', async (req, res) => {
           thresholdPolicyVersion: PREDICTION_THRESHOLD_POLICY_VERSION,
         },
         next_session_model: {
-          live_enabled: Boolean(modelDoc?.live_enabled),
+          live_enabled: nextSessionModelProductionReady(modelDoc),
           evidence_predictions_enabled: peopleRows.length > 0,
-          status: modelDoc?.status || 'calibrator_shadow_fallback',
+          status: nextSessionModelProductionReady(modelDoc) ? 'validated_next_session_model' : 'validated_threshold_rules_only',
           target: modelDoc?.target || null,
-          split_mode: modelDoc?.split_mode || null,
-          selected_threshold: modelDoc?.selected_threshold ?? null,
-          validation_status: modelDoc?.validation_status || null,
-          validation_reason: modelDoc?.validation_reason || null,
-          selected_metrics: modelDoc?.metrics?.selected || null,
-          baseline_majority_accuracy: modelDoc?.metrics?.baseline_majority_accuracy ?? null,
+          split_mode: nextSessionModelProductionReady(modelDoc) ? modelDoc?.split_mode || null : null,
+          selected_threshold: nextSessionModelProductionReady(modelDoc) ? modelDoc?.selected_threshold ?? null : null,
+          validation_status: nextSessionModelProductionReady(modelDoc) ? modelDoc?.validation_status || null : 'inactive_unverified_legacy_record',
+          validation_reason: nextSessionModelProductionReady(modelDoc) ? modelDoc?.validation_reason || null : 'Independent market-date train/validation/test evidence is required before this classifier can affect production.',
+          selected_metrics: nextSessionModelProductionReady(modelDoc) ? modelDoc?.metrics?.independent_test || null : null,
+          baseline_majority_accuracy: nextSessionModelProductionReady(modelDoc) ? modelDoc?.metrics?.independent_test?.baseline_majority_accuracy ?? null : null,
           samples: modelDoc?.samples || modelDoc?.metrics?.samples || 0,
           min_samples: modelDoc?.min_samples || 0,
         },
@@ -7081,7 +7106,7 @@ router.get('/', async (req, res) => {
         topFiveTickers: finalRows.slice(0, 5).map(row => String(row.ticker || '').toUpperCase()).filter(Boolean),
         pipelineStageCounts,
         modelMode: predictionSourceMode,
-        calibratorMode: modelDoc?.status || 'calibrator_shadow_fallback',
+        calibratorMode: nextSessionModelProductionReady(modelDoc) ? 'validated_next_session_model' : 'validated_threshold_rules_only',
         predictionCacheMode: 'mongo',
         cacheHit: false,
         latestPredictionAt: predictionRows[0]?.predictionTimestamp || null,
@@ -7165,16 +7190,16 @@ router.get('/', async (req, res) => {
           discoveryUniverseLimit: predictionDebug.discoveryUniverseLimit,
         },
         next_session_model: {
-          live_enabled: Boolean(modelDoc?.live_enabled),
+          live_enabled: nextSessionModelProductionReady(modelDoc),
           evidence_predictions_enabled: evidencePredictionRows.length > 0,
           status: predictionDebug.calibratorMode,
           target: modelDoc?.target || null,
-          split_mode: modelDoc?.split_mode || null,
-          selected_threshold: modelDoc?.selected_threshold ?? null,
-          validation_status: modelDoc?.validation_status || null,
-          validation_reason: modelDoc?.validation_reason || null,
-          selected_metrics: modelDoc?.metrics?.selected || null,
-          baseline_majority_accuracy: modelDoc?.metrics?.baseline_majority_accuracy ?? null,
+          split_mode: nextSessionModelProductionReady(modelDoc) ? modelDoc?.split_mode || null : null,
+          selected_threshold: nextSessionModelProductionReady(modelDoc) ? modelDoc?.selected_threshold ?? null : null,
+          validation_status: nextSessionModelProductionReady(modelDoc) ? modelDoc?.validation_status || null : 'inactive_unverified_legacy_record',
+          validation_reason: nextSessionModelProductionReady(modelDoc) ? modelDoc?.validation_reason || null : 'Independent market-date train/validation/test evidence is required before this classifier can affect production.',
+          selected_metrics: nextSessionModelProductionReady(modelDoc) ? modelDoc?.metrics?.independent_test || null : null,
+          baseline_majority_accuracy: nextSessionModelProductionReady(modelDoc) ? modelDoc?.metrics?.independent_test?.baseline_majority_accuracy ?? null : null,
           samples: modelDoc?.samples || modelDoc?.metrics?.samples || 0,
           min_samples: modelDoc?.min_samples || 0,
         },
@@ -7342,7 +7367,7 @@ export {
   attachShortInterestEvidence,
   evaluatePredictionEntryThreshold,
   predictionMarketCapTier,
-
+  nextSessionModelProductionReady,
   enrichScreenerRow,
   loadArticleStatsForTickers,
   loadShortInterestSnapshots,

@@ -806,29 +806,46 @@ export interface PositionScreenerRow {
   // recorded rows only
   snapshots?:            number | null
   recorded_at?:          string | null
+  // Candidate provenance captured when the AI Rankings feed admitted the ticker.
+  candidate_source?:     'ai_suggestion' | 'tracked_open_position' | 'recorded_ai_suggestion' | string
+  ai_rank?:              number | null
+  ai_rank_score?:        number | null
+  ai_direction?:         'bullish' | 'watch' | string | null
+  ai_probability_up?:    number | null
+  ai_entry_ready?:       boolean
+  ai_model?:             string | null
 }
 
 export interface PositionScreenerResponse {
-  ok:                  boolean
-  threshold:           number
-  stopPct:             number
-  canonical:           { threshold: number; stop_pct: number }
-  is_canonical:        boolean
-  corr_window_minutes: number
-  chart_service_ok:    boolean
-  tickers_scanned:     number
-  universe_size:       number
-  coverage:            Record<string, number>
-  tickers_warming:     number
-  tickers_no_bars:     number
-  counts:              Record<PositionGroup, number>
-  history_days:        number
-  history_rows:        number
-  history_dates:       number
-  history_truncated:   boolean
-  newest_history_date: string | null
-  stale_rows:          number
-  superseded_rows:     number
+  ok:                    boolean
+  threshold:             number
+  stopPct:               number
+  canonical:             { threshold: number; stop_pct: number }
+  is_canonical:          boolean
+  corr_window_minutes:   number
+  chart_service_ok:      boolean
+  tickers_scanned:       number
+  universe_size:         number
+  candidate_policy?:     string
+  ai_status?:            {
+    ok: boolean
+    generated_at?: string | null
+    source_rows?: number
+    min_score?: number
+    model?: { name?: string; status?: string } | null
+    error?: string | null
+  }
+  coverage:              Record<string, number>
+  tickers_warming:       number
+  tickers_no_bars:       number
+  counts:                Record<PositionGroup, number>
+  history_days:          number
+  history_rows:          number
+  history_dates:         number
+  history_truncated:     boolean
+  newest_history_date:   string | null
+  stale_rows:            number
+  superseded_rows:       number
   // Live rows dropped because recorded history already described the same trade.
   live_rows_superseded_by_history?: number
   // The session the simulator actually covered. Between midnight ET and the next

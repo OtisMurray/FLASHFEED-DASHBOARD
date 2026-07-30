@@ -492,7 +492,7 @@ export function ScreenerPage() {
         orderDir,
       },
       model_mode: data?.prediction_debug?.modelMode || data?.diagnostics?.model_mode || (data?.next_session_model?.live_enabled ? 'stored_daily_prediction' : 'no_stored_next_day_prediction'),
-      calibrator_mode: data?.prediction_debug?.calibratorMode || data?.diagnostics?.calibrator_mode || 'calibrator_shadow_fallback',
+      calibrator_mode: data?.prediction_debug?.calibratorMode || data?.diagnostics?.calibrator_mode || 'validated_threshold_rules_only',
       fallback_params_used: data?.diagnostics?.fallback_params_used || {
         actionable: false,
         include_decision_candidates: true,

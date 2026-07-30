@@ -246,6 +246,7 @@ export function PositionsPage() {
 
   const COLUMNS: Array<{ key: string; label: string; title?: string }> = [
     { key: 'ticker', label: 'TICKER' },
+    { key: 'ai_rank_score', label: 'AI SUGGESTION', title: 'The AI ranking snapshot that admitted this ticker to the Positions candidate set' },
     { key: 'date', label: 'SESSION' },
     { key: 'entry_price', label: 'ENTRY', title: 'The exact entry the strategy took: fill price, ET time, and the rolling correlation that triggered it' },
     { key: 'exit_price', label: 'EXIT / STOP', title: 'The exact exit taken, or for an open position the trailing stop currently being worked' },
@@ -261,15 +262,28 @@ export function PositionsPage() {
         <div>
           <h1 className="text-white font-semibold text-lg">Positions</h1>
           <p className="text-neutral text-xs mt-1 max-w-3xl leading-relaxed">
-            Entry, exit and P&amp;L for the rolling-correlation strategy in one view. Open positions sit at the top;
-            closed ones move down and stay. Today is simulated live; earlier sessions are read back from the
-            recorded history.
+            The dashboard&apos;s non-bearish AI suggestions are passed through Aman&apos;s rolling-correlation entry and
+            trailing-stop exit simulation. Open positions sit at the top; closed ones move down and stay. Today is
+            simulated live; earlier sessions are read back from recorded history.
           </p>
         </div>
         <span className="text-neutral text-sm whitespace-nowrap">
           {counts ? `${counts.open} open · ${counts.closed_today} closed today · ${counts.closed_earlier} earlier` : '—'}
         </span>
       </div>
+
+      {data && (
+        <div className="bg-sky-500/10 border border-sky-500/40 rounded-lg px-4 py-3 mb-3">
+          <div className="text-sky-200 text-xs font-semibold mb-1">AI-qualified candidate universe</div>
+          <div className="text-[11px] text-sky-100/75 leading-relaxed">
+            New candidates come from the canonical AI Rankings feed, exclude bearish/down predictions, and require
+            an AI score of at least {data.ai_status?.min_score ?? 50}. The AI chooses what to inspect; the existing
+            correlation and trailing-stop strategy still decides entries and exits.
+            {data.ai_status?.generated_at && ` Ranking snapshot: ${new Date(data.ai_status.generated_at).toLocaleString()}.`}
+            {data.ai_status?.error && ` AI feed unavailable: ${data.ai_status.error}`}
+          </div>
+        </div>
+      )}
 
       {/* Overall P&L. Sits above the fold because it is the question the page
           exists to answer, but every figure is qualified in place rather than in
@@ -627,6 +641,21 @@ function PositionRow({ row }: { row: PositionScreenerRow }) {
       <td className="px-2 py-2 whitespace-nowrap">
         <span className="font-mono font-bold text-accent">{row.ticker}</span>
         {row.company && <span className="text-slate-500 ml-1.5 truncate inline-block max-w-[110px] align-bottom">{row.company}</span>}
+      </td>
+      <td className="px-2 py-2 whitespace-nowrap">
+        {row.ai_rank_score == null ? (
+          <span className="text-neutral" title="This recorded row predates AI candidate provenance.">prior history</span>
+        ) : (
+          <span className="font-mono">
+            <span className={row.ai_direction === 'bullish' ? 'text-emerald-400' : 'text-sky-300'}>
+              {row.ai_direction === 'bullish' ? 'Bullish' : 'Watch'} {row.ai_rank_score.toFixed(1)}
+            </span>
+            {row.ai_rank != null && <span className="text-slate-500 ml-1">#{row.ai_rank}</span>}
+            {row.candidate_source === 'tracked_open_position' && (
+              <span className="text-amber-300 ml-1" title="Kept in the scan after leaving the current AI list so its exit can still be recorded.">tracked</span>
+            )}
+          </span>
+        )}
       </td>
       <td className="px-2 py-2 whitespace-nowrap">
         <span className="font-mono text-neutral">{row.date ?? '—'}</span>

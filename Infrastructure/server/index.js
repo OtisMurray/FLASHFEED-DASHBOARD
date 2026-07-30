@@ -25,7 +25,7 @@ import decisionMapRouter from './routes/decisionMap.js'
 import { approvedNewsSourceMongoFilter } from './sourceFilter.js'
 import { dedupeWatcherSeries, loadWatcherFeatureMap, persistWatcherSnapshot } from './lib/watcherSnapshots.js'
 import Screener from './models/Screener.js'
-import { normalizeScreenerRow, isCleanListedUsRow, loadAdaptiveSocialStatsForRows } from './routes/screener.js'
+import { normalizeScreenerRow, isCleanListedUsRow } from './routes/screener.js'
 import {
   ensurePositionHistoryIndexes,
   persistPositionSnapshot,
@@ -36,6 +36,14 @@ import {
 } from './lib/positionHistory.js'
 import { normalizeRollingWindowMinutes, recordIsInsideRollingWindow, sliceCandlesToRollingWindow } from './lib/rollingWindow.js'
 import * as predictionThresholdPolicy from './lib/predictionThresholdPolicy.js'
+import { loadAiPositionCandidates } from './lib/aiPositionCandidates.js'
+import {
+  INTRADAY_LABEL_VERSION,
+  INTRADAY_MODEL_ID,
+  predictIntradayDirection,
+  promotionDecision as intradayModelPromotionDecision,
+  transformIntradayFeatures,
+} from './lib/intradayPredictionModel.js'
 
 const app  = express()
 const PORT = process.env.PORT || 3001
@@ -114,8 +122,7 @@ const POSITION_HISTORY_BATCH_SIZE = Math.max(1, Math.min(50, Number(process.env.
 const POSITION_HISTORY_THRESHOLD = Number(process.env.POSITION_HISTORY_THRESHOLD || 0.10)
 const POSITION_HISTORY_STOP_PCT = Number(process.env.POSITION_HISTORY_STOP_PCT || 5)
 const POSITION_HISTORY_RETENTION_DAYS = Math.max(1, Math.min(365, Number(process.env.POSITION_HISTORY_RETENTION_DAYS || 90)))
-const POSITION_HISTORY_UNIVERSE_SCAN_LIMIT = Number(process.env.SCREENER_UNIVERSE_SCAN_LIMIT || 6000)
-const POSITION_HISTORY_CORR_WINDOW_MINUTES = 360   // matches the strategy window the screeners use
+const POSITION_HISTORY_AI_MIN_SCORE = Number(process.env.POSITION_AI_MIN_SCORE || 50)
 const positionHistoryStatus = {
   enabled: POSITION_HISTORY_ENABLED,
   running: false,
@@ -126,6 +133,7 @@ const positionHistoryStatus = {
   lastSummary: null,
   lastCoverage: null,
   lastPrune: null,
+  candidate_policy: 'ai_rankings_non_bearish',
 }
 
 // ── Middleware ────────────────────────────────────────────
@@ -628,8 +636,8 @@ app.get('/api/ai/rankings', async (req, res) => {
       ok: true,
       generated_at: new Date().toISOString(),
       model: {
-        name: model?.model_id || PREDICTION_MODEL_ID,
-        status: model?.status || 'baseline',
+        name: model?.model_id || PREDICTION_THRESHOLD_POLICY_VERSION,
+        status: model?.status || 'rules_live',
         samples: Number(model?.samples || 0),
         min_samples: model?.min_samples || Number(process.env.PREDICTION_MIN_TRAINING_SAMPLES || 20),
         metrics: model?.metrics || null,
@@ -638,13 +646,14 @@ app.get('/api/ai/rankings', async (req, res) => {
         live_classifier_enabled: modelValidation.allow_live_classifier,
         live_classifier_reason: modelValidation.reason,
         threshold_rule_live_enabled: true,
-        threshold_rule_live_reason: 'validated_v11_threshold_rule_live_when_entry_ready',
+        threshold_rule_live_reason: `${PREDICTION_THRESHOLD_POLICY_VERSION}_live_when_entry_ready`,
+        production_mode: modelValidation.allow_live_classifier ? 'validated_classifier_plus_rules' : 'validated_rules_only',
         fallback: 'baseline_trade_watch_v1',
       },
       methodology: {
         ranking: 'blended Trade Watch, rolling news sentiment, social density, quote freshness, correlation, gated technical confirmation, and validated prediction signal',
         scaling: 'server-side capped and cached; no browser-side scan of Mongo collections',
-        provider_dependency: 'none on read path; uses stored validated model when it beats baseline, otherwise shadows it and falls back to baseline/transparent evidence',
+        provider_dependency: 'none on read path; uses a classifier only after strict chronological promotion, otherwise runs validated threshold rules with transparent evidence scoring',
       },
       summary: {
         rows: rows.length,
@@ -785,7 +794,7 @@ app.get('/api/ai/ticker/:ticker', async (req, res) => {
       { label: 'Social evidence window', status: socialCount > 0 ? 'pass' : 'warn', detail: `${socialCount} social posts found in the selected ${socialWindow} minute window.` },
       { label: 'Prediction validation', status: correct5.length >= 20 ? 'pass' : correct5.length ? 'warn' : 'info', detail: correct5.length ? `${correct5.length} labeled 5m outcomes; accuracy ${Math.round((accuracy5m || 0) * 100)}%.` : 'No completed 5m labels yet; ranking uses current model/baseline signal.' },
       { label: 'Density setup', status: thresholdEntry?.passed ? 'pass' : densitySetupActive ? 'warn' : 'info', detail: `${densityStatus || 'unknown'}; corr ${densityCorrelation == null ? '--' : densityCorrelation.toFixed(3)}, setup score ${Math.round(densitySetupScore * 100)}.` },
-      { label: 'Model validation set', status: modelValidation.allow_live_classifier ? 'pass' : Number(model?.metrics?.baseline_actionable_samples || 0) > 0 ? 'warn' : 'info', detail: `Live classifier: ${modelValidation.allow_live_classifier ? 'enabled' : `shadowed (${modelValidation.reason})`}.` },
+      { label: 'Model validation set', status: modelValidation.allow_live_classifier ? 'pass' : 'info', detail: `Live classifier: ${modelValidation.allow_live_classifier ? 'enabled' : `inactive (${modelValidation.reason}); validated rules remain live`}.` },
     ]
     res.json({
       ok: true,
@@ -2650,7 +2659,7 @@ function addTradeWatchFields(row) {
 }
 
 const PREDICTION_HORIZONS_MINUTES = [5, 15, 60]
-const PREDICTION_MODEL_ID = "trade_watch_linear_v1"
+const PREDICTION_MODEL_ID = INTRADAY_MODEL_ID
 const PREDICTION_FEATURE_KEYS = [
   "change_pct",
   "rel_volume",
@@ -2860,7 +2869,22 @@ function sigmoid(value) {
   return 1 / (1 + Math.exp(-value))
 }
 
-function applyPredictionModel(features = {}, model = null) {
+function applyPredictionModel(features = {}, model = null, signalSec = Math.floor(Date.now() / 1000)) {
+  if (model?.direction_classifier?.type === 'regularized_logistic_direction_v2' || model?.direction_classifier?.type === 'adaboost_stumps_direction_v2') {
+    const prediction = predictIntradayDirection(transformIntradayFeatures(features, signalSec), model.direction_classifier)
+    if (!prediction) return null
+    return {
+      model: model.model_id || PREDICTION_MODEL_ID,
+      model_version: model.version || 1,
+      direction: prediction.direction,
+      predicted_return_5m: null,
+      probability_up: prediction.probability_up,
+      confidence: prediction.confidence,
+      trained_samples: Number(model.samples || 0),
+      evaluation_protocol: model.metrics?.evaluation_protocol || null,
+      outcome_label_version: model.metrics?.outcome_label_version || null,
+    }
+  }
   if (!model?.weights || !model?.feature_stats) return null
   let score = Number(model.intercept || 0)
   for (const key of model.feature_keys || PREDICTION_FEATURE_KEYS) {
@@ -2888,36 +2912,14 @@ async function loadLatestPredictionModel(db) {
 }
 
 function modelValidationState(model = null) {
-  if (model?.status !== "trained") {
-    return { status: model?.status || "missing", allow_live_classifier: false, edge: null, reason: "model_not_trained" }
-  }
-  if (!model.metrics) {
-    return { status: "training_evaluation", allow_live_classifier: true, edge: null, reason: "temporary_model_without_persisted_metrics" }
-  }
-  const metrics = model.metrics || {}
-  const actionable = Number(metrics.actionable_samples || 0)
-  const accuracy = Number(metrics.directional_accuracy_5m)
-  const baselineAccuracy = Number(metrics.baseline_directional_accuracy_5m)
-  const minSamples = Number(process.env.MIN_LIVE_MODEL_VALIDATION_SAMPLES || 50)
-  const minEdge = Number(process.env.MIN_LIVE_MODEL_EDGE || 0)
-  const minAccuracy = Number(process.env.MIN_LIVE_MODEL_ACCURACY || 0.60)
-  const edge = Number.isFinite(accuracy) && Number.isFinite(baselineAccuracy) ? Number((accuracy - baselineAccuracy).toFixed(3)) : null
-  if (model?.direction_classifier?.type === "knn_centroid_direction_v1" && process.env.ALLOW_KNN_LIVE_MODEL !== "1") {
-    return { status: "shadow_knn_disabled", allow_live_classifier: false, edge, reason: "knn_live_use_disabled" }
-  }
-  if (actionable < minSamples) {
-    return { status: "shadow_insufficient_validation", allow_live_classifier: false, edge, reason: `needs_at_least_${minSamples}_actionable_holdout_samples` }
-  }
-  if (!Number.isFinite(accuracy)) {
-    return { status: "shadow_no_validation_accuracy", allow_live_classifier: false, edge, reason: "missing_validation_accuracy" }
-  }
-  if (accuracy < minAccuracy) {
-    return { status: "shadow_below_required_accuracy", allow_live_classifier: false, edge, reason: `model_accuracy_${accuracy.toFixed(3)}_below_required_${minAccuracy.toFixed(3)}` }
-  }
-  if (Number.isFinite(baselineAccuracy) && accuracy < baselineAccuracy + minEdge) {
-    return { status: "shadow_under_baseline", allow_live_classifier: false, edge, reason: `model_accuracy_${accuracy.toFixed(3)}_below_required_baseline_${(baselineAccuracy + minEdge).toFixed(3)}` }
-  }
-  return { status: "live_validated_edge", allow_live_classifier: true, edge, reason: "model_beats_recent_baseline" }
+  return intradayModelPromotionDecision(model, {
+    minActionable: Number(process.env.MIN_LIVE_MODEL_VALIDATION_SAMPLES || 100),
+    minBaselineEdge: Number(process.env.MIN_LIVE_MODEL_EDGE || 0.02),
+    minAccuracy: Number(process.env.MIN_LIVE_MODEL_ACCURACY || 0.60),
+    minBalancedAccuracy: Number(process.env.MIN_LIVE_MODEL_BALANCED_ACCURACY || 0.55),
+    minCoverage: Number(process.env.MIN_LIVE_MODEL_COVERAGE || 0.10),
+    minProfitFactor: Number(process.env.MIN_LIVE_MODEL_PROFIT_FACTOR || 1.05),
+  })
 }
 
 function isLiveModelSignalEligible(signal = null, model = null) {
@@ -2967,7 +2969,7 @@ async function captureTradeWatchPredictionSignals(db, { limit = 10, days = 2, so
       const thresholdEntry = evaluatePredictionEntryThreshold(row, features)
       const baseline = baselinePredictionFromMover(row, thresholdEntry)
       const thresholdRuleSignal = thresholdRulePredictionFromEntry(row, thresholdEntry)
-      const rawModelSignal = applyPredictionModel(features, model)
+      const rawModelSignal = applyPredictionModel(features, model, minuteBucket)
       const modelSignal = rawModelSignal ? {
         ...rawModelSignal,
         raw_direction: rawModelSignal.direction,
@@ -3143,7 +3145,7 @@ async function labelMaturePredictionSignals(db, { limit = 500, relabelLegacy = t
   const candidateLimit = Math.max(requestedLimit, Math.min(10000, requestedLimit * 5))
   const needsOhlcLabel = {
     $or: PREDICTION_HORIZONS_MINUTES.map(horizon => ({
-      [`labels.return_${horizon}m.label_source`]: { $ne: "mongo_ohlcv_bars" },
+      [`labels.return_${horizon}m.outcome_label_version`]: { $ne: INTRADAY_LABEL_VERSION },
     })),
   }
   const docs = await db.collection("prediction_signals").find({
@@ -3152,7 +3154,7 @@ async function labelMaturePredictionSignals(db, { limit = 500, relabelLegacy = t
     ticker: { $exists: true, $nin: ["", null] },
     ...needsOhlcLabel,
   }).sort({ signal_sec: -1 }).limit(candidateLimit).toArray()
-  if (!docs.length) return { checked: 0, labeled: 0, source: "mongo_ohlcv_bars", missing_ohlc: 0, relabeled_legacy: 0 }
+  if (!docs.length) return { checked: 0, labeled: 0, source: "mongo_ohlcv_bars", missing_ohlc: 0, relabeled_legacy: 0, outcome_label_version: INTRADAY_LABEL_VERSION }
 
   const ohlcMap = await loadOutcomeOhlcBars(db, docs, Math.max(...PREDICTION_HORIZONS_MINUTES))
   const updates = []
@@ -3163,8 +3165,7 @@ async function labelMaturePredictionSignals(db, { limit = 500, relabelLegacy = t
   for (const doc of docs) {
     const ticker = String(doc.ticker || "").toUpperCase()
     const bars = ohlcMap.get(ticker) || []
-    const entryPrice = Number(doc.entry_price || 0)
-    if (!entryPrice) continue
+    const signalQuotePrice = Number(doc.entry_price || 0)
 
     const setFields = { updated_at: new Date() }
     let docLabeled = false
@@ -3172,35 +3173,38 @@ async function labelMaturePredictionSignals(db, { limit = 500, relabelLegacy = t
     for (const horizon of PREDICTION_HORIZONS_MINUTES) {
       const key = `return_${horizon}m`
       const existing = doc.labels?.[key]
-      const existingIsOhlc = existing?.label_source === "mongo_ohlcv_bars"
-      if (existing?.labeled && (existingIsOhlc || !relabelLegacy)) continue
+      const existingIsStrict = existing?.outcome_label_version === INTRADAY_LABEL_VERSION
+      if (existing?.labeled && (existingIsStrict || !relabelLegacy)) continue
       const due = nowSec - Number(doc.signal_sec || 0) >= horizon * 60
       if (!due) continue
 
-      const targetSec = Number(doc.signal_sec || 0) + horizon * 60
-      const bar = nearestOutcomeBarAtOrAfter(bars, targetSec)
-      if (!bar) {
+      const signalSec = Number(doc.signal_sec || 0)
+      const targetSec = signalSec + horizon * 60
+      const entryBar = nearestOutcomeBarAtOrAfter(bars, signalSec, 90)
+      const bar = nearestOutcomeBarAtOrAfter(bars, targetSec, 90)
+      if (!entryBar || !bar) {
         missingOhlc += 1
         docMissingOhlc = true
         setFields[`labels.${key}`] = {
           labeled: false,
           horizon_minutes: horizon,
-          entry_price: Number(entryPrice.toFixed(4)),
+          signal_quote_price: signalQuotePrice > 0 ? Number(signalQuotePrice.toFixed(4)) : null,
           target_sec: targetSec,
           labeled_at: new Date(),
           label_source: "missing_ohlc",
           attempted_label_source: "mongo_ohlcv_bars",
-          missing_reason: "missing_ohlc_bar_at_or_after_target",
-          outcome_label_version: "ohlc_horizon_close_v1",
+          missing_reason: !entryBar ? "missing_entry_bar_within_90_seconds" : "missing_target_bar_within_90_seconds",
+          outcome_label_version: INTRADAY_LABEL_VERSION,
         }
         continue
       }
 
-      if (existing?.labeled && !existingIsOhlc) {
+      if (existing?.labeled && !existingIsStrict) {
         setFields[`legacy_quote_labels.${key}`] = existing
         relabeledLegacy += 1
       }
 
+      const entryPrice = Number(entryBar._close || 0)
       const labelPrice = Number(bar._close || 0)
       const returnPct = ((labelPrice - entryPrice) / entryPrice) * 100
       const direction = doc.baseline_signal?.direction || "watch"
@@ -3209,6 +3213,12 @@ async function labelMaturePredictionSignals(db, { limit = 500, relabelLegacy = t
         horizon_minutes: horizon,
         return_pct: Number(returnPct.toFixed(3)),
         entry_price: Number(entryPrice.toFixed(4)),
+        entry_sec: Number(entryBar._sec),
+        entry_delay_seconds: Number(entryBar._sec) - signalSec,
+        signal_quote_price: signalQuotePrice > 0 ? Number(signalQuotePrice.toFixed(4)) : null,
+        signal_quote_divergence_pct: signalQuotePrice > 0
+          ? Number((((signalQuotePrice - entryPrice) / entryPrice) * 100).toFixed(3))
+          : null,
         label_price: Number(labelPrice.toFixed(4)),
         labeled_at: new Date(),
         label_sec: Number(bar._sec),
@@ -3218,7 +3228,7 @@ async function labelMaturePredictionSignals(db, { limit = 500, relabelLegacy = t
         ohlc_source: bar.source || null,
         provider_interval: bar.providerInterval || bar.interval || null,
         label_volume: Number(bar.volume || 0) || null,
-        outcome_label_version: "ohlc_horizon_close_v1",
+        outcome_label_version: INTRADAY_LABEL_VERSION,
         quote_source: null,
         direction_correct: direction === "up" ? returnPct > 0 : direction === "down" ? returnPct < 0 : null,
       }
@@ -3227,7 +3237,11 @@ async function labelMaturePredictionSignals(db, { limit = 500, relabelLegacy = t
     }
 
     if (Object.keys(setFields).length > 1) {
-      if (PREDICTION_HORIZONS_MINUTES.every(h => setFields[`labels.return_${h}m`]?.labeled || doc.labels?.[`return_${h}m`]?.labeled)) {
+      if (PREDICTION_HORIZONS_MINUTES.every(h => {
+        const replacement = setFields[`labels.return_${h}m`]
+        const current = doc.labels?.[`return_${h}m`]
+        return replacement?.labeled || (current?.labeled && current?.outcome_label_version === INTRADAY_LABEL_VERSION)
+      })) {
         setFields.label_status = "complete"
       } else if (docLabeled) {
         setFields.label_status = "partially_labeled"
@@ -3245,13 +3259,14 @@ async function labelMaturePredictionSignals(db, { limit = 500, relabelLegacy = t
     checked: docs.length,
     labeled,
     source: "mongo_ohlcv_bars",
+    outcome_label_version: INTRADAY_LABEL_VERSION,
     missing_ohlc: missingOhlc,
     relabeled_legacy: relabeledLegacy,
     relabel_legacy: Boolean(relabelLegacy),
   }
 }
 
-async function trainPredictionModel(db, { limit = 2000, minSamples = 20 } = {}) {
+async function trainPredictionModelLegacyDisabled(db, { limit = 2000, minSamples = 20 } = {}) {
   const docs = await db.collection("prediction_signals").find({
     "labels.return_5m.labeled": true,
     "labels.return_5m.return_pct": { $type: "number" },
@@ -3342,6 +3357,22 @@ async function trainPredictionModel(db, { limit = 2000, minSamples = 20 } = {}) 
   }
   await db.collection("prediction_models").updateOne({ _id: PREDICTION_MODEL_ID }, { $set: model }, { upsert: true })
   return model
+}
+
+async function trainPredictionModel(db, { limit = 2000, minSamples = 20 } = {}) {
+  const existing = await loadLatestPredictionModel(db)
+  if (existing) return existing
+  return {
+    _id: PREDICTION_MODEL_ID,
+    model_id: PREDICTION_MODEL_ID,
+    status: 'strict_offline_training_required',
+    samples: 0,
+    min_samples: Math.max(100, Number(minSamples || 0)),
+    requested_limit: Number(limit || 0),
+    metrics: null,
+    updated_at: new Date(),
+    note: 'Automatic in-sample training is disabled. Run npm run train:intraday and persist only after the chronological promotion gate passes.',
+  }
 }
 
 async function loadTopMomentumTickerSymbols(db, limit = 10) {
@@ -5227,12 +5258,10 @@ function startWatcherSnapshotScheduler() {
 }
 
 // ── Simulated-position history ────────────────────────────────────────────────
-// Records the Entry/Exit strategy sim's trades so closed positions survive past
-// the chart-service's 120s cache and past the session boundary. Candidate
-// selection is deliberately identical to routes/entryScreener.js and
-// routes/exitScreener.js (same clean listed-US universe, same deterministic
-// scan order, same most-StockTwits-active ranking) so the recorded history is
-// the history of what those screeners actually showed.
+// Records the unified Positions strategy sim's trades so closed positions
+// survive past the chart-service cache and session boundary. New candidates
+// come from canonical AI Rankings; already-open simulated positions stay pinned
+// until the strategy records their exit even if their current AI rank changes.
 
 // Own copy rather than the SENTCHART_UPSTREAM defined further down, matching how
 // each screener route declares its own (dev default 5055; docker-compose
@@ -5246,29 +5275,86 @@ function positionHistoryTodayKey(date = new Date()) {
   return `${String(p.year).padStart(4, '0')}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`
 }
 
-async function positionHistoryCandidates(db, limit = POSITION_HISTORY_BATCH_SIZE) {
-  const filter = {
-    exchange: { $in: ['NASDAQ', 'NYSE', 'AMEX'] },
-    ticker: { $not: /\./ },
-    price: { $ne: null },
+async function positionHistoryCandidates(db, today, limit = POSITION_HISTORY_BATCH_SIZE) {
+  let aiStatus = {
+    ok: false,
+    generated_at: null,
+    source_rows: 0,
+    min_score: POSITION_HISTORY_AI_MIN_SCORE,
+    model: null,
+    error: null,
   }
-  const universe = (await Screener.find(filter)
-    .sort({ change_pct: -1, ticker: 1 })
-    .limit(POSITION_HISTORY_UNIVERSE_SCAN_LIMIT)
-    .lean())
-    .map(normalizeScreenerRow)
-    .filter(isCleanListedUsRow)
-  if (!universe.length) return []
+  let aiCandidates = []
+  try {
+    const ai = await loadAiPositionCandidates({ limit, minScore: POSITION_HISTORY_AI_MIN_SCORE })
+    aiCandidates = ai.candidates
+    aiStatus = {
+      ok: true,
+      generated_at: ai.generated_at,
+      source_rows: ai.source_rows,
+      min_score: ai.min_score,
+      model: ai.model,
+      error: null,
+    }
+  } catch (err) {
+    aiStatus.error = String(err.message || err)
+  }
 
-  const socialMap = await loadAdaptiveSocialStatsForRows(db, universe, POSITION_HISTORY_CORR_WINDOW_MINUTES)
-  return universe
-    .map(row => ({ row, social: socialMap.get(row.ticker) }))
-    .filter(c => Number(c.social?.stocktwits_count || c.social?.count || 0) > 0)
-    .sort((a, b) =>
-      (Number(b.social?.stocktwits_count || 0) - Number(a.social?.stocktwits_count || 0)) ||
-      (Number(b.social?.count || 0) - Number(a.social?.count || 0)))
-    .slice(0, limit)
-    .map(c => c.row)
+  const openDocs = await db.collection(POSITION_HISTORY_COLLECTION).find({
+    date: today,
+    finalized: { $ne: true },
+    superseded: { $ne: true },
+    threshold: POSITION_HISTORY_THRESHOLD,
+    stop_pct: POSITION_HISTORY_STOP_PCT,
+  }, {
+    projection: {
+      ticker: 1,
+      ai_rank: 1,
+      ai_rank_score: 1,
+      ai_direction: 1,
+      ai_probability_up: 1,
+      ai_entry_ready: 1,
+      ai_model: 1,
+    },
+  }).toArray().catch(() => [])
+
+  const metaByTicker = new Map(aiCandidates.map(meta => [meta.ticker, meta]))
+  for (const doc of openDocs) {
+    const ticker = String(doc.ticker || '').toUpperCase()
+    if (!ticker || metaByTicker.has(ticker)) continue
+    metaByTicker.set(ticker, {
+      ticker,
+      ai_rank: doc.ai_rank ?? null,
+      ai_rank_score: doc.ai_rank_score ?? null,
+      ai_direction: doc.ai_direction ?? null,
+      ai_probability_up: doc.ai_probability_up ?? null,
+      ai_entry_ready: doc.ai_entry_ready === true,
+      ai_model: doc.ai_model ?? null,
+      candidate_source: 'tracked_open_position',
+    })
+  }
+
+  const ordered = [...metaByTicker.values()].sort((a, b) => {
+    const aPinned = a.candidate_source === 'tracked_open_position'
+    const bPinned = b.candidate_source === 'tracked_open_position'
+    if (aPinned !== bPinned) return aPinned ? -1 : 1
+    return Number(b.ai_rank_score || 0) - Number(a.ai_rank_score || 0)
+  }).slice(0, limit)
+  const tickers = ordered.map(meta => meta.ticker)
+  if (!tickers.length) return { candidates: [], aiStatus }
+
+  const quotes = await Screener.find({
+    ticker: { $in: tickers },
+    exchange: { $in: ['NASDAQ', 'NYSE', 'AMEX'] },
+    price: { $ne: null },
+  }).lean()
+  const quoteByTicker = new Map(
+    quotes.map(normalizeScreenerRow).filter(isCleanListedUsRow).map(row => [row.ticker, row]),
+  )
+  const candidates = ordered
+    .map(meta => ({ row: quoteByTicker.get(meta.ticker), meta }))
+    .filter(candidate => candidate.row)
+  return { candidates, aiStatus }
 }
 
 async function fetchPositionHistoryBatch(tickers) {
@@ -5304,22 +5390,27 @@ async function runPositionHistoryCycle(reason = 'scheduled') {
   let coverage = null
   try {
     await ensurePositionHistoryIndexes(db)
-    const candidates = await positionHistoryCandidates(db)
-    tickers = candidates.map(row => row.ticker)
+    const observedAt = new Date()
+    const today = positionHistoryTodayKey(observedAt)
+    const candidateResult = await positionHistoryCandidates(db, today)
+    const candidates = candidateResult.candidates
+    positionHistoryStatus.lastAiStatus = candidateResult.aiStatus
+    tickers = candidates.map(candidate => candidate.row.ticker)
     if (tickers.length) {
-      const companies = new Map(candidates.map(row => [row.ticker, row.company || null]))
+      const companies = new Map(candidates.map(candidate => [candidate.row.ticker, candidate.row.company || null]))
+      const candidateMetadata = new Map(candidates.map(candidate => [candidate.row.ticker, candidate.meta]))
       const results = await fetchPositionHistoryBatch(tickers)
-      const observedAt = new Date()
       // The sim decides which session it simulated (it walks back up to 5 days
       // for the latest one with bars), so "today" for finalization comes from
       // the market clock, not from the row.
-      const today = positionHistoryTodayKey(observedAt)
       const flattened = rowsFromPositionsBatch(results, {
         companies,
+        candidateMetadata,
         threshold: POSITION_HISTORY_THRESHOLD,
         stopPct: POSITION_HISTORY_STOP_PCT,
         corrExitThreshold: null,
         observedAt,
+        collector: 'position_history_ai_scheduler_v1',
       })
       coverage = flattened.coverage
       summary = await persistPositionSnapshot(db, flattened.rows, { today, now: observedAt })
@@ -5364,6 +5455,8 @@ async function runPositionHistoryCycle(reason = 'scheduled') {
         threshold: POSITION_HISTORY_THRESHOLD,
         stop_pct: POSITION_HISTORY_STOP_PCT,
         batch_size: POSITION_HISTORY_BATCH_SIZE,
+        candidate_policy: positionHistoryStatus.candidate_policy,
+        ai_status: positionHistoryStatus.lastAiStatus,
         coverage,
         summary,
       },
@@ -5393,7 +5486,7 @@ function startPositionHistoryScheduler() {
   setTimeout(() => runPositionHistoryCycle('startup').catch(() => {}), 30_000).unref?.()
   const timer = setInterval(() => runPositionHistoryCycle('scheduled').catch(() => {}), POSITION_HISTORY_INTERVAL_MS)
   if (timer.unref) timer.unref()
-  console.log(`  Positions → history scheduler enabled (${Math.round(POSITION_HISTORY_INTERVAL_MS / 60000)} min, ${POSITION_HISTORY_BATCH_SIZE}/cycle, threshold ${POSITION_HISTORY_THRESHOLD} / stop ${POSITION_HISTORY_STOP_PCT}%)`)
+  console.log(`  Positions → AI history scheduler enabled (${Math.round(POSITION_HISTORY_INTERVAL_MS / 60000)} min, ${POSITION_HISTORY_BATCH_SIZE}/cycle, score >= ${POSITION_HISTORY_AI_MIN_SCORE}, threshold ${POSITION_HISTORY_THRESHOLD} / stop ${POSITION_HISTORY_STOP_PCT}%)`)
 }
 
 async function chartSocialSeries(db, ticker, windowMinutes, bucketMinutes, options = {}) {
@@ -5845,6 +5938,7 @@ app.get("/api/positions/history/status", async (_req, res) => {
       // on POSITION_HISTORY_ENABLED.
       canonical_threshold: POSITION_HISTORY_THRESHOLD,
       canonical_stop_pct: POSITION_HISTORY_STOP_PCT,
+      ai_min_score: POSITION_HISTORY_AI_MIN_SCORE,
       retention_days: POSITION_HISTORY_RETENTION_DAYS,
       stored_rows: total,
       stored_dates: dates.length,
@@ -7438,14 +7532,14 @@ app.post("/api/prediction/audit/refresh", async (req, res) => {
     res.json({
       ok: true,
       labels,
-      model_updated: Number(labels.labeled || 0) > 0,
+      model_updated: false,
       model: model ? {
         status: model.status,
         samples: model.samples || 0,
         metrics: model.metrics || null,
         updated_at: model.updated_at || null,
       } : null,
-        note: "Outcome refresh labeled matured prediction_signals from real Mongo OHLC bars and retrained the shadow calibration model. It did not change threshold policy.",
+        note: "Outcome refresh created strict bar-to-bar labels. Automatic in-sample retraining is disabled; the production model changes only after the offline chronological promotion gate passes.",
     })
   } catch (err) {
     console.error("POST /api/prediction/audit/refresh failed:", err)
@@ -7458,7 +7552,12 @@ app.get("/api/prediction/model", async (req, res) => {
     const db = mongoose.connection.db
     if (!db) return res.status(503).json({ ok: false, error: "MongoDB is not connected" })
     const model = await loadLatestPredictionModel(db)
-    res.json({ ok: true, model })
+    res.json({
+      ok: true,
+      model,
+      persisted: false,
+      note: 'Automatic training is disabled. Run npm run train:intraday for a dry chronological evaluation; add -- --persist only after its promotion gate passes.',
+    })
   } catch (err) {
     console.error("GET /api/prediction/model failed:", err)
     res.status(500).json({ ok: false, error: String(err.message || err) })
@@ -7495,7 +7594,7 @@ app.post("/api/prediction/snapshot", async (req, res) => {
           limit: Number(process.env.PREDICTION_TRAIN_LIMIT || 3000),
         })
       : await loadLatestPredictionModel(db)
-    res.json({ ok: true, labels, snapshot, model, model_updated: Number(labels.labeled || 0) > 0 })
+    res.json({ ok: true, labels, snapshot, model, model_updated: false })
   } catch (err) {
     console.error("POST /api/prediction/snapshot failed:", err)
     res.status(500).json({ ok: false, error: String(err.message || err) })
