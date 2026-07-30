@@ -1,0 +1,298 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-30T00:00:00.000Z",
+  "title": "Design System: FlashFeed",
+  "extensions": {
+    "colorMeta": {
+      "void": {
+        "role": "neutral",
+        "displayName": "Void",
+        "canonical": "#06101A",
+        "tonalRamp": ["#020509", "#06101A", "#0B1A28", "#122438", "#1B3149", "#27415C", "#3C5A78", "#5A7A99"]
+      },
+      "panel-bg": {
+        "role": "neutral",
+        "displayName": "Panel Background",
+        "canonical": "#0F172A",
+        "tonalRamp": ["#020617", "#0F172A", "#1E293B", "#334155", "#475569", "#64748B", "#94A3B8", "#CBD5E1"]
+      },
+      "panel-surface": {
+        "role": "neutral",
+        "displayName": "Panel Surface",
+        "canonical": "#1E293B",
+        "tonalRamp": ["#020617", "#0F172A", "#1E293B", "#334155", "#475569", "#64748B", "#94A3B8", "#CBD5E1"]
+      },
+      "panel-line": {
+        "role": "neutral",
+        "displayName": "Panel Line",
+        "canonical": "#334155",
+        "tonalRamp": ["#020617", "#0F172A", "#1E293B", "#334155", "#475569", "#64748B", "#94A3B8", "#CBD5E1"]
+      },
+      "signal-sky": {
+        "role": "primary",
+        "displayName": "Signal Sky",
+        "canonical": "#0EA5E9",
+        "tonalRamp": ["#082F49", "#0C4A6E", "#075985", "#0369A1", "#0284C7", "#0EA5E9", "#38BDF8", "#7DD3FC"]
+      },
+      "signal-sky-fill": {
+        "role": "primary",
+        "displayName": "Signal Sky Fill",
+        "canonical": "#0369A1",
+        "tonalRamp": ["#082F49", "#0C4A6E", "#075985", "#0369A1", "#0284C7", "#0EA5E9", "#38BDF8", "#7DD3FC"]
+      },
+      "signal-sky-fill-hover": {
+        "role": "primary",
+        "displayName": "Signal Sky Fill Hover",
+        "canonical": "#075985",
+        "tonalRamp": ["#082F49", "#0C4A6E", "#075985", "#0369A1", "#0284C7", "#0EA5E9", "#38BDF8", "#7DD3FC"]
+      },
+      "signal-sky-bright": {
+        "role": "primary",
+        "displayName": "Signal Sky Bright",
+        "canonical": "#38BDF8",
+        "tonalRamp": ["#082F49", "#0C4A6E", "#075985", "#0369A1", "#0284C7", "#0EA5E9", "#38BDF8", "#7DD3FC"]
+      },
+      "signal-sky-text": {
+        "role": "primary",
+        "displayName": "Signal Sky Text",
+        "canonical": "#7DD3FC",
+        "tonalRamp": ["#082F49", "#0C4A6E", "#075985", "#0369A1", "#0284C7", "#0EA5E9", "#38BDF8", "#7DD3FC"]
+      },
+      "state-pass": {
+        "role": "secondary",
+        "displayName": "State Pass",
+        "canonical": "#10B981",
+        "tonalRamp": ["#022C22", "#064E3B", "#065F46", "#047857", "#059669", "#10B981", "#34D399", "#6EE7B7"]
+      },
+      "state-pass-value": {
+        "role": "secondary",
+        "displayName": "State Pass Value",
+        "canonical": "#34D399",
+        "tonalRamp": ["#022C22", "#064E3B", "#065F46", "#047857", "#059669", "#10B981", "#34D399", "#6EE7B7"]
+      },
+      "state-pass-text": {
+        "role": "secondary",
+        "displayName": "State Pass Text",
+        "canonical": "#6EE7B7",
+        "tonalRamp": ["#022C22", "#064E3B", "#065F46", "#047857", "#059669", "#10B981", "#34D399", "#6EE7B7"]
+      },
+      "state-fail": {
+        "role": "secondary",
+        "displayName": "State Fail",
+        "canonical": "#EF4444",
+        "tonalRamp": ["#450A0A", "#7F1D1D", "#991B1B", "#B91C1C", "#DC2626", "#EF4444", "#F87171", "#FCA5A5"]
+      },
+      "state-fail-value": {
+        "role": "secondary",
+        "displayName": "State Fail Value",
+        "canonical": "#F87171",
+        "tonalRamp": ["#450A0A", "#7F1D1D", "#991B1B", "#B91C1C", "#DC2626", "#EF4444", "#F87171", "#FCA5A5"]
+      },
+      "state-fail-text": {
+        "role": "secondary",
+        "displayName": "State Fail Text",
+        "canonical": "#FCA5A5",
+        "tonalRamp": ["#450A0A", "#7F1D1D", "#991B1B", "#B91C1C", "#DC2626", "#EF4444", "#F87171", "#FCA5A5"]
+      },
+      "state-caution": {
+        "role": "secondary",
+        "displayName": "State Caution",
+        "canonical": "#F59E0B",
+        "tonalRamp": ["#451A03", "#78350F", "#92400E", "#B45309", "#D97706", "#F59E0B", "#FBBF24", "#FCD34D"]
+      },
+      "state-caution-text": {
+        "role": "secondary",
+        "displayName": "State Caution Text",
+        "canonical": "#FCD34D",
+        "tonalRamp": ["#451A03", "#78350F", "#92400E", "#B45309", "#D97706", "#F59E0B", "#FBBF24", "#FCD34D"]
+      },
+      "instrument-text": {
+        "role": "neutral",
+        "displayName": "Instrument Text",
+        "canonical": "#E2E8F0",
+        "tonalRamp": ["#020617", "#0F172A", "#1E293B", "#334155", "#475569", "#64748B", "#94A3B8", "#E2E8F0"]
+      },
+      "instrument-text-bright": {
+        "role": "neutral",
+        "displayName": "Instrument Text Bright",
+        "canonical": "#FFFFFF",
+        "tonalRamp": ["#0F172A", "#334155", "#475569", "#64748B", "#94A3B8", "#CBD5E1", "#F1F5F9", "#FFFFFF"]
+      },
+      "instrument-text-dim": {
+        "role": "neutral",
+        "displayName": "Instrument Text Dim",
+        "canonical": "#94A3B8",
+        "tonalRamp": ["#020617", "#0F172A", "#1E293B", "#334155", "#475569", "#64748B", "#94A3B8", "#CBD5E1"]
+      },
+      "instrument-text-faint": {
+        "role": "neutral",
+        "displayName": "Instrument Text Faint",
+        "canonical": "#64748B",
+        "knownGap": "Measures 3.07:1 on Panel Surface, below AA 4.5:1 for the sizes it is set at. Recorded, not fixed: raising it to #94A3B8 would clear the threshold but flatten the distinction against Instrument Text Dim, which dense surfaces rely on. Do not extend Faint to decision-bearing content; use Dim or above. Revisit as its own pass.",
+        "tonalRamp": ["#020617", "#0F172A", "#1E293B", "#334155", "#475569", "#64748B", "#94A3B8", "#CBD5E1"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "The FlashFeed wordmark on the pre-boot screen. Appears once in the entire product." },
+      "headline": { "displayName": "Headline", "purpose": "Panel titles and page-level headings. Rare — most panels are labelled by a legend, not a headline." },
+      "title": { "displayName": "Title", "purpose": "Card headings, modal titles, and group labels inside settings panels." },
+      "body": { "displayName": "Body", "purpose": "Prose, button text, form values, empty-state copy. Smaller than the web's default body, deliberately." },
+      "data": { "displayName": "Data", "purpose": "Every numeric value in a table cell. Monospaced so digits align down a column." },
+      "label": { "displayName": "Label", "purpose": "The universal legend — column headers, field labels, section markers, chip text. Always uppercase." },
+      "micro": { "displayName": "Micro", "purpose": "Sub-values beneath a primary reading: a score under a direction arrow, a horizon under a prediction." }
+    },
+    "shadows": [
+      { "name": "overlay", "value": "0 25px 50px -12px rgb(0 0 0 / 0.25)", "purpose": "Toasts and dropdown menus that leave the layout flow." },
+      { "name": "overlay-deep", "value": "0 25px 50px -12px rgb(0 0 0 / 0.4)", "purpose": "The navigation overflow menu, which floats over dense table content and needs a harder edge." },
+      { "name": "rail-glow", "value": "0 0 12px rgba(56, 189, 248, 0.65)", "purpose": "Not elevation. The single licensed emission from the fetch-progress rail. Never reuse." }
+    ],
+    "motion": [
+      { "name": "state-change", "value": "transition: color 150ms, background-color 150ms, border-color 150ms", "purpose": "The entire motion budget for interactive elements. Buttons, links, and headers change color and nothing else." },
+      { "name": "progress-fill", "value": "transition: width 200ms linear", "purpose": "The fetch rail's fill. Linear, not eased — progress should read as mechanical." },
+      { "name": "live-pulse", "value": "animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite", "purpose": "Status-badge indicator dots. Motion means the connection is live; a static dot would misreport." },
+      { "name": "rail-glint", "value": "animation: auto-progress-glint 1.15s linear infinite", "purpose": "The white sweep travelling the fetch rail. Exclusive to the signature element." }
+    ],
+    "breakpoints": [
+      { "name": "md", "value": "768px" },
+      { "name": "panel-split", "value": "900px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "2xl", "value": "1536px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The committed action. Solid Signal Sky Fill (#0369A1, not the raw accent) so white text clears 5.93:1; darkens on hover so contrast rises going into the click.",
+      "html": "<button class=\"ds-btn-primary\">Refresh Alignment Signals</button>",
+      "css": ".ds-btn-primary { background: #0369A1; color: #fff; font-family: system-ui, -apple-system, sans-serif; font-size: 12px; font-weight: 500; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; transition: background-color 150ms; } .ds-btn-primary:hover { background: #075985; } .ds-btn-primary:focus-visible { outline: 2px solid rgba(14,165,233,0.6); outline-offset: 1px; } .ds-btn-primary:disabled { opacity: 0.5; cursor: default; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Toolbar and inline actions. The border shift to accent is the affordance.",
+      "html": "<button class=\"ds-btn-secondary\">Fast <span class=\"ds-btn-secondary__state\">Auto</span></button>",
+      "css": ".ds-btn-secondary { display: inline-flex; align-items: center; gap: 6px; background: var(--bg, #0F172A); color: var(--neutral, #E2E8F0); font-family: system-ui, -apple-system, sans-serif; font-size: 11px; font-weight: 500; padding: 6px 8px; border: 1px solid var(--border, #334155); border-radius: 4px; cursor: pointer; transition: color 150ms, border-color 150ms; } .ds-btn-secondary:hover { color: #fff; border-color: var(--accent, #0EA5E9); } .ds-btn-secondary:focus-visible { outline: 2px solid rgba(14,165,233,0.6); outline-offset: 1px; } .ds-btn-secondary__state { color: #6EE7B7; }"
+    },
+    {
+      "name": "State Chip",
+      "kind": "chip",
+      "refersTo": "chip-pass",
+      "description": "How a table cell says something categorical. Four semantic variants; never interactive.",
+      "html": "<span class=\"ds-chip ds-chip--pass\">PASS</span> <span class=\"ds-chip ds-chip--caution\">PENDING</span> <span class=\"ds-chip ds-chip--fail\">BLOCKED</span> <span class=\"ds-chip ds-chip--info\">MODERATE</span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; white-space: nowrap; font-family: system-ui, -apple-system, sans-serif; font-size: 10px; font-weight: 500; letter-spacing: 0.025em; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; border: 1px solid; } .ds-chip--pass { background: rgba(16,185,129,0.1); border-color: rgba(16,185,129,0.4); color: #6EE7B7; } .ds-chip--fail { background: rgba(239,68,68,0.1); border-color: rgba(239,68,68,0.4); color: #FCA5A5; } .ds-chip--caution { background: rgba(245,158,11,0.1); border-color: rgba(245,158,11,0.4); color: #FCD34D; } .ds-chip--info { background: rgba(14,165,233,0.1); border-color: rgba(14,165,233,0.4); color: #7DD3FC; }"
+    },
+    {
+      "name": "Field",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "A recessed well inside a panel, always preceded by a 10px uppercase legend. Never a placeholder acting as a label.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field__legend\">Rolling Window</span><input class=\"ds-field__input\" type=\"text\" value=\"60\" placeholder=\"minutes\" /></label>",
+      "css": ".ds-field { display: block; } .ds-field__legend { display: block; font-family: system-ui, -apple-system, sans-serif; font-size: 10px; font-weight: 500; letter-spacing: 0.025em; text-transform: uppercase; color: var(--neutral, #E2E8F0); margin-bottom: 4px; } .ds-field__input { width: 100%; background: var(--bg, #0F172A); color: #fff; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; padding: 8px 12px; border: 1px solid var(--border, #334155); border-radius: 4px; transition: border-color 150ms; } .ds-field__input::placeholder { color: #64748B; } .ds-field__input:focus { border-color: var(--accent, #0EA5E9); outline: 2px solid rgba(14,165,233,0.6); outline-offset: 1px; }"
+    },
+    {
+      "name": "Data Table",
+      "kind": "card",
+      "refersTo": "table-shell",
+      "description": "The primary instrument. Legend-typed headers, mono values, whisper-thin row rules, em dash for absent readings.",
+      "html": "<div class=\"ds-table\"><table><thead><tr><th class=\"ds-table__th ds-table__th--active\">TICKER ↓</th><th class=\"ds-table__th\">PRICE</th><th class=\"ds-table__th\">CHG%</th><th class=\"ds-table__th\">SOC DENS</th></tr></thead><tbody><tr><td class=\"ds-table__td ds-table__td--key\">NVDA</td><td class=\"ds-table__td\">$182.44</td><td class=\"ds-table__td ds-table__td--pass\">+2.31%</td><td class=\"ds-table__td\">1,204</td></tr><tr><td class=\"ds-table__td ds-table__td--key\">SOFI</td><td class=\"ds-table__td\">$14.02</td><td class=\"ds-table__td ds-table__td--fail\">-1.07%</td><td class=\"ds-table__td ds-table__td--absent\">—</td></tr></tbody></table></div>",
+      "css": ".ds-table { background: var(--surface, #1E293B); border: 1px solid var(--border, #334155); border-radius: 8px; overflow: hidden; } .ds-table table { width: 100%; border-collapse: collapse; } .ds-table__th { background: rgba(15,23,42,0.5); border-bottom: 1px solid var(--border, #334155); text-align: left; font-family: system-ui, -apple-system, sans-serif; font-size: 10px; font-weight: 500; letter-spacing: 0.025em; text-transform: uppercase; color: var(--neutral, #E2E8F0); padding: 8px; white-space: nowrap; cursor: pointer; user-select: none; transition: color 150ms; } .ds-table__th:hover { color: #fff; } .ds-table__th--active { color: var(--accent, #0EA5E9); } .ds-table__td { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; color: var(--neutral, #E2E8F0); padding: 8px; border-top: 1px solid rgba(51,65,85,0.3); } .ds-table__td--key { color: var(--accent, #0EA5E9); font-weight: 700; } .ds-table__td--pass { color: #34D399; } .ds-table__td--fail { color: #F87171; } .ds-table__td--absent { color: var(--neutral, #E2E8F0); }"
+    },
+    {
+      "name": "Status Badge",
+      "kind": "chip",
+      "refersTo": "status-badge-ok",
+      "description": "Live service state. The pulse is meaningful — motion indicates a live connection, so a static dot on a healthy badge would misreport.",
+      "html": "<span class=\"ds-badge ds-badge--ok\"><span class=\"ds-badge__dot\"></span>mongo · 41ms</span> <span class=\"ds-badge ds-badge--down\"><span class=\"ds-badge__dot\"></span>kafka</span>",
+      "css": ".ds-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 9999px; border: 1px solid; font-family: system-ui, -apple-system, sans-serif; font-size: 12px; font-weight: 500; } .ds-badge__dot { width: 6px; height: 6px; border-radius: 9999px; flex-shrink: 0; } .ds-badge--ok { background: rgba(16,185,129,0.2); border-color: rgba(16,185,129,0.5); color: #6EE7B7; } .ds-badge--ok .ds-badge__dot { background: #34D399; animation: ds-pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; } .ds-badge--down { background: rgba(239,68,68,0.2); border-color: rgba(239,68,68,0.5); color: #FCA5A5; } .ds-badge--down .ds-badge__dot { background: #F87171; } @keyframes ds-pulse { 50% { opacity: 0.4; } }"
+    },
+    {
+      "name": "Nav Item",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "Top-bar route links. Active takes a 15% accent wash with white text; inactive brightens on hover.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav__item ds-nav__item--active\" href=\"#\">Screener</a><a class=\"ds-nav__item\" href=\"#\">Positions</a><a class=\"ds-nav__item\" href=\"#\">Correlation</a></nav>",
+      "css": ".ds-nav { display: flex; gap: 6px; background: var(--surface, #1E293B); border-bottom: 1px solid var(--border, #334155); padding: 8px; } .ds-nav__item { font-family: system-ui, -apple-system, sans-serif; font-size: 12px; color: var(--neutral, #E2E8F0); padding: 6px 8px; border-radius: 4px; text-decoration: none; transition: color 150ms, background-color 150ms; } .ds-nav__item:hover { background: var(--bg, #0F172A); color: #fff; } .ds-nav__item--active { background: rgba(14,165,233,0.15); color: #fff; } .ds-nav__item:focus-visible { outline: 2px solid rgba(14,165,233,0.6); outline-offset: 1px; }"
+    },
+    {
+      "name": "Toast",
+      "kind": "custom",
+      "refersTo": "toast",
+      "description": "The one place a state color appears as a solid edge rather than a wash. Optional mono latency chip self-colors by threshold.",
+      "html": "<div class=\"ds-toast ds-toast--success\"><div class=\"ds-toast__head\"><span>✓</span><span class=\"ds-toast__title\">Fetch complete</span><span class=\"ds-toast__latency\">412ms</span></div><p class=\"ds-toast__body\">1,737 tickers refreshed</p></div>",
+      "css": ".ds-toast { background: var(--surface, #1E293B); border: 1px solid var(--border, #334155); border-left-width: 3px; border-radius: 8px; padding: 8px 12px; min-width: 260px; max-width: 360px; box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.25); cursor: pointer; } .ds-toast--success { border-left-color: #10B981; } .ds-toast--error { border-left-color: #EF4444; } .ds-toast--info { border-left-color: #0EA5E9; } .ds-toast--warn { border-left-color: #EAB308; } .ds-toast__head { display: flex; align-items: center; gap: 8px; font-family: system-ui, -apple-system, sans-serif; font-size: 14px; color: var(--neutral, #E2E8F0); } .ds-toast__title { color: #fff; font-weight: 500; flex: 1; } .ds-toast__latency { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 10px; padding: 2px 6px; border-radius: 4px; color: #34D399; background: rgba(16,185,129,0.1); } .ds-toast__body { font-family: system-ui, -apple-system, sans-serif; font-size: 12px; color: var(--neutral, #E2E8F0); margin: 2px 0 0 20px; }"
+    },
+    {
+      "name": "Fetch Rail (signature)",
+      "kind": "custom",
+      "refersTo": "fetch-rail",
+      "description": "The system's one licensed flourish. The gradient, the glow, and the glint appear here and nowhere else in the product.",
+      "html": "<div class=\"ds-rail\"><div class=\"ds-rail__fill\"><div class=\"ds-rail__glint\"></div></div></div>",
+      "css": ".ds-rail { position: relative; height: 4px; width: 100%; background: var(--bg, #0F172A); overflow: hidden; } .ds-rail__fill { position: relative; height: 100%; width: 62%; overflow: hidden; border-top-right-radius: 9999px; border-bottom-right-radius: 9999px; background: linear-gradient(to right, #38BDF8, #34D399, #FDE047); box-shadow: 0 0 12px rgba(56,189,248,0.65); transition: width 200ms linear; } .ds-rail__glint { position: absolute; top: 0; bottom: 0; right: 0; width: 64px; background: linear-gradient(to right, transparent, rgba(255,255,255,0.7), transparent); animation: ds-glint 1.15s linear infinite; } @keyframes ds-glint { from { transform: translateX(-220%); } to { transform: translateX(120%); } }"
+    },
+    {
+      "name": "Diagnostic Empty State (signature)",
+      "kind": "custom",
+      "refersTo": "empty-diagnostic",
+      "description": "An empty result is frequently correct. This reports whether the user is looking at thin ingest coverage or a filter they forgot they set.",
+      "html": "<div class=\"ds-empty\"><div class=\"ds-empty__msg\">No tickers match current filters</div><div class=\"ds-empty__diag\"><div class=\"ds-empty__grid\"><div>backend_count: 1737</div><div>frontend_received_count: 1737</div><div>frontend_visible_count: 0</div><div>model_mode: v11</div></div><div class=\"ds-empty__line\">cache_status: hit · screener_snapshot_at: 2026-07-30T13:41:02Z</div></div></div>",
+      "css": ".ds-empty { text-align: center; padding: 48px 0; color: var(--neutral, #E2E8F0); font-family: system-ui, -apple-system, sans-serif; } .ds-empty__msg { font-size: 14px; } .ds-empty__diag { margin: 12px auto 0; max-width: 48rem; text-align: left; font-size: 11px; background: var(--bg, #0F172A); border: 1px solid var(--border, #334155); border-radius: 4px; padding: 12px; } .ds-empty__grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; } @media (min-width: 768px) { .ds-empty__grid { grid-template-columns: repeat(4, minmax(0,1fr)); } } .ds-empty__line { margin-top: 8px; word-break: break-all; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Instrument Panel",
+    "overview": "FlashFeed is read the way a pilot reads a gauge cluster: at speed, under pressure, with no tolerance for ambiguity. The system is built almost entirely from monospaced numerals, tiny uppercase legends, and hairline rules on near-black panels. Nothing is decorative. Color is not a mood — it is a reading. When something on this screen turns green, that is a measurement, not a flourish.\n\nThe density is deliberate and high. Text runs at 9–12px across most of the interface, tables carry fifteen columns without apology, and whitespace is rationed. This is correct for the surface: the operator already knows the vocabulary and is scanning for the few cells that have changed, not being introduced to the domain. Generosity of spacing would mean fewer instruments visible at once, and fewer instruments visible at once is a worse panel.\n\nDepth is tonal, never atmospheric. Three near-black steps — void, page, panel — stack to create hierarchy, with translucent state washes layered on top. A drop shadow appears only when something genuinely floats above the document: a modal, a toast, a dropdown. The system is otherwise flat by conviction, and its restraint is what makes the single licensed flourish — the fetch-progress rail across the top edge — read as an event rather than as styling.",
+    "keyCharacteristics": [
+      "Monospaced numerals everywhere a value can be compared down a column",
+      "10px uppercase legends with wide tracking as the universal labelling device",
+      "A strict four-tone state palette: pass, fail, caution, informational",
+      "Translucent state washes (10% fill, 40% border) instead of solid colored blocks",
+      "Flat surfaces, hairline borders, shadow reserved exclusively for overlays",
+      "Absence rendered as an em dash, never as zero and never as blank",
+      "Exactly one ornamental element in the entire system"
+    ],
+    "rules": [
+      { "name": "The Four Tones Rule", "body": "Every colored pixel is Pass, Fail, Caution, Informational, or neutral housing. There is no sixth tone. A new signal that needs to be distinguished gets a label, a position, or a glyph — not a new hue. Adding violet to mean \"experimental\" breaks the panel, because the operator has learned that color means state.", "section": "colors" },
+      { "name": "The Absent Is Not Zero Rule", "body": "A value that was never ingested renders as an em dash (—), styled in Instrument Text. It is never 0, never N/A, never an empty cell, and never hidden. Zero is a measurement and gets a numeral; absence is a different fact and gets a dash.", "section": "colors" },
+      { "name": "The Accent Is A Line, Not A Field Rule", "body": "--accent (#0EA5E9) is for borders, text, marks, and translucent washes. The moment it becomes a solid field with white text on it, it must step down the ramp to Signal Sky Fill (#0369A1). The accent stays one value for every other purpose; only the filled variant darkens. A button is the one place in this system where the brand color is not the brand color.", "section": "colors" },
+      { "name": "The Wash, Not The Block Rule", "body": "State color as a background is always a translucent wash — 10% fill behind a 40% border, with the text at the light step. Solid state fills are for 1.5px dots, 4px meter bars, and progress rails only. A solid emerald block the size of a card reads as an alert; a wash reads as a reading.", "section": "colors" },
+      { "name": "The Mono Numeral Rule", "body": "Any number a user might compare against the number above it is set in the monospace face. Digits must align vertically down a column without exception. A price, a percentage, a score, a count, a latency, a ticker symbol: monospace. A sentence containing a number: not.", "section": "typography" },
+      { "name": "The Legend Rule", "body": "Anything that names a value rather than being one is 10px, uppercase, +0.025em tracking, weight 500, in Instrument Text. This single treatment covers table headers, form labels, and section markers, and it is why the interface stays legible at fifteen columns.", "section": "typography" },
+      { "name": "The Two Voices Rule", "body": "Never set a measurement in the sans face, and never set prose in mono. Mixing them costs the reader the one instant cue that tells them what kind of thing they are looking at.", "section": "typography" },
+      { "name": "The Fixed Frame Rule", "body": "The page never scrolls. Regions scroll. If a new surface makes the document taller than the viewport, the surface is wrong, not the frame.", "section": "layout" },
+      { "name": "The Edge-to-Edge Rule", "body": "No max-width container on data surfaces. A reading pane may constrain its measure; a panel of instruments may not.", "section": "layout" },
+      { "name": "The Overlay-Only Shadow Rule", "body": "A shadow means the element is not in the document flow. Cards, panels, tables, chips, buttons, and inputs are flat at rest and flat on hover. If a surface needs to feel more prominent, it gets a border or a tonal step — never a shadow.", "section": "elevation" },
+      { "name": "The Two Radii Rule", "body": "4px if you act on it, 8px if it contains things, full-round only if it reports live state. There is no other radius decision to make.", "section": "shapes" }
+    ],
+    "dos": [
+      "Do set every comparable number in the monospace face so digits align down a column.",
+      "Do render an absent value as an em dash (—). Zero is a measurement; absence is not.",
+      "Do label with the legend treatment — 10px, uppercase, +0.025em, weight 500 — for every column header, field label, and section marker.",
+      "Do build state containers as a wash: 10% state fill, 40% state border, light-step state text.",
+      "Do keep depth tonal — #0F172A page, #1E293B panel, 1px #334155 edge.",
+      "Do pair color-coded state with a glyph, a word, or a position. Sort direction carries an arrow; prediction direction carries ↑/↓ and the words up/down. Assume the reader cannot separate the green from the red.",
+      "Do give loading states the shape of the real answer, so layout never jumps.",
+      "Do tell the user why a surface is empty, with counts and parameters.",
+      "Do set the default body foreground to Instrument Text (#E2E8F0). The current body { color: var(--surface) } in app/src/index.css sets it to #1E293B on a #0F172A field — invisible, and masked only because every component overrides it.",
+      "Do provide a visible focus-visible ring — 2px Signal Sky at 60%, 1px offset — on any control that sets outline: none. A 1px border shift alone is not a sufficient focus indicator.",
+      "Do fill primary buttons and selected toggles with Signal Sky Fill (#0369A1), hovering down to #075985. White on the raw accent is 2.77:1 and fails at every size this system sets text at."
+    ],
+    "donts": [
+      "Don't introduce a fifth semantic color. Four tones plus neutral is the whole system; a new distinction gets a label or a position, not a new hue.",
+      "Don't use green or red decoratively. Both are load-bearing directional signals.",
+      "Don't put white text on bg-accent (#0EA5E9, 2.77:1) or on Signal Sky Bright (#38BDF8, 2.14:1). Solid accent fields carrying text step down to #0369A1.",
+      "Don't lighten a filled button on hover. Hover moves down the ramp so contrast rises going into the click, not the other way.",
+      "Don't add a shadow to a card, panel, table, chip, button, or input. Shadows mean \"floating above the document\" and are reserved for modals, toasts, and dropdowns.",
+      "Don't reuse the gradient, the glow, or the glint. The fetch rail is the only ornamental element in the system and its power is entirely in being singular.",
+      "Don't add motion beyond transition-colors. The two exceptions — the status badge pulse and the rail glint — both encode live state, not polish.",
+      "Don't let the page scroll. The frame is 100vh; regions scroll inside it.",
+      "Don't wrap data surfaces in a max-width container or center them.",
+      "Don't relax the density to \"breathe\". Fewer instruments visible at once is a worse panel, and this operator is scanning, not reading.",
+      "Don't set prose in the mono face or measurements in the sans face.",
+      "Don't use a pill radius for an ordinary button. Full-round means live state.",
+      "Don't substitute a spinner for a skeleton on a table. The skeleton carries the real column set."
+    ]
+  }
+}
