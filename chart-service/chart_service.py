@@ -744,8 +744,15 @@ def _compute_strategy_signals(ticker, bars, date_used, threshold, stop_pct, msgs
     i = 1
     while i < n:
         prev_c, cur_c = corr[i - 1], corr[i]
+        # Boundary convention matches the validated research harness
+        # (backtests/message_density_thresholds/features.mjs:thresholdCrossed,
+        # and the v11/v12 screeners): a value sitting exactly ON the threshold
+        # counts as not-yet-crossed, so the cross fires only once corr is
+        # STRICTLY above it. Untied floats make this identical in practice to
+        # the previous `prev < threshold <= cur`; it is pinned here so the
+        # Python and JS strategy paths can't drift on the tie case.
         crossed_up = (prev_c is not None and cur_c is not None
-                      and prev_c < threshold <= cur_c)
+                      and prev_c <= threshold < cur_c)
         if not crossed_up:
             i += 1
             continue
