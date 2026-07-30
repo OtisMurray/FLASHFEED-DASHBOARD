@@ -147,7 +147,7 @@ export function LongTermFundamentalsPage() {
     <div>
       <div className="flex items-start justify-between gap-3 mb-3">
         <div>
-          <h1 className="text-white font-semibold text-lg">Long Term (Active Movers)</h1>
+          <h1 className="text-white font-semibold text-lg">Long Term</h1>
           {/* Scope disclosure. The Elite ingest's tier filters are intraday momentum
               screens (sh_relvol_o2.5, ta_change_u), so fundamentals only ever land on
               tickers that are unusually active today — roughly 250-300 names that
