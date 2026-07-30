@@ -2,6 +2,7 @@ import { Router } from 'express'
 import mongoose from 'mongoose'
 import Screener from '../models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './screener.js'
+import { CLEAN_UNIVERSE_MONGO_FILTER } from '../lib/cleanUniverse.js'
 import { classifyRow, POSITION_HISTORY_COLLECTION } from '../lib/positionHistory.js'
 import { loadAiPositionCandidates } from '../lib/aiPositionCandidates.js'
 
@@ -135,11 +136,9 @@ router.get('/', async (req, res) => {
 
     // 1. Start from the same clean listed-US quote universe as the rest of the
     //    dashboard, then let the canonical AI Rankings feed choose candidates.
-    const filter = {
-      exchange: { $in: ['NASDAQ', 'NYSE', 'AMEX'] },
-      ticker: { $not: /\./ },
-      price: { $ne: null },
-    }
+    // Shared with every other screener; see lib/cleanUniverse.js for why this
+    // must stay no stricter than isCleanListedUsRow.
+    const filter = CLEAN_UNIVERSE_MONGO_FILTER
     const universe = (await Screener.find(filter).sort({ change_pct: -1, ticker: 1 }).limit(UNIVERSE_SCAN_LIMIT).lean())
       .map(normalizeScreenerRow)
       .filter(isCleanListedUsRow)

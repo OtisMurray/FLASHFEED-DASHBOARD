@@ -109,4 +109,32 @@ export function isThresholdEntryRow(row) {
   return isCleanListedUsRow(row) && row?.threshold_feature_status === 'entry_passed'
 }
 
+/**
+ * The Mongo-side pre-filter, kept deliberately in step with isCleanListedUsRow.
+ *
+ * THE INVARIANT: this must never be STRICTER than the predicate. It exists only
+ * to avoid dragging the whole collection into memory; the predicate above is the
+ * authority and runs afterwards regardless.
+ *
+ * Violating that invariant is exactly how the exchange bypass was unreachable on
+ * first attempt: six routes each hardcoded `exchange: { $in: [...] }`, so rows
+ * with no exchange were dropped by the query and the relaxed predicate never
+ * saw them. The universe stayed at 1737 and nothing recovered. The $or below is
+ * the query-level mirror of `isFinvizScreenerRow(row) || US_EXCHANGES.has(...)`.
+ *
+ * `price: { $ne: null }` and the dot exclusion are safe to keep here because the
+ * predicate rejects those too — they narrow without disagreeing.
+ */
+export const CLEAN_UNIVERSE_MONGO_FILTER = {
+  ticker: { $not: /\./ },
+  price: { $ne: null },
+  $or: [
+    { exchange: { $in: Array.from(US_EXCHANGES) } },
+    { quote_source: /finviz/i },
+    { source: /finviz/i },
+    { screener_source: /finviz/i },
+    { finviz_filter: { $exists: true } },
+  ],
+}
+
 export { US_EXCHANGES, NON_STOCK_TICKERS, MAX_SIGNAL_CHANGE_PCT, normalizeExchange, isFinvizScreenerRow }

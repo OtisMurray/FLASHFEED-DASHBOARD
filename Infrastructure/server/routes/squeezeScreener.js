@@ -16,6 +16,7 @@ import {
   predictionEvidenceValidation,
   resolvedRollingWindowMinutes,
 } from './screener.js'
+import { CLEAN_UNIVERSE_MONGO_FILTER } from '../lib/cleanUniverse.js'
 
 // GET /api/squeeze-screener?limit=50&passing_only=0&window_minutes=
 //
@@ -220,11 +221,7 @@ router.get('/', async (req, res) => {
     //    takes UNIVERSE_SCAN_LIMIT docs in unstable storage order, so once the
     //    universe exceeds the cap it silently drops whichever rows sit last on
     //    disk). ticker breaks change_pct ties so the order is total.
-    const docs = await Screener.find({
-      exchange: { $in: ['NASDAQ', 'NYSE', 'AMEX'] },
-      ticker: { $not: /\./ },
-      price: { $ne: null },
-    }).sort({ change_pct: -1, ticker: 1 }).limit(UNIVERSE_SCAN_LIMIT).lean()
+    const docs = await Screener.find(CLEAN_UNIVERSE_MONGO_FILTER).sort({ change_pct: -1, ticker: 1 }).limit(UNIVERSE_SCAN_LIMIT).lean()
 
     // Keep the raw doc beside the normalized row: normalizeScreenerRow does not
     // surface shares_float or short_ratio, which are the float and days-to-cover

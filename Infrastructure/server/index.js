@@ -34,6 +34,7 @@ import {
   NON_STOCK_TICKERS,
   MAX_SIGNAL_CHANGE_PCT,
   normalizeExchange,
+  CLEAN_UNIVERSE_MONGO_FILTER,
 } from './lib/cleanUniverse.js'
 import {
   ensurePositionHistoryIndexes,
@@ -2039,11 +2040,14 @@ async function loadPositiveFinvizMoverRows(db, limit = 100) {
 async function loadThresholdEntryRows(db, limit = 50) {
   const requestedLimit = Math.max(1, Math.min(200, Number(limit || 50)))
   const docs = await db.collection("screeners").find({
-    ticker: { $exists: true, $nin: ["", null], $not: /\./ },
-    exchange: { $in: Array.from(US_EXCHANGES) },
-    price: { $gt: 0 },
-    threshold_feature_policy_version: PREDICTION_THRESHOLD_POLICY_VERSION,
-    threshold_feature_status: "entry_passed",
+    $and: [
+      CLEAN_UNIVERSE_MONGO_FILTER,
+      {
+        price: { $gt: 0 },
+        threshold_feature_policy_version: PREDICTION_THRESHOLD_POLICY_VERSION,
+        threshold_feature_status: "entry_passed",
+      },
+    ],
   }).sort({ threshold_setup_score: -1, threshold_feature_updated_at: -1, rel_volume: -1 }).limit(requestedLimit).toArray()
 
   return docs
@@ -5297,10 +5301,11 @@ async function positionHistoryCandidates(db, today, limit = POSITION_HISTORY_BAT
   const tickers = ordered.map(meta => meta.ticker)
   if (!tickers.length) return { candidates: [], aiStatus }
 
+  // Must match positionScreener's universe join, or the scheduler records a
+  // different candidate set than the route displays. $and avoids colliding on
+  // the `ticker` key: the shared filter carries $not, this carries $in.
   const quotes = await Screener.find({
-    ticker: { $in: tickers },
-    exchange: { $in: ['NASDAQ', 'NYSE', 'AMEX'] },
-    price: { $ne: null },
+    $and: [CLEAN_UNIVERSE_MONGO_FILTER, { ticker: { $in: tickers } }],
   }).lean()
   const quoteByTicker = new Map(
     quotes.map(normalizeScreenerRow).filter(isCleanListedUsRow).map(row => [row.ticker, row]),

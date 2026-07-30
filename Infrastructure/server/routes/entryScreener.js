@@ -2,6 +2,7 @@ import { Router } from 'express'
 import mongoose from 'mongoose'
 import Screener from '../models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow, loadAdaptiveSocialStatsForRows } from './screener.js'
+import { CLEAN_UNIVERSE_MONGO_FILTER } from '../lib/cleanUniverse.js'
 
 // GET /api/entry-screener?threshold=0.5&limit=30
 //
@@ -66,11 +67,7 @@ router.get('/', async (req, res) => {
     const limit = Math.round(clamp(req.query.limit ?? DEFAULT_LIMIT, 1, MAX_LIMIT))
 
     // 1. Same clean listed-US universe as /api/screener
-    const filter = {
-      exchange: { $in: ['NASDAQ', 'NYSE', 'AMEX'] },
-      ticker: { $not: /\./ },
-      price: { $ne: null },
-    }
+    const filter = CLEAN_UNIVERSE_MONGO_FILTER
     // Deterministic scan order. Without a sort this takes UNIVERSE_SCAN_LIMIT docs
     // in natural/storage order, which Mongo does not guarantee to be stable, so
     // once the universe exceeds the cap it would silently drop whichever rows

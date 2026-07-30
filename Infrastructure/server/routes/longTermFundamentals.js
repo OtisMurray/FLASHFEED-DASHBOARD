@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import Screener from '../models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './screener.js'
+import { CLEAN_UNIVERSE_MONGO_FILTER } from '../lib/cleanUniverse.js'
 import { scoreLongTerm, longTermLabel, LONG_TERM_WEIGHTS } from '../lib/longTermScore.js'
 
 // GET /api/long-term-fundamentals?horizon=perf_year&limit=50&sector=Technology&...
@@ -106,11 +107,7 @@ router.get('/', async (req, res) => {
 
     // 1. Same clean listed-US universe the other screeners use, so the tabs agree
     //    on what counts as a tradable row.
-    const filter = {
-      exchange: { $in: ['NASDAQ', 'NYSE', 'AMEX'] },
-      ticker: { $not: /\./ },
-      price: { $ne: null },
-    }
+    const filter = CLEAN_UNIVERSE_MONGO_FILTER
     // Deterministic scan order, same reasoning as entry/exitScreener.js: an
     // unsorted find() takes UNIVERSE_SCAN_LIMIT docs in natural/storage order,
     // which Mongo does not guarantee to be stable, so once the universe exceeds

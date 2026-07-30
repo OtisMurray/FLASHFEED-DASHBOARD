@@ -11,6 +11,7 @@ import {
   MAX_SIGNAL_CHANGE_PCT,
   normalizeExchange,
   isCleanListedUsRow,
+  CLEAN_UNIVERSE_MONGO_FILTER,
 } from '../lib/cleanUniverse.js'
 
 const router = Router()
@@ -6243,9 +6244,7 @@ router.get('/tickers', async (req, res) => {
     const q = String(req.query.q || '').trim().toUpperCase().replace(/[^A-Z0-9.-]/g, '').slice(0, 12)
     const requestedLimit = Math.max(1, Math.min(TICKER_LIST_LIMIT, Number(req.query.limit || TICKER_LIST_LIMIT) || TICKER_LIST_LIMIT))
     const filter = {
-      exchange: { $in: Array.from(US_EXCHANGES) },
-      ticker: { $not: /\./ },
-      price: { $ne: null },
+      ...CLEAN_UNIVERSE_MONGO_FILTER,
       ...(q ? { ticker: { $regex: `^${escapeRegExp(q)}`, $options: 'i', $not: /\./ } } : {}),
     }
     const rows = (await Screener.find(filter, {
@@ -6283,11 +6282,7 @@ router.get('/', async (req, res) => {
     const compact = ['1', 'true', 'yes'].includes(String(req.query.compact || '').toLowerCase())
     const mirrorMode = ['1', 'true', 'yes'].includes(String(req.query.mirror || '').toLowerCase())
     const windowOverride = req.query.window_minutes ? Number(req.query.window_minutes) : null
-    const filter = {
-      exchange: { $in: Array.from(US_EXCHANGES) },
-      ticker: { $not: /\./ },
-      price: { $ne: null },
-    }
+    const filter = { ...CLEAN_UNIVERSE_MONGO_FILTER }
     if (sector && !mirrorMode) filter.sector = sector
     if (signal === 'social_bullish' && !mirrorMode) filter.social_sentiment = { $gte: 0.3 }
     if (signal === 'social_bearish' && !mirrorMode) filter.social_sentiment = { $lte: -0.3 }
