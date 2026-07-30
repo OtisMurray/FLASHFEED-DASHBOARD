@@ -27,6 +27,15 @@ import { dedupeWatcherSeries, loadWatcherFeatureMap, persistWatcherSnapshot } fr
 import Screener from './models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './routes/screener.js'
 import {
+  isPositiveMoverRow,
+  isThresholdEntryRow,
+  isFinvizScreenerRow,
+  US_EXCHANGES,
+  NON_STOCK_TICKERS,
+  MAX_SIGNAL_CHANGE_PCT,
+  normalizeExchange,
+} from './lib/cleanUniverse.js'
+import {
   ensurePositionHistoryIndexes,
   persistPositionSnapshot,
   prunePositionHistory,
@@ -70,12 +79,6 @@ const TRACKED_TICKER_FILE_CANDIDATES = [
   path.join(SERVER_DIR, 'config', 'social_tickers_100.txt'),
 ]
 const TRACKED_TICKER_LIMIT = Math.max(1, Number(process.env.TRACKED_TICKER_LIMIT || process.env.SOCIAL_MAX_TICKERS || 250))
-const NON_STOCK_TICKERS = new Set([
-  "BTC", "ETH", "LTC", "DOGE", "SOL", "ADA", "XRP", "BNB", "DOT", "AVAX",
-  "MATIC", "SHIB", "TRX", "BCH", "LINK", "ATOM", "UNI", "ETC", "FIL",
-  "USD", "USDT", "USDC", "SPOT",
-])
-const US_EXCHANGES = new Set(["NASDAQ", "NYSE", "AMEX"])
 const TRACKED_MARKET_INDICES = [
   { symbol: "DJI", name: "Dow Jones Industrial Average", category: "index" },
   { symbol: "SPX", name: "S&P 500", category: "index" },
@@ -87,7 +90,6 @@ const TRACKED_MARKETS = [
   ...Array.from(US_EXCHANGES).map(symbol => ({ symbol, name: `${symbol} listed equities`, category: "exchange" })),
   ...TRACKED_MARKET_INDICES,
 ]
-const MAX_SIGNAL_CHANGE_PCT = Math.max(10, Number(process.env.MAX_SIGNAL_CHANGE_PCT || 300))
 const PRIVATE_TRACKED_TICKERS = new Set(['SPACEX'])
 const MIN_LIVE_MODEL_CONFIDENCE = Math.max(0, Math.min(1, Number(process.env.MIN_LIVE_MODEL_CONFIDENCE || 0.05)))
 const WATCHER_SNAPSHOT_ENABLED = !['0', 'false', 'no'].includes(String(process.env.WATCHER_SNAPSHOT_ENABLED || 'true').toLowerCase())
@@ -1665,13 +1667,6 @@ function marketCapBucket(marketCap) {
   return "Unknown"
 }
 
-function normalizeExchange(value) {
-  const raw = String(value || "").trim().toUpperCase()
-  if (raw === "NYSEAMERICAN" || raw === "NYSE AMERICAN") return "AMEX"
-  if (raw === "NAS") return "NASDAQ"
-  return raw
-}
-
 function normalizeScreenerDoc(doc = {}) {
   const ticker = String(doc.ticker || "").toUpperCase()
   const hasStoredPrice = doc.price != null
@@ -1812,51 +1807,10 @@ function normalizeScreenerDoc(doc = {}) {
   }
 }
 
-function isFinvizScreenerRow(row = {}) {
-  const sourceText = `${row.quote_source || ""} ${row.source || ""} ${row.screener_source || ""} ${row.finviz_filter || ""}`.toLowerCase()
-  return sourceText.includes("finviz")
-}
-
-function isCleanListedUsScreenerRow(row) {
-  const ticker = String(row?.ticker || "").toUpperCase()
-  const exchange = normalizeExchange(row?.exchange)
-  const fromFinviz = isFinvizScreenerRow(row)
-
-  return Boolean(
-    ticker &&
-    !ticker.includes(".") &&
-    !ticker.includes("-") &&
-    !NON_STOCK_TICKERS.has(ticker) &&
-    (fromFinviz || US_EXCHANGES.has(exchange)) &&
-    row.price != null &&
-    Number(row.price) > 0 &&
-    row.change_pct != null &&
-    Number.isFinite(Number(row.change_pct)) &&
-    Number(row.change_pct) > 0 &&
-    Math.abs(Number(row.change_pct)) <= MAX_SIGNAL_CHANGE_PCT &&
-    row.quote_status !== "missing"
-  )
-}
-
-function isCleanListedUsThresholdEntryRow(row) {
-  const ticker = String(row?.ticker || "").toUpperCase()
-  const exchange = normalizeExchange(row?.exchange)
-
-  return Boolean(
-    ticker &&
-    !ticker.includes(".") &&
-    !ticker.includes("-") &&
-    !NON_STOCK_TICKERS.has(ticker) &&
-    US_EXCHANGES.has(exchange) &&
-    row.price != null &&
-    Number(row.price) > 0 &&
-    row.change_pct != null &&
-    Number.isFinite(Number(row.change_pct)) &&
-    Math.abs(Number(row.change_pct)) <= MAX_SIGNAL_CHANGE_PCT &&
-    row.quote_status !== "missing" &&
-    row.threshold_feature_status === "entry_passed"
-  )
-}
+// isFinvizScreenerRow / isCleanListedUsScreenerRow / isCleanListedUsThresholdEntryRow
+// used to be defined here and disagreed with routes/screener.js about what a
+// clean row is. They now come from lib/cleanUniverse.js as one base predicate
+// plus named wrappers; see that file for what the merge resolved.
 
 function tickerStatsToScreenerRow(row, quoteRow = {}) {
   const score = sentimentScore(row)
@@ -2060,7 +2014,7 @@ async function loadPositiveFinvizMoverRows(db, limit = 100) {
 
   return docs
     .map(normalizeScreenerDoc)
-    .filter(row => isFinvizScreenerRow(row) && isCleanListedUsScreenerRow(row))
+    .filter(row => isFinvizScreenerRow(row) && isPositiveMoverRow(row))
     .sort((a, b) => {
       const changeDiff = Number(b.change_pct || 0) - Number(a.change_pct || 0)
       if (changeDiff !== 0) return changeDiff
@@ -2094,7 +2048,7 @@ async function loadThresholdEntryRows(db, limit = 50) {
 
   return docs
     .map(normalizeScreenerDoc)
-    .filter(row => isCleanListedUsThresholdEntryRow(row))
+    .filter(row => isThresholdEntryRow(row))
     .map((row, index) => ({
       ...row,
       rank: row.rank || index + 1,

@@ -3,15 +3,17 @@ import mongoose from 'mongoose'
 import Screener from '../models/Screener.js'
 import { loadWatcherFeatureMap, persistWatcherSnapshot, watcherRankScore } from '../lib/watcherSnapshots.js'
 import * as predictionThresholdPolicy from '../lib/predictionThresholdPolicy.js'
+// The clean-universe definition lives in one place now — see lib/cleanUniverse.js
+// for why there used to be three of them and what changed when they were merged.
+import {
+  US_EXCHANGES,
+  NON_STOCK_TICKERS,
+  MAX_SIGNAL_CHANGE_PCT,
+  normalizeExchange,
+  isCleanListedUsRow,
+} from '../lib/cleanUniverse.js'
 
 const router = Router()
-const NON_STOCK_TICKERS = new Set([
-  'BTC', 'ETH', 'LTC', 'DOGE', 'SOL', 'ADA', 'XRP', 'BNB', 'DOT', 'AVAX',
-  'MATIC', 'SHIB', 'TRX', 'BCH', 'LINK', 'ATOM', 'UNI', 'ETC', 'FIL',
-  'USD', 'USDT', 'USDC', 'SPOT',
-])
-const US_EXCHANGES = new Set(['NASDAQ', 'NYSE', 'AMEX'])
-const MAX_SIGNAL_CHANGE_PCT = Math.max(10, Number(process.env.MAX_SIGNAL_CHANGE_PCT || 300))
 const SQUEEZE_WATCHER_MIN = Math.max(1000, Number(process.env.SQUEEZE_WATCHER_MIN || 5000))
 const SQUEEZE_SUPPLEMENT_LIMIT = Math.max(1, Math.min(50, Number(process.env.SQUEEZE_SUPPLEMENT_LIMIT || 25)))
 const PREDICTION_ALREADY_PRICED_IN_MOVE_PCT = Math.max(5, Number(process.env.PREDICTION_ALREADY_PRICED_IN_MOVE_PCT || 35))
@@ -63,25 +65,6 @@ const TICKER_LIST_LIMIT = Math.max(1000, Math.min(12000, Number(process.env.SCRE
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-function normalizeExchange(value) {
-  const raw = String(value || '').trim().toUpperCase()
-  if (raw === 'NYSEAMERICAN' || raw === 'NYSE AMERICAN') return 'AMEX'
-  if (raw === 'NAS') return 'NASDAQ'
-  return raw
-}
-
-function isCleanListedUsRow(row) {
-  if (!row?.ticker || row.ticker.includes('.')) return false
-  if (NON_STOCK_TICKERS.has(row.ticker)) return false
-  if (row.quote_status && row.quote_status !== 'priced') return false
-  if (row.price == null || row.change_pct == null) return false
-  if (Number(row.price) <= 0) return false
-  if (!Number.isFinite(Number(row.change_pct))) return false
-  if (Math.abs(Number(row.change_pct)) > MAX_SIGNAL_CHANGE_PCT) return false
-  const exchange = normalizeExchange(row.exchange)
-  return US_EXCHANGES.has(exchange)
 }
 
 function recentArticleMatch(days = 3) {
