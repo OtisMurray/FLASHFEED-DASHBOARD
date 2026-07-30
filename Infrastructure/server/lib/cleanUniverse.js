@@ -110,6 +110,18 @@ export function isThresholdEntryRow(row) {
 }
 
 /**
+ * Every field isCleanListedUsRow reads. A projected query MUST include all of
+ * these or the predicate silently mis-answers: a projection that drops the
+ * provenance fields makes isFinvizScreenerRow always false, so exchange-less
+ * rows get rejected even though the universe accepts them everywhere else.
+ * That is not hypothetical — it happened on /api/screener/tickers.
+ */
+export const PREDICATE_INPUT_FIELDS = [
+  'ticker', 'exchange', 'price', 'change_pct', 'quote_status',
+  'quote_source', 'source', 'screener_source', 'finviz_filter',
+]
+
+/**
  * The Mongo-side pre-filter, kept deliberately in step with isCleanListedUsRow.
  *
  * THE INVARIANT: this must never be STRICTER than the predicate. It exists only

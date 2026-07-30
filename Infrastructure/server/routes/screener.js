@@ -6255,6 +6255,14 @@ router.get('/tickers', async (req, res) => {
       price: 1,
       quote_status: 1,
       change_pct: 1,
+      // isCleanListedUsRow accepts Finviz provenance in place of an exchange
+      // (Finviz's export has no exchange column). Projecting these away made the
+      // predicate blind to it, so every exchange-less row was rejected here even
+      // after the universe widened everywhere else. See PREDICATE_INPUT_FIELDS.
+      quote_source: 1,
+      source: 1,
+      screener_source: 1,
+      finviz_filter: 1,
     }).sort({ ticker: 1 }).limit(requestedLimit).lean())
       .map(normalizeScreenerRow)
       .filter(isCleanListedUsRow)
