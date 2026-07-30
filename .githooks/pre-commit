@@ -1,0 +1,39 @@
+#!/bin/sh
+# Refuse to commit a symlink or anything under a dependency directory.
+#
+# A symlinked node_modules reached origin twice: git worktrees need one to share
+# the main checkout's install, and `**/node_modules/` in .gitignore matches
+# DIRECTORIES ONLY, so the symlink was invisible to the pattern and `git add -A`
+# staged it. Checking that out replaces the real directory with a self-referential
+# symlink and every import in the package stops resolving.
+#
+# Enable (one time, per clone):  git config core.hooksPath .githooks
+# Bypass for a deliberate case:  git commit --no-verify
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[ -z "$staged" ] && exit 0
+
+fail=0
+
+# Mode 120000 is a symlink.
+symlinks=$(git diff --cached --raw --diff-filter=ACMR | awk '$2=="120000"{print $NF}')
+if [ -n "$symlinks" ]; then
+  echo "pre-commit: refusing to commit symlink(s):" >&2
+  echo "$symlinks" | sed 's/^/  /' >&2
+  fail=1
+fi
+
+deps=$(echo "$staged" | grep -E '(^|/)(node_modules|\.venv|venv|__pycache__|dist|build)(/|$)')
+if [ -n "$deps" ]; then
+  echo "pre-commit: refusing to commit path(s) under a dependency directory:" >&2
+  echo "$deps" | sed 's/^/  /' >&2
+  fail=1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo "" >&2
+  echo "  Unstage with: git rm --cached <path>" >&2
+  echo "  Override (rare, be sure): git commit --no-verify" >&2
+  exit 1
+fi
+exit 0

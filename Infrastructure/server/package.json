@@ -7,7 +7,8 @@
     "dev": "nodemon index.js",
     "indexes": "node scripts/add_mongodb_indexes.js",
     "train:intraday": "node scripts/train_intraday_prediction_model.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "hooks:install": "git -C ../.. config core.hooksPath .githooks && echo 'pre-commit hook enabled (.githooks)'"
   },
   "dependencies": {
     "cors": "^2.8.5",
