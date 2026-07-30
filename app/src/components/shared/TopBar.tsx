@@ -511,7 +511,7 @@ export function TopBar() {
             </div>
           </div>
         )}
-        <div className="flex min-h-14 items-center gap-1.5 px-3 py-2 md:px-4">
+        <div className="flex min-h-14 items-center gap-3 px-3 pb-2 pt-3 md:px-4">
           <NavLink
             to="/overview"
             onMouseEnter={() => prefetchRoute('/overview')}
@@ -521,28 +521,6 @@ export function TopBar() {
             <div className="text-accent font-bold text-base tracking-normal font-mono leading-none 2xl:text-lg">FlashFeed</div>
             <div className="text-neutral text-[10px] mt-1 uppercase tracking-wide">Financial Intelligence</div>
           </NavLink>
-
-          <nav className="hidden min-w-0 flex-1 items-center justify-center gap-0.5 overflow-visible xl:flex">
-            {PRIMARY_NAV.map(({ href, label }) => {
-              const active = pathname === href || pathname.startsWith(`${href}/`)
-              return (
-                <NavLink
-                  key={href}
-                  to={href}
-                  onMouseEnter={() => prefetchRoute(href)}
-                  onFocus={() => prefetchRoute(href)}
-                  className={clsx(
-                    'flex-none whitespace-nowrap rounded-md border px-1.5 py-2 text-[10px] transition-colors 2xl:px-2 2xl:text-[11px]',
-                    active
-                      ? 'bg-accent/15 border-accent/50 text-white'
-                      : 'border-transparent text-neutral hover:text-white hover:bg-bg/60'
-                  )}
-                >
-                  {label}
-                </NavLink>
-              )
-            })}
-          </nav>
 
           <div className="ml-auto flex flex-none items-center justify-end gap-1.5">
             {fetchResult && (
@@ -707,6 +685,28 @@ export function TopBar() {
             {marketStatus && <StatusBadge ok={marketStatus.open} label={marketStatus.open ? 'Open' : 'Closed'} />}
           </div>
         </div>
+
+        <nav className="hidden min-w-0 items-center gap-1.5 overflow-x-auto px-3 pb-2 md:px-4 xl:flex">
+          {PRIMARY_NAV.map(({ href, label }) => {
+            const active = pathname === href || pathname.startsWith(`${href}/`)
+            return (
+              <NavLink
+                key={href}
+                to={href}
+                onMouseEnter={() => prefetchRoute(href)}
+                onFocus={() => prefetchRoute(href)}
+                className={clsx(
+                  'flex-none whitespace-nowrap rounded-lg border px-3 py-2 text-xs font-medium transition-colors 2xl:px-3.5 2xl:text-[13px]',
+                  active
+                    ? 'bg-accent/15 border-accent/50 text-white shadow-[0_0_0_1px_rgba(125,211,252,0.12)]'
+                    : 'border-border/80 text-neutral hover:text-white hover:bg-bg/60 hover:border-accent/40'
+                )}
+              >
+                {label}
+              </NavLink>
+            )
+          })}
+        </nav>
 
         <nav className="flex items-center gap-1 overflow-x-auto px-3 pb-2 md:px-4 xl:hidden">
           {MOBILE_NAV.map(({ href, label }) => {

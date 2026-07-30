@@ -99,6 +99,55 @@ export function tradeIdentity(row = {}) {
   ].join('|')
 }
 
+export function recordedPositionRow(doc = {}, { today, companyByTicker } = {}) {
+  const stale = doc.finalized !== true
+  const group = classifyRow(doc, { today })
+  // A recorded session_end row becomes settled after its date passes; a same-day
+  // risk exit is settled immediately. Stale rows stay marked as frozen snapshots.
+  const realized = doc.pnl_is_realized === true
+    || ((group === 'closed_earlier' || group === 'closed_today') && !stale)
+
+  return {
+    group,
+    provenance: 'recorded',
+    data_status: stale ? 'stale' : 'recorded',
+    ticker: doc.ticker,
+    company: doc.company || companyByTicker?.get(doc.ticker) || null,
+    date: doc.date,
+    entry_price: doc.entry_price,
+    entry_time: doc.entry_time,
+    entry_epoch: doc.entry_epoch,
+    entry_corr: doc.entry_corr,
+    exit_price: doc.exit_price ?? doc.session_end_price ?? null,
+    exit_time: doc.exit_time,
+    exit_reason: doc.exit_reason,
+    exit_corr: doc.exit_corr,
+    current_price: doc.current_price,
+    peak_price: doc.peak_price,
+    stop_price: doc.stop_price,
+    distance_to_stop_pct: doc.distance_to_stop_pct,
+    pnl_pct: doc.pnl_pct,
+    pnl_is_realized: realized,
+    // The parameters this row was actually simulated under — which are the
+    // canonical ones, and may differ from what the caller asked for.
+    threshold: doc.threshold,
+    stop_pct: doc.stop_pct,
+    // null for rows recorded before the policy layer existed; those predate
+    // the field rather than being untiered.
+    market_cap_tier: doc.market_cap_tier ?? null,
+    position_policy_id: doc.position_policy_id ?? null,
+    snapshots: doc.snapshots ?? null,
+    recorded_at: doc.updated_at ?? null,
+    candidate_source: doc.candidate_source || 'recorded_ai_suggestion',
+    ai_rank: doc.ai_rank ?? null,
+    ai_rank_score: doc.ai_rank_score ?? null,
+    ai_direction: doc.ai_direction ?? null,
+    ai_probability_up: doc.ai_probability_up ?? null,
+    ai_entry_ready: doc.ai_entry_ready === true,
+    ai_model: doc.ai_model ?? null,
+  }
+}
+
 function todayKeyET() {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: process.env.MARKET_WINDOW_TIMEZONE || 'America/New_York',
@@ -361,13 +410,15 @@ router.get('/', async (req, res) => {
       }
     }
 
-    // 4. Recorded history for sessions already closed. Strictly date < today:
-    //    today belongs to the live sim, which is authoritative and reflects the
-    //    caller's parameters.
+    // 4. Recorded history. Prior sessions are read back from storage; finalized
+    //    same-day risk exits are also used as a safety net at canonical settings
+    //    so a closed trade cannot disappear just because it fell out of the next
+    //    AI candidate batch after the exit was already observed.
     let historyRows = []
     let historyTruncated = false
     let newestHistoryDate = null
     let supersededCount = 0
+    let todayFinalizedHistoryRows = 0
     if (db && historyDays > 0) {
       const since = shiftDateKey(today, -historyDays)
       // Superseded rows are withdrawn, not deleted: a later simulation of the
@@ -384,60 +435,30 @@ router.get('/', async (req, res) => {
         .countDocuments({ date: { $gte: since, $lt: today }, superseded: true })
         .catch(() => 0)
       historyTruncated = docs.length > MAX_HISTORY_ROWS
-      for (const doc of docs.slice(0, MAX_HISTORY_ROWS)) {
+      const todayFinalizedDocs = isCanonical
+        ? await db.collection(POSITION_HISTORY_COLLECTION)
+          .find({
+            date: today,
+            finalized: true,
+            superseded: { $ne: true },
+            threshold: CANONICAL_THRESHOLD,
+            stop_pct: CANONICAL_STOP_PCT,
+          })
+          .sort({ entry_epoch: -1 })
+          .limit(MAX_HISTORY_ROWS + 1)
+          .toArray()
+          .catch(() => [])
+        : []
+
+      if (todayFinalizedDocs.length > MAX_HISTORY_ROWS) historyTruncated = true
+      todayFinalizedHistoryRows = Math.min(todayFinalizedDocs.length, MAX_HISTORY_ROWS)
+
+      for (const doc of [
+        ...todayFinalizedDocs.slice(0, MAX_HISTORY_ROWS),
+        ...docs.slice(0, Math.max(0, MAX_HISTORY_ROWS - todayFinalizedHistoryRows)),
+      ]) {
         if (!newestHistoryDate || doc.date > newestHistoryDate) newestHistoryDate = doc.date
-        // A recorded row that never reached a final state was observed
-        // mid-session and then never seen again (the scheduler was down, or the
-        // ticker fell out of the candidate set before the close). Its P&L is a
-        // frozen intraday mark, NOT a settled result — that distinction is the
-        // whole point of the badge.
-        const stale = doc.finalized !== true
-        const group = classifyRow(doc, { today })
-        // A session_end row is stored unrealized because, at the moment it was
-        // written, the session was still running. Once that session is over the
-        // position was flattened at the close and the number IS settled — unless
-        // the row is stale, in which case its mark really is a mid-session
-        // snapshot and must not be dressed up as a result.
-        const realized = doc.pnl_is_realized === true || (group === 'closed_earlier' && !stale)
-        historyRows.push({
-          group,
-          provenance: 'recorded',
-          data_status: stale ? 'stale' : 'recorded',
-          ticker: doc.ticker,
-          company: doc.company || companyByTicker.get(doc.ticker) || null,
-          date: doc.date,
-          entry_price: doc.entry_price,
-          entry_time: doc.entry_time,
-          entry_epoch: doc.entry_epoch,
-          entry_corr: doc.entry_corr,
-          exit_price: doc.exit_price ?? doc.session_end_price ?? null,
-          exit_time: doc.exit_time,
-          exit_reason: doc.exit_reason,
-          exit_corr: doc.exit_corr,
-          current_price: doc.current_price,
-          peak_price: doc.peak_price,
-          stop_price: doc.stop_price,
-          distance_to_stop_pct: doc.distance_to_stop_pct,
-          pnl_pct: doc.pnl_pct,
-          pnl_is_realized: realized,
-          // The parameters this row was actually simulated under — which are the
-          // canonical ones, and may differ from what the caller asked for.
-          threshold: doc.threshold,
-          stop_pct: doc.stop_pct,
-          // null for rows recorded before the policy layer existed; those
-          // predate the field rather than being untiered.
-          market_cap_tier: doc.market_cap_tier ?? null,
-          position_policy_id: doc.position_policy_id ?? null,
-          snapshots: doc.snapshots ?? null,
-          recorded_at: doc.updated_at ?? null,
-          candidate_source: doc.candidate_source || 'recorded_ai_suggestion',
-          ai_rank: doc.ai_rank ?? null,
-          ai_rank_score: doc.ai_rank_score ?? null,
-          ai_direction: doc.ai_direction ?? null,
-          ai_probability_up: doc.ai_probability_up ?? null,
-          ai_entry_ready: doc.ai_entry_ready === true,
-          ai_model: doc.ai_model ?? null,
-        })
+        historyRows.push(recordedPositionRow(doc, { today, companyByTicker }))
       }
     }
 
@@ -497,6 +518,7 @@ router.get('/', async (req, res) => {
       counts,
       history_days: historyDays,
       history_rows: historyRows.length,
+      today_finalized_history_rows: todayFinalizedHistoryRows,
       history_dates: historyDates,
       history_truncated: historyTruncated,
       newest_history_date: newestHistoryDate,

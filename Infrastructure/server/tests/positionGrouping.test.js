@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { liveGroupFor, tradeIdentity } from '../routes/positionScreener.js'
+import { liveGroupFor, recordedPositionRow, tradeIdentity } from '../routes/positionScreener.js'
 import { classifyRow } from '../lib/positionHistory.js'
 
 // REGRESSION: the same trade rendered twice, under both "Closed today" and
@@ -108,4 +108,31 @@ test('a live row with no recorded counterpart survives', () => {
   const live = { ticker: 'INLF', date: YESTERDAY, entry_epoch: 1785399999, provenance: 'live' }
   const recordedIds = new Set([tradeIdentity({ ticker: 'BIYA', date: YESTERDAY, entry_epoch: 1 })])
   assert.equal(recordedIds.has(tradeIdentity(live)), false)
+})
+
+test('a finalized same-day recorded row can backstop a vanished live candidate', () => {
+  // If a ticker exits and then falls out of the next AI candidate batch, the
+  // recorded same-day exit must still render under Closed today.
+  const doc = {
+    ticker: 'GCTK',
+    company: 'GlucoTrack Inc',
+    date: TODAY,
+    finalized: true,
+    entry_epoch: 1785321840,
+    entry_time: '10:44',
+    entry_price: 0.37,
+    exit_reason: 'price_trailing_stop',
+    exit_time: '11:37',
+    exit_price: 0.38,
+    pnl_pct: 4.64,
+    pnl_is_realized: true,
+    threshold: 0.1,
+    stop_pct: 5,
+  }
+  const recorded = recordedPositionRow(doc, { today: TODAY, companyByTicker: new Map() })
+  const liveTwin = { ticker: 'gctk', date: TODAY, entry_epoch: 1785321840, provenance: 'live' }
+
+  assert.equal(recorded.group, 'closed_today')
+  assert.equal(recorded.pnl_is_realized, true)
+  assert.equal(tradeIdentity(recorded), tradeIdentity(liveTwin))
 })

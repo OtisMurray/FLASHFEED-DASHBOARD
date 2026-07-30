@@ -147,9 +147,10 @@ export function PositionsPage() {
 
   const grouped = useMemo(() => {
     const rows = data?.rows ?? []
+    const visibleRows = rows.filter(row => row.data_status !== 'stale')
     const out = {} as Record<PositionGroup, PositionScreenerRow[]>
     for (const group of ['open', 'closed_today', 'closed_earlier', 'watch'] as PositionGroup[]) {
-      const subset = rows.filter(row => row.group === group)
+      const subset = visibleRows.filter(row => row.group === group)
       const spec = GROUPS.find(g => g.key === group)
       out[group] = orderBy
         ? sortRows(subset, orderBy, orderDir)
@@ -165,22 +166,20 @@ export function PositionsPage() {
   }
 
   const counts = data?.counts
+  const visibleCounts = useMemo(() => ({
+    open: grouped.open?.length ?? 0,
+    closed_today: grouped.closed_today?.length ?? 0,
+    closed_earlier: grouped.closed_earlier?.length ?? 0,
+  }), [grouped])
   const offCanonical = data ? !data.is_canonical : false
   const watchRows = grouped.watch ?? []
 
-  // Overall P&L. Three buckets, kept apart on purpose:
+  // Overall P&L. Two buckets, kept apart on purpose:
   //
   //   realized   — pnl_is_realized === true. The trade reached a conclusion, so
   //                the number is final. Covers today's closed rows (simulated
   //                live) and earlier sessions (read back from history).
   //   unrealized — still open, marked to the latest bar. Moves until it closes.
-  //   unsettled  — data_status 'stale': a position the scheduler stopped
-  //                observing mid-session. It carries a pnl_pct, but that figure
-  //                is a frozen mark, NOT an outcome — it never stopped out and
-  //                was never closed at the bell. Counting it in a headline total
-  //                would launder an unresolved trade into a settled-looking
-  //                result, so it is excluded and reported separately.
-  //
   // Watch rows have no P&L at all and fall out naturally.
   //
   // DEDUPLICATION IS NOW DEFENCE IN DEPTH. It was originally load-bearing: the
@@ -207,7 +206,7 @@ export function PositionsPage() {
   // capital, so the total is labelled in percentage points and the assumption is
   // stated in the UI rather than implied by a dollar sign.
   const pnl = useMemo(() => {
-    const rows = data?.rows ?? []
+    const rows = (data?.rows ?? []).filter(row => row.data_status !== 'stale')
     const identity = (r: PositionScreenerRow) =>
       [r.ticker, r.date ?? '', r.entry_time ?? '', r.entry_price ?? ''].join('|')
     const dedupe = (subset: PositionScreenerRow[]) => {
@@ -233,11 +232,9 @@ export function PositionsPage() {
     }
     const realized = bucket(rows.filter(r => r.pnl_is_realized === true))
     const unrealized = bucket(rows.filter(r => r.group === 'open' && r.pnl_is_realized !== true))
-    const unsettled = bucket(rows.filter(r => r.data_status === 'stale'))
     return {
       realized,
       unrealized,
-      unsettled,
       combined: realized.sum + unrealized.sum,
       collapsed: realized.collapsed + unrealized.collapsed,
       sessions: new Set(rows.map(r => r.date).filter(Boolean)).size,
@@ -268,7 +265,9 @@ export function PositionsPage() {
           </p>
         </div>
         <span className="text-neutral text-sm whitespace-nowrap">
-          {counts ? `${counts.open} open · ${counts.closed_today} closed today · ${counts.closed_earlier} earlier` : '—'}
+          {counts
+            ? `${visibleCounts.open} open · ${visibleCounts.closed_today} closed today · ${visibleCounts.closed_earlier} earlier`
+            : '—'}
         </span>
       </div>
 
@@ -288,9 +287,8 @@ export function PositionsPage() {
       {/* Overall P&L. Sits above the fold because it is the question the page
           exists to answer, but every figure is qualified in place rather than in
           a footnote: realized vs unrealized are never merged into a single
-          number without both being shown, and unsettled rows are called out as
-          excluded instead of silently dropped. */}
-      {data && (pnl.realized.n > 0 || pnl.unrealized.n > 0 || pnl.unsettled.n > 0) && (
+          number without both being shown. */}
+      {data && (pnl.realized.n > 0 || pnl.unrealized.n > 0) && (
         <div className="bg-surface border border-border rounded-lg px-4 py-3 mb-3">
           <div className="flex flex-wrap items-stretch gap-x-8 gap-y-3">
             <PnlStat
@@ -313,7 +311,7 @@ export function PositionsPage() {
             <div className="border-l border-border pl-8">
               <PnlStat
                 label="Combined"
-                hint="Realized + unrealized. Excludes unsettled rows, which never reached an outcome."
+                hint="Realized + unrealized."
                 sum={pnl.combined}
                 n={pnl.realized.n + pnl.unrealized.n}
                 emphasis
@@ -333,16 +331,6 @@ export function PositionsPage() {
                 {pnl.collapsed} duplicate row{pnl.collapsed === 1 ? '' : 's'} collapsed. A trade from a session that has
                 since closed is returned twice — once simulated live, once read back from recorded history. The table
                 shows both so the Data badge stays meaningful; the total counts each trade once.
-              </div>
-            )}
-            {pnl.unsettled.n > 0 && (
-              <div className="text-fuchsia-200/80">
-                <span className="font-semibold">
-                  {pnl.unsettled.n} unsettled position{pnl.unsettled.n === 1 ? '' : 's'} excluded
-                </span>
-                {' '}({fmtPct(pnl.unsettled.sum, true)} if counted). The scheduler stopped observing these mid-session,
-                so their P&amp;L is a frozen mark rather than an outcome — including it would present an unresolved
-                trade as a settled one.
               </div>
             )}
             {offCanonical ? (
@@ -404,14 +392,13 @@ export function PositionsPage() {
 
       {/* Coverage. Every candidate we could not simulate is accounted for
           rather than quietly missing from the table. */}
-      {data && (data.tickers_warming > 0 || data.tickers_no_bars > 0 || !data.chart_service_ok || data.stale_rows > 0 || data.superseded_rows > 0) && (
+      {data && (data.tickers_warming > 0 || data.tickers_no_bars > 0 || !data.chart_service_ok || data.superseded_rows > 0) && (
         <div className="bg-surface border border-border rounded-lg px-4 py-3 mb-3">
           <div className="text-[11px] text-neutral leading-relaxed">
             <span className="text-slate-300 font-semibold">Coverage: </span>
             {data.tickers_scanned} tickers scanned of {data.universe_size} in the clean listed-US universe
             {data.tickers_warming > 0 && ` · ${data.tickers_warming} still collecting messages`}
             {data.tickers_no_bars > 0 && ` · ${data.tickers_no_bars} with no intraday bars`}
-            {data.stale_rows > 0 && ` · ${data.stale_rows} recorded row${data.stale_rows === 1 ? '' : 's'} frozen mid-session (marked Stale)`}
             {data.superseded_rows > 0 && ` · ${data.superseded_rows} withdrawn after a later simulation of the same session no longer produced them`}
             {!data.chart_service_ok && ' · chart-service unreachable, so no live positions could be simulated'}
             {data.history_truncated && ` · history truncated at ${data.history_rows} rows`}

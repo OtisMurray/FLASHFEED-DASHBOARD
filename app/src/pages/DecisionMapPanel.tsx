@@ -1069,45 +1069,10 @@ function ThreeDecisionMap({
     const trailHitObjects: THREE.Object3D[] = []
     group.add(trailGroup)
 
-    // ── Always-on path baseline ───────────────────────────────────────────────
-    // trailGroup holds at most ONE path and is wiped on every show/clear, so on
-    // its own the map reads as an empty cube until you select or hover something
-    // — the inverse of what the map is for. Every row's journey is therefore
-    // drawn once here, dimly, and simply stays on screen. Selection and hover
-    // still paint a brighter amplified trail on top via trailGroup; this layer
-    // is the resting state underneath it.
-    //
-    // The one time a baseline is removed is playback: while a journey is
-    // actively tracing, its own flat line would sit under the animation and give
-    // away the whole route, so that ticker's baseline hides and the traced trail
-    // is the only thing drawing. Every OTHER ticker's baseline stays up.
-    const basePathGroup = new THREE.Group()
-    group.add(basePathGroup)
-    const basePathByTicker = new Map<string, THREE.Line>()
-    rows.forEach(row => {
-      // amplify=false: the journey at its true position in the cube. The
-      // amplified (outside-rails) variant is the selection inspection lens and
-      // would misplace a resting path.
-      const basePoints = displayPathVectors(row, false)
-      if (basePoints.length < 2) return
-      const line = new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints(basePoints),
-        new THREE.LineBasicMaterial({
-          color: pathColorValue(row.path_color),
-          transparent: true,
-          opacity: 0.3,
-          depthWrite: false,   // dozens of dim paths shouldn't z-fight the dots
-        }),
-      )
-      line.userData.ticker = row.ticker
-      basePathGroup.add(line)
-      basePathByTicker.set(row.ticker, line)
-    })
-    // '' restores every baseline. Called with the playing ticker while playback
-    // is running, and with '' the moment it stops.
-    const setPlaybackTicker = (ticker: string) => {
-      basePathByTicker.forEach((line, key) => { line.visible = key !== ticker })
-    }
+    // Keep the resting map clean. Individual journeys are drawn on hover,
+    // selection, or playback only; always-on full-field path baselines created
+    // too much visual noise behind the active green/red trail.
+    const setPlaybackTicker = (_ticker: string) => {}
     let hoveredMesh: THREE.Mesh | null = null
     let hoveredTicker = ''
     let pointerDownX = 0
@@ -1486,9 +1451,6 @@ function ThreeDecisionMap({
         applySelectionStyle()
         frameTickerPath('')
       },
-      // Only the emphasis trail is cleared above; the dim baselines persist, so
-      // deselecting returns the map to the full field of paths rather than to
-      // an empty cube.
       setPlaybackTicker,
     }
     applySelectionStyle()
@@ -1517,13 +1479,6 @@ function ThreeDecisionMap({
       try {
         trailApiRef.current = null
         clearTrailChildren()
-        // Baselines are built once per scene and never go through
-        // clearTrailChildren, so they need their own teardown.
-        basePathByTicker.clear()
-        while (basePathGroup.children.length) {
-          const child = basePathGroup.children.pop()
-          if (child) disposeObject(child)
-        }
         sphereGeometry.dispose()
         haloGeometry.dispose()
         rocketNoseGeometry.dispose()
@@ -1848,6 +1803,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
   const selectTicker = useCallback((ticker: string) => {
     if (!ticker) {
       setSelectedTicker('')
+      setHoveredTicker('')
       setPlaybackProgress(null)
       setIsPlayingJourney(false)
       setZoom(1)
@@ -1860,7 +1816,14 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
   }, [rows])
 
   const resetJourney = () => {
-    setSelectedTicker('')
+    if (!singleTickerMode) {
+      setTickerQuery('')
+      setSearchedTicker('')
+      setSelectedTicker('')
+    } else {
+      setSelectedTicker(focusTicker)
+    }
+    setHoveredTicker('')
     setPlaybackProgress(null)
     setIsPlayingJourney(false)
     setZoom(1)
@@ -2241,7 +2204,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
             </Control>
             <button
               className="w-full rounded border border-border bg-bg px-2 py-1 text-xs text-neutral hover:text-white"
-              onClick={() => { setZoom(1); setResetKey(v => v + 1) }}
+              onClick={resetJourney}
             >
               Reset View
             </button>
