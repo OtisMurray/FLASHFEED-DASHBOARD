@@ -451,9 +451,6 @@ export function ScreenerPage() {
     .filter(row => quoteIsCurrent(row) && Number(row.change_pct || 0) > 0)
     .sort((a, b) => Number(b.change_pct || 0) - Number(a.change_pct || 0))
     .slice(0, 4)
-  const professorTop5 = viewMode === 'high_conviction_next_day'
-    ? [...filtered].filter(r => Boolean((r as any).professor_sendable)).slice(0, 5)
-    : []
   const predictionDiagnostics = predictionViewActive
     ? {
       backend_count: data?.diagnostics?.backend_count ?? data?.count ?? 0,
@@ -664,42 +661,6 @@ export function ScreenerPage() {
             ))}
           </div>
         </section>
-
-        {viewMode === 'high_conviction_next_day' && (
-          <section className="bg-surface border border-border rounded-lg overflow-hidden">
-            <div className="px-3 py-2 border-b border-border flex items-center justify-between">
-              <span className="text-xs uppercase text-neutral font-medium">Professor Top 5</span>
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-neutral">Sendable picks</span>
-                <button
-                  className="text-[10px] bg-accent px-2 py-1 rounded text-black font-semibold"
-                  onClick={() => {
-                    try {
-                      const list = professorTop5.map(r => r.ticker).join(', ')
-                      navigator.clipboard.writeText(list)
-                    } catch (e) {}
-                  }}
-                >Copy</button>
-              </div>
-            </div>
-            <div className="p-3">
-              {professorTop5.length ? professorTop5.map(r => (
-                <div key={r.ticker} className="flex items-center justify-between mb-2">
-                  <div>
-                    <div className="font-mono text-accent font-semibold">{r.ticker}</div>
-                    <div className="text-[11px] text-neutral">{r.company ?? r.sector}</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="font-mono text-emerald-400">{r.predicted_return != null ? `${r.predicted_return > 0 ? '+' : ''}${Number(r.predicted_return).toFixed(2)}%` : '—'}</div>
-                    <div className="text-[11px] text-neutral">Score: {Number(r.final_prediction_score ?? 0).toFixed(0)}</div>
-                  </div>
-                </div>
-              )) : (
-                <div className="text-sm text-neutral">No professor-sendable picks available. A fallback list may exist.</div>
-              )}
-            </div>
-          </section>
-        )}
 
         <section className="bg-surface border border-border rounded-lg overflow-hidden">
           <div className="px-3 py-2 border-b border-border flex items-center justify-between">

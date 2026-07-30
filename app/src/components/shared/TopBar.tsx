@@ -38,15 +38,14 @@ const NAV = [
   { href: '/squeeze-screener', label: 'Short Squeeze' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
+]
+const MORE_NAV = [
   { href: '/v11-screener', label: 'v11 Profile (test)' },
   { href: '/prediction-audit', label: 'Prediction Audit' },
   { href: '/system-health', label: 'System Health' },
-  { href: '/settings', label: 'Settings' },
 ]
-// The split is order-dependent: all live workflows through Correlation stay in
-// the compact desktop row; experimental and administrative views live in More.
-const PRIMARY_NAV = NAV.slice(0, 13)
-const MORE_NAV = NAV.slice(13)
+const PRIMARY_NAV = NAV
+const MOBILE_NAV = [...NAV, ...MORE_NAV]
 const ROUTE_PREFETCHERS: Record<string, () => Promise<unknown>> = {
   '/overview': () => import('@/pages/OverviewPage'),
   '/ai': () => import('@/pages/AIPage'),
@@ -699,6 +698,21 @@ export function TopBar() {
                 </div>
               )}
             </div>
+            <NavLink
+              to="/settings"
+              onMouseEnter={() => prefetchRoute('/settings')}
+              onFocus={() => prefetchRoute('/settings')}
+              aria-label="Settings"
+              title="Settings"
+              className={({ isActive }) => clsx(
+                'inline-flex h-[30px] w-[34px] items-center justify-center rounded border text-sm font-semibold transition-colors 2xl:h-[34px] 2xl:w-[38px]',
+                isActive
+                  ? 'border-accent/50 bg-accent/15 text-white'
+                  : 'border-border text-neutral hover:border-accent hover:text-white'
+              )}
+            >
+              ⚙
+            </NavLink>
           </div>
 
           <div className="hidden min-w-0 items-center justify-end gap-2 2xl:flex">
@@ -708,7 +722,7 @@ export function TopBar() {
         </div>
 
         <nav className="flex items-center gap-1 overflow-x-auto px-3 pb-2 md:px-4 xl:hidden">
-          {NAV.map(({ href, label }) => {
+          {MOBILE_NAV.map(({ href, label }) => {
             const active = pathname === href || pathname.startsWith(`${href}/`)
             return (
               <NavLink
