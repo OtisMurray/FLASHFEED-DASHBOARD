@@ -19,7 +19,7 @@ const NAV = [
   { href: '/screener', label: 'Screener' },
   // Long-Term remains a primary workflow, but desktop sizing below is compact
   // enough that it no longer forces the navigation into horizontal scrolling.
-  { href: '/long-term-fundamentals', label: 'Long-Term Fundamentals' },
+  { href: '/long-term-fundamentals', label: 'Long Term' },
   { href: '/decision-map', label: 'Decision Map' },
   { href: '/social', label: 'Social' },
   { href: '/charts', label: 'Charts' },
