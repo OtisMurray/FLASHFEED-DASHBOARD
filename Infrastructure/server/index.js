@@ -44,6 +44,7 @@ import {
   supersedeMissingTrades,
   POSITION_HISTORY_COLLECTION,
 } from './lib/positionHistory.js'
+import { POSITION_POLICY_ID, positionTierFor } from './lib/positionPolicy.js'
 import { normalizeRollingWindowMinutes, recordIsInsideRollingWindow, sliceCandlesToRollingWindow } from './lib/rollingWindow.js'
 import * as predictionThresholdPolicy from './lib/predictionThresholdPolicy.js'
 import { loadAiPositionCandidates } from './lib/aiPositionCandidates.js'
@@ -5358,6 +5359,10 @@ async function runPositionHistoryCycle(reason = 'scheduled') {
     if (tickers.length) {
       const companies = new Map(candidates.map(candidate => [candidate.row.ticker, candidate.row.company || null]))
       const candidateMetadata = new Map(candidates.map(candidate => [candidate.row.ticker, candidate.meta]))
+      // Tier per candidate, resolved by the policy module (which delegates to
+      // predictionMarketCapTier). Recorded as provenance on each row; it does
+      // not select parameters today because every tier is seeded identically.
+      const tiers = new Map(candidates.map(candidate => [candidate.row.ticker, positionTierFor(candidate.row)]))
       const results = await fetchPositionHistoryBatch(tickers)
       // The sim decides which session it simulated (it walks back up to 5 days
       // for the latest one with bars), so "today" for finalization comes from
@@ -5365,9 +5370,11 @@ async function runPositionHistoryCycle(reason = 'scheduled') {
       const flattened = rowsFromPositionsBatch(results, {
         companies,
         candidateMetadata,
+        tiers,
         threshold: POSITION_HISTORY_THRESHOLD,
         stopPct: POSITION_HISTORY_STOP_PCT,
         corrExitThreshold: null,
+        policyId: POSITION_POLICY_ID,
         observedAt,
         collector: 'position_history_ai_scheduler_v1',
       })
@@ -5394,6 +5401,7 @@ async function runPositionHistoryCycle(reason = 'scheduled') {
           date: result.date,
           threshold: POSITION_HISTORY_THRESHOLD,
           stopPct: POSITION_HISTORY_STOP_PCT,
+          policyId: POSITION_POLICY_ID,
           keepEpochs: keepByKey.get(`${ticker}|${result.date}`) || [],
           now: observedAt,
         })

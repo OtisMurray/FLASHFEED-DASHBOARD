@@ -8,12 +8,20 @@
 // path, which is what this module is.
 //
 // WHAT A ROW MEANS: one simulated trade, identified by
-//   ${ticker}|${date}|${entry_epoch}|${threshold}|${stopPct}
+//   ${ticker}|${date}|${entry_epoch}|${threshold}|${stopPct}[|${policyId}]
 // The parameters are IN THE KEY on purpose. The trade set is a function of the
 // parameters — a different entry threshold produces different entries — so
 // "the history" only exists relative to one parameter set. Every row also
 // stamps threshold/stop_pct/corr_exit_threshold as fields, because a row whose
 // active parameters are unknown cannot be interpreted after the fact.
+//
+// The threshold/stop in the key are the EFFECTIVE values for that row, resolved
+// per market-cap tier by lib/positionPolicy.js. That keeps distinguishing tiers
+// automatically once their values diverge. The policy id disambiguates the
+// remaining case — two policies that happen to assign a tier the same two
+// numbers — and is appended only for a non-baseline policy so that introducing
+// the policy layer at today's uniform values leaves every existing _id
+// unchanged. See tradeKey.
 //
 // WHY WRITE-ONCE-THEN-UPDATE IS SAFE: entries are causal. The sim enters on a
 // rolling correlation crossing up through the threshold, using only data at or
@@ -27,6 +35,8 @@
 // CONFIDENTIALITY BOUNDARY: like the screeners this serves, nothing here may
 // read from or import anything under ~/dev/research-students. This module is
 // pure bookkeeping over the chart-service's own clean reimplementation.
+
+import { BASELINE_POSITION_POLICY_ID } from './positionPolicy.js'
 
 const TICKER_RE = /^[A-Z][A-Z0-9.-]{0,7}$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -59,12 +69,25 @@ function formatParam(value, decimals) {
   return n == null ? 'na' : n.toFixed(decimals)
 }
 
-export function tradeKey({ ticker, date, entry_epoch: entryEpoch, threshold, stopPct } = {}) {
+// The parameter set a row was simulated under, as an id rather than two loose
+// numbers. Appended to the key ONLY for a non-baseline policy: seeding the
+// baseline must reproduce the pre-existing key byte for byte, or every stored
+// row orphans and today's open positions re-insert as duplicates under new ids.
+// Once tier values actually diverge (Phase 2) the suffix separates the
+// histories cleanly, and the effective per-tier threshold/stop already in the
+// key keep distinguishing tiers within a policy.
+function policyKeySuffix(policyId) {
+  const id = String(policyId || '').trim()
+  return !id || id === BASELINE_POSITION_POLICY_ID ? '' : `|${id}`
+}
+
+export function tradeKey({ ticker, date, entry_epoch: entryEpoch, threshold, stopPct, policyId } = {}) {
   const t = String(ticker || '').trim().toUpperCase()
   const d = String(date || '').trim()
   const epoch = finiteNumber(entryEpoch)
   if (!TICKER_RE.test(t) || !DATE_RE.test(d) || epoch == null || epoch <= 0) return null
   return `${t}|${d}|${Math.floor(epoch)}|${formatParam(threshold, 4)}|${formatParam(stopPct, 2)}`
+    + policyKeySuffix(policyId)
 }
 
 // A trade is FINAL when it can never change again:
@@ -112,7 +135,8 @@ export function normalizeTrade(trade = {}, context = {}) {
   const stopPct = finiteNumber(context.stopPct)
   if (threshold == null || stopPct == null) return null
 
-  const _id = tradeKey({ ticker, date, entry_epoch: entryEpoch, threshold, stopPct })
+  const policyId = context.policyId || BASELINE_POSITION_POLICY_ID
+  const _id = tradeKey({ ticker, date, entry_epoch: entryEpoch, threshold, stopPct, policyId })
   if (!_id) return null
 
   const exitReason = String(trade.exit_reason || (trade.status === 'Stopped Out' ? 'price_trailing_stop' : 'session_end'))
@@ -148,6 +172,14 @@ export function normalizeTrade(trade = {}, context = {}) {
     threshold,
     stop_pct: stopPct,
     corr_exit_threshold: finiteNumber(context.corrExitThreshold),
+
+    // Which parameter SET produced those two numbers, and which tier the row
+    // resolved to. Both are provenance, not inputs: the sim already ran at the
+    // threshold/stop above. Stored so that once tier values diverge, a row can
+    // still be attributed to the policy that generated it. Rows written before
+    // this change simply lack the fields.
+    position_policy_id: policyId,
+    market_cap_tier: context.marketCapTier || null,
 
     // Entry: immutable once observed.
     entry_epoch: Math.floor(entryEpoch),
@@ -257,6 +289,7 @@ export function rowsFromPositionsBatch(results = {}, context = {}) {
   const coverage = { ok: 0, warming: 0, no_bars: 0, error: 0, other: 0 }
   const companies = context.companies instanceof Map ? context.companies : new Map()
   const candidateMetadata = context.candidateMetadata instanceof Map ? context.candidateMetadata : new Map()
+  const tiers = context.tiers instanceof Map ? context.tiers : new Map()
   const observedAt = context.observedAt instanceof Date ? context.observedAt : new Date()
 
   for (const [rawTicker, result] of Object.entries(results || {})) {
@@ -276,6 +309,8 @@ export function rowsFromPositionsBatch(results = {}, context = {}) {
         threshold: context.threshold,
         stopPct: context.stopPct,
         corrExitThreshold: context.corrExitThreshold,
+        policyId: context.policyId,
+        marketCapTier: tiers.get(ticker) || null,
         corrStatus: status,
         chartServiceDate: result.date,
         observedAt,
@@ -378,17 +413,25 @@ export async function persistPositionSnapshot(db, rows = [], { today, now } = {}
  * (ticker, date, parameters) just simulated is touched, so past sessions — which
  * the scheduler never re-simulates — are never at risk.
  */
-export async function supersedeMissingTrades(db, { ticker, date, threshold, stopPct, keepEpochs = [], now } = {}) {
+export async function supersedeMissingTrades(db, { ticker, date, threshold, stopPct, policyId, keepEpochs = [], now } = {}) {
   if (!db) return 0
   const t = String(ticker || '').trim().toUpperCase()
   if (!TICKER_RE.test(t) || !DATE_RE.test(String(date || ''))) return 0
   const keep = keepEpochs.map(epoch => Math.floor(Number(epoch))).filter(Number.isFinite)
+  // Scoped to the policy that just ran, so one policy can never withdraw
+  // another's rows. Omitted for the baseline exactly as the key suffix is:
+  // existing rows predate the field, and matching on it would make them
+  // invisible to reconciliation — which is the frontier-drift bug returning.
+  const policyScope = policyId && policyId !== BASELINE_POSITION_POLICY_ID
+    ? { position_policy_id: policyId }
+    : {}
   const result = await db.collection(POSITION_HISTORY_COLLECTION).updateMany(
     {
       ticker: t,
       date,
       threshold,
       stop_pct: stopPct,
+      ...policyScope,
       entry_epoch: { $nin: keep },
       superseded: { $ne: true },
     },

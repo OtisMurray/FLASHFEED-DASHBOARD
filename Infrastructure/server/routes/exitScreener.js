@@ -3,6 +3,7 @@ import mongoose from 'mongoose'
 import Screener from '../models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow, loadAdaptiveSocialStatsForRows } from './screener.js'
 import { CLEAN_UNIVERSE_MONGO_FILTER } from '../lib/cleanUniverse.js'
+import { POSITION_PARAM_LIMITS } from '../lib/positionPolicy.js'
 
 // GET /api/exit-screener?stopPct=5&limit=30
 //
@@ -69,8 +70,12 @@ async function fetchPositionsBatch(tickers, stopPct, threshold, corrExitThreshol
 
 router.get('/', async (req, res) => {
   try {
-    const stopPct = clamp(req.query.stopPct ?? 5, 5, 30)
-    const threshold = clamp(req.query.threshold ?? DEFAULT_ENTRY_THRESHOLD, 0.01, 1)
+    // Shared limits (see POSITION_PARAM_LIMITS) — this route floored the stop
+    // at 5% while Positions floored it at 1%.
+    const stopPct = clamp(req.query.stopPct ?? 5,
+      POSITION_PARAM_LIMITS.stopPctMin, POSITION_PARAM_LIMITS.stopPctMax)
+    const threshold = clamp(req.query.threshold ?? DEFAULT_ENTRY_THRESHOLD,
+      POSITION_PARAM_LIMITS.thresholdMin, POSITION_PARAM_LIMITS.thresholdMax)
     const corrExitRaw = req.query.corrExit ?? req.query.corr_exit_threshold
     const corrExitThreshold = corrExitRaw == null || corrExitRaw === ''
       ? DEFAULT_CORR_EXIT_THRESHOLD

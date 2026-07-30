@@ -1712,14 +1712,12 @@ function withPredictionScorecard(row = {}) {
   }
 }
 
+// Delegates, exactly as predictionMarketCapTier below already does. This was a
+// verbatim second copy of the policy module's cutoffs — identical today, but a
+// second set of market-cap boundaries is precisely how the codebase ends up
+// with tiers that quietly disagree.
 function marketCapBucket(marketCap) {
-  const cap = Number(marketCap || 0)
-  if (cap >= 200e9) return 'Mega'
-  if (cap >= 10e9) return 'Large'
-  if (cap >= 2e9) return 'Mid'
-  if (cap >= 300e6) return 'Small'
-  if (cap > 0) return 'Micro'
-  return 'Unknown'
+  return predictionThresholdPolicy.marketCapBucket(marketCap)
 }
 
 function predictionMarketCapTier(row = {}) {

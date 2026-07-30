@@ -5,6 +5,11 @@ import { normalizeScreenerRow, isCleanListedUsRow } from './screener.js'
 import { CLEAN_UNIVERSE_MONGO_FILTER } from '../lib/cleanUniverse.js'
 import { classifyRow, POSITION_HISTORY_COLLECTION } from '../lib/positionHistory.js'
 import { loadAiPositionCandidates } from '../lib/aiPositionCandidates.js'
+import {
+  POSITION_PARAM_LIMITS,
+  positionPolicySnapshot,
+  positionTierFor,
+} from '../lib/positionPolicy.js'
 
 // GET /api/position-screener?threshold=0.1&stopPct=5&limit=30&historyDays=14
 //
@@ -124,8 +129,13 @@ async function fetchChartService(path, params) {
 
 router.get('/', async (req, res) => {
   try {
-    const threshold = clamp(req.query.threshold ?? CANONICAL_THRESHOLD, 0.05, 1)
-    const stopPct = clamp(req.query.stopPct ?? CANONICAL_STOP_PCT, 1, 30)
+    // Clamp limits are shared with the entry/exit screeners (see
+    // POSITION_PARAM_LIMITS) so the same query string cannot mean different
+    // things depending on which route answers it.
+    const threshold = clamp(req.query.threshold ?? CANONICAL_THRESHOLD,
+      POSITION_PARAM_LIMITS.thresholdMin, POSITION_PARAM_LIMITS.thresholdMax)
+    const stopPct = clamp(req.query.stopPct ?? CANONICAL_STOP_PCT,
+      POSITION_PARAM_LIMITS.stopPctMin, POSITION_PARAM_LIMITS.stopPctMax)
     const limit = Math.round(clamp(req.query.limit ?? DEFAULT_LIMIT, 1, MAX_LIMIT))
     const historyDays = Math.round(clamp(req.query.historyDays ?? DEFAULT_HISTORY_DAYS, 0, 90))
     const today = todayKeyET()
@@ -252,6 +262,11 @@ router.get('/', async (req, res) => {
     const rows = []
     const coverage = { ok: 0, warming: 0, no_bars: 0, error: 0, other: 0 }
     for (const { row, meta } of candidates) {
+      // Tier comes from predictionThresholdPolicy via positionTierFor — this
+      // route defines no market-cap cutoffs of its own. Today every tier runs
+      // identical parameters, so this is provenance only; it is what a later
+      // tier-specific policy would key off.
+      const marketCapTier = positionTierFor(row)
       const result = positions[row.ticker]
       const status = String(result?.status || (chartServiceOk ? 'other' : 'error'))
       if (status in coverage) coverage[status] += 1
@@ -271,6 +286,7 @@ router.get('/', async (req, res) => {
           date: result?.date ?? null,
           price: row.price ?? null,
           price_density_corr: corrRow?.corr ?? null,
+          market_cap_tier: marketCapTier,
           threshold,
           stop_pct: stopPct,
           ...meta,
@@ -292,6 +308,7 @@ router.get('/', async (req, res) => {
           price_density_corr: corrRow?.corr ?? null,
           msg_density_rolling: corrRow?.msg_density_rolling ?? null,
           session_messages: result.messages ?? corrRow?.messages ?? null,
+          market_cap_tier: marketCapTier,
           threshold,
           stop_pct: stopPct,
           ...meta,
@@ -336,6 +353,7 @@ router.get('/', async (req, res) => {
             ? round(((refPrice - trade.entry_price) / trade.entry_price) * 100, 2)
             : null,
           pnl_is_realized: riskExit,
+          market_cap_tier: marketCapTier,
           threshold,
           stop_pct: stopPct,
           ...meta,
@@ -406,6 +424,10 @@ router.get('/', async (req, res) => {
           // canonical ones, and may differ from what the caller asked for.
           threshold: doc.threshold,
           stop_pct: doc.stop_pct,
+          // null for rows recorded before the policy layer existed; those
+          // predate the field rather than being untiered.
+          market_cap_tier: doc.market_cap_tier ?? null,
+          position_policy_id: doc.position_policy_id ?? null,
           snapshots: doc.snapshots ?? null,
           recorded_at: doc.updated_at ?? null,
           candidate_source: doc.candidate_source || 'recorded_ai_suggestion',
@@ -460,6 +482,9 @@ router.get('/', async (req, res) => {
       corrExitThreshold: null,
       canonical: { threshold: CANONICAL_THRESHOLD, stop_pct: CANONICAL_STOP_PCT },
       is_canonical: isCanonical,
+      // Tier-aware plumbing, seeded uniformly. Surfaced so the page can state
+      // that no tier is tuned rather than implying tuning that has not happened.
+      position_policy: positionPolicySnapshot(),
       corr_window_minutes: CORR_WINDOW_MINUTES,
       chart_service_ok: chartServiceOk,
       tickers_scanned: candidates.length,

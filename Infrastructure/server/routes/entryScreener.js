@@ -3,6 +3,7 @@ import mongoose from 'mongoose'
 import Screener from '../models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow, loadAdaptiveSocialStatsForRows } from './screener.js'
 import { CLEAN_UNIVERSE_MONGO_FILTER } from '../lib/cleanUniverse.js'
+import { POSITION_PARAM_LIMITS } from '../lib/positionPolicy.js'
 
 // GET /api/entry-screener?threshold=0.5&limit=30
 //
@@ -63,7 +64,11 @@ async function fetchCorrBatch(tickers) {
 
 router.get('/', async (req, res) => {
   try {
-    const threshold = clamp(req.query.threshold ?? 0.1, 0.1, 1)
+    // Shared limits (see POSITION_PARAM_LIMITS): this route used to floor the
+    // threshold at 0.1 while Positions floored it at 0.05 and Exit at 0.01, so
+    // one query string meant three different things.
+    const threshold = clamp(req.query.threshold ?? 0.1,
+      POSITION_PARAM_LIMITS.thresholdMin, POSITION_PARAM_LIMITS.thresholdMax)
     const limit = Math.round(clamp(req.query.limit ?? DEFAULT_LIMIT, 1, MAX_LIMIT))
 
     // 1. Same clean listed-US universe as /api/screener
