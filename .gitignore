@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 **/node_modules/
+# no trailing slash: also catches a node_modules SYMLINK, which the
+# directory-only pattern above lets through (this was committed twice)
+**/node_modules
 *.node
 
 # Environment and secrets
