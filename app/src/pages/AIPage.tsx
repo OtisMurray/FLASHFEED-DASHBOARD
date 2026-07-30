@@ -372,7 +372,7 @@ export function AIPage() {
                 <button
                   key={item.value}
                   onClick={() => setSocialWindow(item.value)}
-                  className={clsx('px-2 py-1 text-xs transition-colors', socialWindow === item.value ? 'bg-accent text-white' : 'bg-bg text-neutral hover:text-white')}
+                  className={clsx('px-2 py-1 text-xs transition-colors', socialWindow === item.value ? 'bg-sky-700 text-white' : 'bg-bg text-neutral hover:text-white')}
                 >
                   {item.label}
                 </button>
@@ -424,7 +424,7 @@ export function AIPage() {
                 <button
                   key={item}
                   onClick={() => setDirection(item)}
-                  className={clsx('px-2.5 py-1 text-xs capitalize transition-colors', direction === item ? 'bg-accent text-white' : 'bg-bg text-neutral hover:text-white')}
+                  className={clsx('px-2.5 py-1 text-xs capitalize transition-colors', direction === item ? 'bg-sky-700 text-white' : 'bg-bg text-neutral hover:text-white')}
                 >
                   {item}
                 </button>
@@ -490,7 +490,7 @@ function Segment({ label, value, options, onChange }: {
           <button
             key={item}
             onClick={() => onChange(item)}
-            className={clsx('px-2 py-1 text-xs transition-colors', value === item ? 'bg-accent text-white' : 'bg-bg text-neutral hover:text-white')}
+            className={clsx('px-2 py-1 text-xs transition-colors', value === item ? 'bg-sky-700 text-white' : 'bg-bg text-neutral hover:text-white')}
           >
             {item}
           </button>

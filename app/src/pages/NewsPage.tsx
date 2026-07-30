@@ -217,7 +217,7 @@ export function NewsPage() {
                     onClick={() => setPage(pageNum)}
                     className={`w-7 h-7 text-xs rounded transition-colors ${
                       page === pageNum
-                        ? 'bg-accent text-white'
+                        ? 'bg-sky-700 text-white'
                         : 'bg-surface border border-border text-neutral hover:text-white'
                     }`}
                   >

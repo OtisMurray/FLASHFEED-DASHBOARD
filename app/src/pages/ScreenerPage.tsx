@@ -918,7 +918,7 @@ export function ScreenerPage() {
               else pn = page - 2 + i
               return (
                 <button key={pn} onClick={() => setPage(pn)}
-                  className={`w-6 h-6 text-xs rounded ${page === pn ? 'bg-accent text-white' : 'bg-surface border border-border text-neutral hover:text-white'}`}>
+                  className={`w-6 h-6 text-xs rounded ${page === pn ? 'bg-sky-700 text-white' : 'bg-surface border border-border text-neutral hover:text-white'}`}>
                   {pn + 1}
                 </button>
               )

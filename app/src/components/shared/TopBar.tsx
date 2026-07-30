@@ -532,7 +532,7 @@ export function TopBar() {
               onClick={doFetch}
               disabled={fetching || cooldownRemaining > 0}
               title={cooldownRemaining > 0 ? `Fetch available in ${cooldownRemaining}s` : `${fetchMode === 'fast' ? 'Fast trader refresh' : 'Full source refresh'}`}
-              className="min-w-[5.75rem] px-2.5 py-1.5 bg-accent text-white text-[11px] font-medium rounded hover:bg-sky-400 disabled:opacity-50 transition-colors whitespace-nowrap 2xl:min-w-[6.75rem] 2xl:px-3 2xl:text-xs"
+              className="min-w-[5.75rem] px-2.5 py-1.5 bg-sky-700 text-white text-[11px] font-medium rounded hover:bg-sky-800 disabled:opacity-50 transition-colors whitespace-nowrap 2xl:min-w-[6.75rem] 2xl:px-3 2xl:text-xs"
             >
               {fetching ? `Fetching ${fetchElapsed}s...` : cooldownRemaining > 0 ? `Fetch ${cooldownRemaining}s` : 'Run Now'}
             </button>
@@ -557,7 +557,7 @@ export function TopBar() {
                           value={fetchMode}
                           onChange={e => setFetchMode(e.target.value as 'fast' | 'full')}
                           disabled={fetching || watching}
-                          className="mt-1 w-full bg-bg border border-border text-xs text-neutral rounded px-2 py-1.5 focus:outline-none disabled:opacity-50"
+                          className="mt-1 w-full bg-bg border border-border text-xs text-neutral rounded px-2 py-1.5 focus:outline-none focus:border-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[rgba(14,165,233,0.6)] disabled:opacity-50"
                           title="Fast refresh is optimized for top movers. Full refresh runs every broader source sweep."
                         >
                           <option value="fast">Fast</option>
@@ -570,7 +570,7 @@ export function TopBar() {
                           value={watchInterval}
                           onChange={e => setWatchInterval(e.target.value)}
                           disabled={watching}
-                          className="mt-1 w-full bg-bg border border-border text-xs text-neutral rounded px-2 py-1.5 focus:outline-none disabled:opacity-50"
+                          className="mt-1 w-full bg-bg border border-border text-xs text-neutral rounded px-2 py-1.5 focus:outline-none focus:border-accent focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[rgba(14,165,233,0.6)] disabled:opacity-50"
                         >
                           <option value="60">1m</option>
                           <option value="120">2m</option>

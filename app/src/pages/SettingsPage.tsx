@@ -258,7 +258,7 @@ export function SettingsPage() {
           </div>
           <button
             onClick={saveConnections}
-            className="bg-accent text-white rounded px-4 py-2 text-sm"
+            className="bg-sky-700 text-white rounded px-4 py-2 text-sm"
           >
             Save
           </button>
@@ -319,7 +319,7 @@ export function SettingsPage() {
           <button
             onClick={addKeyword}
             disabled={!newKeyword.trim()}
-            className="bg-accent text-white rounded px-4 py-2 text-sm disabled:opacity-40"
+            className="bg-sky-700 text-white rounded px-4 py-2 text-sm disabled:opacity-40"
           >
             Add Keyword
           </button>
@@ -383,7 +383,7 @@ export function SettingsPage() {
           <button
             onClick={addSource}
             disabled={!newSourceName.trim() || !newSourceUrl.trim()}
-            className="bg-accent text-white rounded px-4 py-2 text-sm disabled:opacity-40"
+            className="bg-sky-700 text-white rounded px-4 py-2 text-sm disabled:opacity-40"
           >
             Add Source
           </button>

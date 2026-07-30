@@ -464,7 +464,7 @@ export function ChartsPage() {
         <button
           onClick={load}
           disabled={!input.trim()}
-          className="px-4 py-2 bg-accent text-white text-sm font-medium rounded hover:bg-sky-400 disabled:opacity-50 transition-colors"
+          className="px-4 py-2 bg-sky-700 text-white text-sm font-medium rounded hover:bg-sky-800 disabled:opacity-50 transition-colors"
         >
           {loading ? 'Loading…' : 'Load Chart'}
         </button>
@@ -473,7 +473,7 @@ export function ChartsPage() {
         <div className="flex items-stretch rounded overflow-hidden border border-border">
           {WINDOWS.map(w => (
             <button key={w.key} onClick={() => setWin(w.key)}
-              className={`px-3 py-1.5 text-xs transition-colors ${win === w.key ? 'bg-accent text-white' : 'bg-surface text-neutral hover:text-white'}`}>
+              className={`px-3 py-1.5 text-xs transition-colors ${win === w.key ? 'bg-sky-700 text-white' : 'bg-surface text-neutral hover:text-white'}`}>
               {w.label}
             </button>
           ))}
@@ -548,7 +548,7 @@ export function ChartsPage() {
                       {TIMEFRAMES.map(t => (
                         <button key={t.min} onClick={() => setTf(t.min)}
                           className={clsx('px-2.5 py-1 transition-colors',
-                            tf === t.min ? 'bg-accent text-white' : 'bg-surface text-neutral hover:text-white')}>
+                            tf === t.min ? 'bg-sky-700 text-white' : 'bg-surface text-neutral hover:text-white')}>
                           {t.label}
                         </button>
                       ))}

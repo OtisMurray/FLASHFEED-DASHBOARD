@@ -72,7 +72,7 @@ export function ApiHealthGate({ children }: { children: React.ReactNode }) {
             </div>
             <button
               onClick={() => setAttempt(value => value + 1)}
-              className="rounded bg-accent px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-400"
+              className="rounded bg-sky-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-sky-800"
             >
               Retry Now
             </button>

@@ -375,7 +375,7 @@ export function CVDPage() {
         <datalist id="cvd-ticker-options">
           {tickerOptions.map(row => <option key={row.ticker} value={row.ticker}>{row.company || row.ticker}</option>)}
         </datalist>
-        <button onClick={load} className="h-10 rounded bg-accent px-4 text-sm font-semibold text-white hover:brightness-110">Load CVD</button>
+        <button onClick={load} className="h-10 rounded bg-sky-700 px-4 text-sm font-semibold text-white hover:bg-sky-800">Load CVD</button>
         <label className="flex h-9 items-center gap-2 rounded border border-border bg-bg px-2 text-[10px] font-semibold uppercase text-slate-400">
           Analysis
           <select

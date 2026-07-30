@@ -24,7 +24,7 @@ export function RunButton({ onComplete }: Props) {
     <button
         onClick={run}
         disabled={loading}
-        className="px-4 py-2 bg-accent text-white text-sm font-medium rounded hover:bg-sky-400 disabled:opacity-50 transition-colors"
+        className="px-4 py-2 bg-sky-700 text-white text-sm font-medium rounded hover:bg-sky-800 disabled:opacity-50 transition-colors"
       >
         {loading ? 'Running...' : 'Refresh Alignment Signals'}
       </button>
