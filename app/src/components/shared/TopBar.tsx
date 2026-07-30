@@ -33,19 +33,20 @@ const NAV = [
   // neither predecessor appears in the nav any more; /entry-screener and
   // /exit-screener now redirect here.
   { href: '/positions', label: 'Positions' },
-  // Sits with Positions rather than in More: it is a live market-facing screener,
-  // whereas v11 is an explicitly experimental postmortem probe.
+  // Sits with Positions rather than diagnostics: it is a live market-facing
+  // screener, whereas v11 is an explicitly experimental postmortem probe.
   { href: '/squeeze-screener', label: 'Short Squeeze' },
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
 ]
-const MORE_NAV = [
+const SETTINGS_NAV = [
+  { href: '/settings', label: 'Settings' },
   { href: '/v11-screener', label: 'v11 Profile (test)' },
   { href: '/prediction-audit', label: 'Prediction Audit' },
   { href: '/system-health', label: 'System Health' },
 ]
 const PRIMARY_NAV = NAV
-const MOBILE_NAV = [...NAV, ...MORE_NAV]
+const MOBILE_NAV = NAV
 const ROUTE_PREFETCHERS: Record<string, () => Promise<unknown>> = {
   '/overview': () => import('@/pages/OverviewPage'),
   '/ai': () => import('@/pages/AIPage'),
@@ -178,9 +179,9 @@ export function TopBar() {
   const [showSentiment, setShowSentiment] = useState(false)
   const [showStorage, setShowStorage] = useState(false)
   const [showControls, setShowControls] = useState(false)
-  const [showMoreNav, setShowMoreNav] = useState(false)
-  const moreNavButtonRef = useRef<HTMLButtonElement | null>(null)
-  const [moreNavPosition, setMoreNavPosition] = useState<{ top: number; left: number } | null>(null)
+  const [showSettingsNav, setShowSettingsNav] = useState(false)
+  const settingsNavButtonRef = useRef<HTMLButtonElement | null>(null)
+  const [settingsNavPosition, setSettingsNavPosition] = useState<{ top: number; left: number } | null>(null)
   const [lastAutoResult, setLastAutoResult] = useState<{ new?: number; updated?: number; ms?: number; at: number } | null>(null)
   const [autoStatus, setAutoStatus] = useState<{ text: string; at: number; nextAt?: number | null; running?: boolean; skipped?: boolean; error?: boolean } | null>(null)
   const [autoQueueStartedAt, setAutoQueueStartedAt] = useState<number | null>(null)
@@ -223,21 +224,21 @@ export function TopBar() {
   }, [autoRefreshStatus?.onsite_fetch?.enabled])
 
   useEffect(() => {
-    if (!showMoreNav) return
+    if (!showSettingsNav) return
     const updatePosition = () => {
-      const rect = moreNavButtonRef.current?.getBoundingClientRect()
+      const rect = settingsNavButtonRef.current?.getBoundingClientRect()
       if (!rect) return
-      const menuWidth = 192
-      const left = Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8))
+      const menuWidth = 224
+      const left = Math.max(8, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8))
       const top = Math.max(8, rect.bottom + 8)
-      setMoreNavPosition({ top, left })
+      setSettingsNavPosition({ top, left })
     }
     const closeOnOutsideClick = (event: MouseEvent) => {
       const target = event.target as Node | null
-      if (target && moreNavButtonRef.current?.contains(target)) return
-      const menu = document.getElementById('flashfeed-more-nav-menu')
+      if (target && settingsNavButtonRef.current?.contains(target)) return
+      const menu = document.getElementById('flashfeed-settings-nav-menu')
       if (target && menu?.contains(target)) return
-      setShowMoreNav(false)
+      setShowSettingsNav(false)
     }
     updatePosition()
     window.addEventListener('resize', updatePosition)
@@ -248,7 +249,7 @@ export function TopBar() {
       window.removeEventListener('scroll', updatePosition, true)
       document.removeEventListener('mousedown', closeOnOutsideClick)
     }
-  }, [showMoreNav])
+  }, [showSettingsNav])
 
   const revalidateDashboardData = useCallback(() => {
     mutate(
@@ -462,24 +463,24 @@ export function TopBar() {
   const serverAutoTitle = serverAutoOn
     ? `Backend auto-refresh is ${serverAutoRunning ? 'currently running' : 'enabled'} · refresh lock ${backendRefreshInFlight ? 'active' : 'clear'} · dashboard ${serverAuto.dashboard_present ? 'present' : 'absent'} · next due ${serverAuto.next_due_at || 'waiting'} · market ${autoRefreshStatus?.market?.label || 'unknown'}`
     : 'Backend auto-refresh is disabled'
-  const moreNavMenu = showMoreNav && typeof document !== 'undefined'
+  const settingsNavMenu = showSettingsNav && typeof document !== 'undefined'
     ? createPortal(
       <div
-        id="flashfeed-more-nav-menu"
-        className="fixed z-[1000] w-48 overflow-y-auto rounded-lg border border-border bg-surface p-1 shadow-2xl shadow-black/40"
+        id="flashfeed-settings-nav-menu"
+        className="fixed z-[1000] w-56 overflow-y-auto rounded-lg border border-border bg-surface p-1 shadow-2xl shadow-black/40"
         style={{
-          top: moreNavPosition?.top ?? 56,
-          left: moreNavPosition?.left ?? 0,
-          maxHeight: `calc(100vh - ${(moreNavPosition?.top ?? 56) + 8}px)`,
+          top: settingsNavPosition?.top ?? 56,
+          left: settingsNavPosition?.left ?? 0,
+          maxHeight: `calc(100vh - ${(settingsNavPosition?.top ?? 56) + 8}px)`,
         }}
       >
-        {MORE_NAV.map(({ href, label }) => (
+        {SETTINGS_NAV.map(({ href, label }) => (
           <NavLink
             key={href}
             to={href}
             onMouseEnter={() => prefetchRoute(href)}
             onFocus={() => prefetchRoute(href)}
-            onClick={() => setShowMoreNav(false)}
+            onClick={() => setShowSettingsNav(false)}
             className={({ isActive }) => clsx(
               'block rounded px-3 py-2 text-xs transition-colors',
               isActive ? 'bg-accent/15 text-white' : 'text-neutral hover:bg-bg hover:text-white'
@@ -541,22 +542,6 @@ export function TopBar() {
                 </NavLink>
               )
             })}
-            <div className="relative flex-none">
-              <button
-                ref={moreNavButtonRef}
-                onMouseEnter={() => MORE_NAV.forEach(({ href }) => prefetchRoute(href))}
-                onFocus={() => MORE_NAV.forEach(({ href }) => prefetchRoute(href))}
-                onClick={() => setShowMoreNav(v => !v)}
-                className={clsx(
-                  'whitespace-nowrap rounded-md border px-1.5 py-2 text-[10px] transition-colors 2xl:px-2 2xl:text-[11px]',
-                  MORE_NAV.some(({ href }) => pathname === href || pathname.startsWith(`${href}/`))
-                    ? 'bg-accent/15 border-accent/50 text-white'
-                    : 'border-transparent text-neutral hover:text-white hover:bg-bg/60'
-                )}
-              >
-                More
-              </button>
-            </div>
           </nav>
 
           <div className="ml-auto flex flex-none items-center justify-end gap-1.5">
@@ -698,21 +683,23 @@ export function TopBar() {
                 </div>
               )}
             </div>
-            <NavLink
-              to="/settings"
-              onMouseEnter={() => prefetchRoute('/settings')}
-              onFocus={() => prefetchRoute('/settings')}
+            <button
+              ref={settingsNavButtonRef}
+              type="button"
+              onMouseEnter={() => SETTINGS_NAV.forEach(({ href }) => prefetchRoute(href))}
+              onFocus={() => SETTINGS_NAV.forEach(({ href }) => prefetchRoute(href))}
+              onClick={() => setShowSettingsNav(v => !v)}
               aria-label="Settings"
               title="Settings"
-              className={({ isActive }) => clsx(
+              className={clsx(
                 'inline-flex h-[30px] w-[34px] items-center justify-center rounded border text-sm font-semibold transition-colors 2xl:h-[34px] 2xl:w-[38px]',
-                isActive
+                SETTINGS_NAV.some(({ href }) => pathname === href || pathname.startsWith(`${href}/`))
                   ? 'border-accent/50 bg-accent/15 text-white'
                   : 'border-border text-neutral hover:border-accent hover:text-white'
               )}
             >
               ⚙
-            </NavLink>
+            </button>
           </div>
 
           <div className="hidden min-w-0 items-center justify-end gap-2 2xl:flex">
@@ -743,7 +730,7 @@ export function TopBar() {
           })}
         </nav>
       </header>
-      {moreNavMenu}
+      {settingsNavMenu}
       <SentimentModal open={showSentiment} onClose={() => setShowSentiment(false)} />
     </>
   )

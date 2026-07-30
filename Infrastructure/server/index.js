@@ -47,6 +47,7 @@ import {
 import { normalizeRollingWindowMinutes, recordIsInsideRollingWindow, sliceCandlesToRollingWindow } from './lib/rollingWindow.js'
 import * as predictionThresholdPolicy from './lib/predictionThresholdPolicy.js'
 import { loadAiPositionCandidates } from './lib/aiPositionCandidates.js'
+import { aiArticleSentiment, scoreAiRankingEvidence } from './lib/aiRankingScore.js'
 import {
   INTRADAY_LABEL_VERSION,
   INTRADAY_MODEL_ID,
@@ -376,16 +377,7 @@ async function aiRecentArticles(db, days) {
   return fallbackDocs.filter(a => aiTickers(a).length && aiSentiment(a) !== null).slice(0, 5000)
 }
 function aiSentiment(a) {
-  let v = a.sentiment_score ?? a.finbert_score ?? a.vader_score ?? a.gemini_sentiment
-  if (v == null) v = a.sentiment                       // string label fallback ("bullish"/"bearish"/"neutral")
-  if (typeof v === 'string') {
-    const s = v.toLowerCase()
-    if (s.includes('bull') || s.includes('positive')) return 0.6
-    if (s.includes('bear') || s.includes('negative')) return -0.6
-    if (s.includes('neutral')) return 0
-    const n = parseFloat(v); return Number.isFinite(n) ? n : null
-  }
-  return Number.isFinite(v) ? v : null
+  return aiArticleSentiment(a)
 }
 function aiTickers(a) {
   // articles store `ticker` as a comma-separated string, e.g. "AAPL,MSFT"
@@ -513,13 +505,11 @@ app.get('/api/ai/rankings', async (req, res) => {
         : row
       const news = newsMap.get(ticker) || { sum: 0, n: 0, pos: 0, neg: 0 }
       const newsAvg = news.n ? news.sum / news.n : Number(scoredRow.article_sentiment || 0)
-      const newsScore = clamp((newsAvg + 1) / 2)
       const tradeScore = Number(scoredRow.trade_watch?.trade_watch_score || 0)
       const socialCount = Number(scoredRow.message_count || 0)
       const articleCount = Number(scoredRow.article_count || 0)
       const newsArticleCount = Math.max(articleCount, Number(news.n || 0))
       const evidenceScore = Number(scoredRow.trade_watch?.evidence_score || 0)
-      const socialDensity = clamp(Math.log1p(socialCount) / Math.log1p(80))
       const features = predictionFeaturesFromMover(scoredRow, socialWindow)
       const thresholdEntry = evaluatePredictionEntryThreshold(scoredRow, features)
       const thresholdRuleSignal = thresholdRulePredictionFromEntry(scoredRow, thresholdEntry)
@@ -532,50 +522,44 @@ app.get('/api/ai/rankings', async (req, res) => {
       const usableStoredModelSignal = isLiveModelSignalEligible(storedSignal?.model_signal, model) ? storedSignal.model_signal : null
       const activeSignal = usableThresholdRuleSignal || usableStoredThresholdRuleSignal || usableModelSignal || usableStoredModelSignal || storedSignal?.baseline_signal || baselineSignal
       const probabilityUp = Number(activeSignal?.probability_up)
-      const modelDirectionBoost = activeSignal?.direction === 'up' ? 0.08 : activeSignal?.direction === 'down' ? -0.08 : 0
       const predictionScore = Number.isFinite(probabilityUp) ? clamp(probabilityUp) : activeSignal?.direction === 'up' ? 0.62 : activeSignal?.direction === 'down' ? 0.38 : 0.5
       const quoteFreshness = Number(scoredRow.trade_watch?.quote_freshness ?? 0.5)
       const densityCorrelationRaw = nullableNumber(features.price_density_correlation)
       const densityCorrelation = densityCorrelationRaw == null ? null : clamp(densityCorrelationRaw, -1, 1)
-      const densityCorrelationComponent = densityCorrelation == null ? 0.5 : (densityCorrelation + 1) / 2
       const validationCorrelation = clamp(Number(features.prediction_validation_correlation || features.correlation_score || 0), -1, 1)
       const validationAccuracy = nullableNumber(features.prediction_validation_accuracy_5m)
       const validationReturn = nullableNumber(features.prediction_validation_avg_return_5m)
       const validationSamples = nullableNumber(features.prediction_validation_samples)
-      const validationEdge = clamp(
-        (Number.isFinite(validationAccuracy) ? Math.max(0, validationAccuracy - 0.5) * 1.4 : 0) +
-        Math.max(0, validationCorrelation) * 0.25 +
-        (Number.isFinite(validationReturn) ? Math.max(0, validationReturn) / 3 : 0),
-        0,
-        1,
-      )
       const densitySetupScore = clamp(Number(features.threshold_setup_score ?? thresholdEntry?.setupScore ?? 0) / 100)
       const densityStatus = String(features.threshold_setup_status || thresholdEntry?.setupStatus || thresholdEntry?.status || '')
-      const densitySetupActive = ['entry_passed', 'active_setup_already_above_threshold', 'near_threshold_setup'].includes(densityStatus)
-      const positiveCatalyst = Boolean(
-        (newsArticleCount > 0 && newsAvg > 0.05) ||
-        (socialCount > 0 && Number(scoredRow.social_sentiment || 0) > 0.08) ||
-        densitySetupActive ||
-        (densityCorrelation != null && densityCorrelation > 0.34) ||
-        validationEdge > 0.10 ||
-        Number(features.is_news_catalyst || 0) === 1
-      )
-      const technicalConfirmation = positiveCatalyst ? clamp(
-        (Number(features.rsi || 50) >= 38 && Number(features.rsi || 50) <= 68 ? 0.35 : 0) +
-        (Number(features.rsi_oversold || 0) * 0.20) +
-        (Number(scoredRow.change_pct || 0) >= -4 && Number(scoredRow.change_pct || 0) <= 12 ? 0.20 : 0) +
-        (Number(scoredRow.rel_volume || 0) >= 1.25 ? 0.25 : 0),
-        0,
-        1,
-      ) : 0
-      const blended = clamp(
-        tradeScore * 0.20 + newsScore * 0.16 + evidenceScore * 0.13 + socialDensity * 0.08 +
-        predictionScore * 0.15 + quoteFreshness * 0.05 + densityCorrelationComponent * 0.08 +
-        densitySetupScore * 0.06 + validationEdge * 0.05 + technicalConfirmation * 0.04 + modelDirectionBoost
-      )
-      const aiRankScore = Number((blended * 100).toFixed(1))
-      const bullishEvidence = positiveCatalyst && Number(scoredRow.change_pct || 0) >= 0 && (aiRankScore >= 58 || tradeScore >= 0.65)
-      const direction = bullishEvidence ? 'bullish' : aiRankScore <= 38 || activeSignal?.direction === 'down' ? 'bearish' : 'watch'
+      const score = scoreAiRankingEvidence({
+        tradeScore,
+        newsAvg,
+        newsArticleCount,
+        bullishNews: Number(news.pos || 0),
+        bearishNews: Number(news.neg || 0),
+        evidenceScore,
+        socialCount,
+        socialSentiment: Number(scoredRow.social_sentiment || 0),
+        predictionScore,
+        activeSignalDirection: activeSignal?.direction,
+        quoteFreshness,
+        densityCorrelation,
+        validationCorrelation,
+        validationAccuracy,
+        validationReturn,
+        validationSamples,
+        densitySetupScore,
+        densityStatus,
+        rsi: features.rsi,
+        rsiOversold: features.rsi_oversold,
+        changePct: scoredRow.change_pct,
+        relVolume: scoredRow.rel_volume,
+        isNewsCatalyst: features.is_news_catalyst,
+      })
+      const blended = score.blended
+      const aiRankScore = score.aiRankScore
+      const direction = score.direction
       return {
         rank_seed: index + 1,
         ticker,
@@ -586,7 +570,7 @@ app.get('/api/ai/rankings', async (req, res) => {
         volume: Number(scoredRow.volume || 0),
         ai_rank_score: aiRankScore,
         direction,
-        confidence: Number(Math.abs(blended - 0.5).toFixed(3)),
+        confidence: score.confidence,
         trade_watch_score: Number(tradeScore.toFixed(3)),
         prediction_signal: {
           direction: activeSignal?.direction || (predictionScore >= 0.55 ? 'up' : predictionScore <= 0.45 ? 'down' : 'watch'),
@@ -625,6 +609,9 @@ app.get('/api/ai/rankings', async (req, res) => {
           validation_accuracy_5m: Number.isFinite(validationAccuracy) ? Number(validationAccuracy.toFixed(3)) : null,
           validation_samples: validationSamples == null ? null : validationSamples,
           validation_avg_return_5m: Number.isFinite(validationReturn) ? Number(validationReturn.toFixed(3)) : null,
+          bullish_evidence: score.bullishEvidence,
+          bearish_evidence: score.bearishEvidence,
+          bearish_pressure: score.bearishPressure,
         },
         reasons: scoredRow.trade_watch?.reasons || [],
         risks: scoredRow.trade_watch?.risks || [],
@@ -757,37 +744,47 @@ app.get('/api/ai/ticker/:ticker', async (req, res) => {
     const quoteFreshness = Number(enriched?.trade_watch?.quote_freshness ?? 0.5)
     const densityCorrelationRaw = nullableNumber(features.price_density_correlation)
     const densityCorrelation = densityCorrelationRaw == null ? null : clamp(densityCorrelationRaw, -1, 1)
-    const densityCorrelationComponent = densityCorrelation == null ? 0.5 : (densityCorrelation + 1) / 2
     const validationCorrelation = clamp(Number(features.prediction_validation_correlation || features.correlation_score || 0), -1, 1)
     const validationAccuracy = nullableNumber(features.prediction_validation_accuracy_5m)
     const validationReturn = nullableNumber(features.prediction_validation_avg_return_5m)
     const validationSamples = nullableNumber(features.prediction_validation_samples)
-    const validationEdge = clamp(
-      (Number.isFinite(validationAccuracy) ? Math.max(0, validationAccuracy - 0.5) * 1.4 : 0) +
-      Math.max(0, validationCorrelation) * 0.25 +
-      (Number.isFinite(validationReturn) ? Math.max(0, validationReturn) / 3 : 0),
-      0,
-      1,
-    )
     const densitySetupScore = clamp(Number(features.threshold_setup_score ?? thresholdEntry?.setupScore ?? 0) / 100)
     const densityStatus = String(features.threshold_setup_status || thresholdEntry?.setupStatus || thresholdEntry?.status || '')
-    const densitySetupActive = ['entry_passed', 'active_setup_already_above_threshold', 'near_threshold_setup'].includes(densityStatus)
-    const technicalConfirmation = (newsArticleTotal > 0 || socialCount > 0 || densitySetupActive || validationEdge > 0.1) ? clamp(
-      (Number(features.rsi || 50) >= 38 && Number(features.rsi || 50) <= 68 ? 0.35 : 0) +
-      (Number(features.rsi_oversold || 0) * 0.20) +
-      (Number(enriched?.change_pct || 0) >= -4 && Number(enriched?.change_pct || 0) <= 12 ? 0.20 : 0) +
-      (Number(enriched?.rel_volume || 0) >= 1.25 ? 0.25 : 0),
-      0,
-      1,
-    ) : 0
-    const blended = enriched ? clamp(
-      tradeScore * 0.20 + clamp((newsAvg + 1) / 2) * 0.16 + evidenceScore * 0.13 + socialDensity * 0.08 +
-      predictionScore * 0.15 + quoteFreshness * 0.05 + densityCorrelationComponent * 0.08 +
-      densitySetupScore * 0.06 + validationEdge * 0.05 + technicalConfirmation * 0.04 +
-      (activeSignal?.direction === 'up' ? 0.08 : activeSignal?.direction === 'down' ? -0.08 : 0)
-    ) : 0
-    const aiRankScore = Number((blended * 100).toFixed(1))
-    const bullishEvidence = newsArticleTotal > 0 && newsAvg > 0.05 && Number(enriched?.change_pct || 0) >= 0 && (aiRankScore >= 58 || tradeScore >= 0.65)
+    const score = enriched ? scoreAiRankingEvidence({
+      tradeScore,
+      newsAvg,
+      newsArticleCount: newsArticleTotal,
+      bullishNews: Number(news.pos || 0),
+      bearishNews: Number(news.neg || 0),
+      evidenceScore,
+      socialCount,
+      socialSentiment: Number(enriched?.social_sentiment || 0),
+      predictionScore,
+      activeSignalDirection: activeSignal?.direction,
+      quoteFreshness,
+      densityCorrelation,
+      validationCorrelation,
+      validationAccuracy,
+      validationReturn,
+      validationSamples,
+      densitySetupScore,
+      densityStatus,
+      rsi: features.rsi,
+      rsiOversold: features.rsi_oversold,
+      changePct: enriched?.change_pct,
+      relVolume: enriched?.rel_volume,
+      isNewsCatalyst: features.is_news_catalyst,
+    }) : {
+      blended: 0,
+      aiRankScore: 0,
+      direction: 'watch',
+      confidence: 0.5,
+      validationEdge: 0,
+      bullishEvidence: false,
+      bearishEvidence: false,
+      bearishPressure: 0,
+    }
+    const aiRankScore = score.aiRankScore
     const correct5 = predictionRows.map(r => r.labels?.return_5m?.direction_correct).filter(v => v === true || v === false)
     const accuracy5m = correct5.length ? Number((correct5.filter(Boolean).length / correct5.length).toFixed(3)) : null
     const modelValidation = modelValidationState(model)
@@ -796,7 +793,7 @@ app.get('/api/ai/ticker/:ticker', async (req, res) => {
       { label: 'News evidence window', status: articleCount > 0 ? 'pass' : 'warn', detail: `${articleCount} approved articles found in the last ${days} day(s).` },
       { label: 'Social evidence window', status: socialCount > 0 ? 'pass' : 'warn', detail: `${socialCount} social posts found in the selected ${socialWindow} minute window.` },
       { label: 'Prediction validation', status: correct5.length >= 20 ? 'pass' : correct5.length ? 'warn' : 'info', detail: correct5.length ? `${correct5.length} labeled 5m outcomes; accuracy ${Math.round((accuracy5m || 0) * 100)}%.` : 'No completed 5m labels yet; ranking uses current model/baseline signal.' },
-      { label: 'Density setup', status: thresholdEntry?.passed ? 'pass' : densitySetupActive ? 'warn' : 'info', detail: `${densityStatus || 'unknown'}; corr ${densityCorrelation == null ? '--' : densityCorrelation.toFixed(3)}, setup score ${Math.round(densitySetupScore * 100)}.` },
+      { label: 'Density setup', status: thresholdEntry?.passed ? 'pass' : score.densitySetupActive ? 'warn' : 'info', detail: `${densityStatus || 'unknown'}; corr ${densityCorrelation == null ? '--' : densityCorrelation.toFixed(3)}, setup score ${Math.round(densitySetupScore * 100)}.` },
       { label: 'Model validation set', status: modelValidation.allow_live_classifier ? 'pass' : 'info', detail: `Live classifier: ${modelValidation.allow_live_classifier ? 'enabled' : `inactive (${modelValidation.reason}); validated rules remain live`}.` },
     ]
     res.json({
@@ -806,7 +803,7 @@ app.get('/api/ai/ticker/:ticker', async (req, res) => {
       social_window_minutes: socialWindow,
       score: {
         ai_rank_score: aiRankScore,
-        direction: bullishEvidence ? 'bullish' : aiRankScore <= 38 ? 'bearish' : 'watch',
+        direction: score.direction,
         trade_watch_score: Number(tradeScore.toFixed(3)),
         news_score: Number((newsAvg * 100).toFixed(1)),
         evidence_score: Number(evidenceScore.toFixed(3)),
@@ -816,10 +813,13 @@ app.get('/api/ai/ticker/:ticker', async (req, res) => {
         price_density_correlation: densityCorrelation == null ? null : Number(densityCorrelation.toFixed(3)),
         density_setup_score: Number((densitySetupScore * 100).toFixed(1)),
         density_setup_status: densityStatus || null,
-        validation_edge: Number(validationEdge.toFixed(3)),
+        validation_edge: Number(score.validationEdge.toFixed(3)),
         validation_accuracy_5m: Number.isFinite(validationAccuracy) ? Number(validationAccuracy.toFixed(3)) : null,
         validation_samples: validationSamples == null ? null : validationSamples,
         validation_avg_return_5m: Number.isFinite(validationReturn) ? Number(validationReturn.toFixed(3)) : null,
+        bullish_evidence: score.bullishEvidence,
+        bearish_evidence: score.bearishEvidence,
+        bearish_pressure: score.bearishPressure,
       },
       mover: enriched ? {
         ticker,
