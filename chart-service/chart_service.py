@@ -995,6 +995,15 @@ except ImportError:
             resp.headers["Access-Control-Allow-Origin"] = origin
         return resp
 
+# Speed: gzip-compress JSON responses on the wire. Transport-only — does not
+# touch any of the chart/correlation/indicator math above. Same optional-
+# import pattern as CORS above: the service still runs fine without it.
+try:
+    from flask_compress import Compress
+    Compress(app)
+except ImportError:
+    pass
+
 
 # Mirrors the backend's /api/version: which revision is serving, and — the part
 # that actually matters mid-deploy — whether this process has restarted yet.

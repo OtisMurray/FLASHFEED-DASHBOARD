@@ -26,9 +26,8 @@ frontend-only commit still rebuilds `chart-service` — harmless, just slower.
 
 ### Step 1: Clone and enter the project
 ```bash
-git clone https://github.com/Rybread15325/FlashFeedCapstone2026.git
-cd FlashFeedCapstone2026
-git checkout OtisMur_CurrentCode
+git clone https://github.com/OtisMurray/FLASHFEED-DASHBOARD.git
+cd FLASHFEED-DASHBOARD
 ```
 
 ### Step 2: Create your environment file
@@ -82,6 +81,47 @@ Frontend (Vite+React)  →  Backend (Express)  →  MongoDB
 4. **Sentiment Engine** classifies articles and social posts
 5. **All data** flows through Kafka → processed → stored in MongoDB → cached in Redis
 
+### RAM-speed design (Redis + Kafka)
+
+The point of Redis/Kafka in this stack is to keep the dashboard fast by
+answering reads from RAM and only touching MongoDB's disk when RAM doesn't
+have the answer yet:
+
+- **Response cache (Redis, always on):** an Express middleware near the top
+  of `Infrastructure/server/index.js` wraps the heaviest GET routes
+  (`/api/screener`, `/api/momentum`, `/api/correlation`, `/api/articles`,
+  `/api/ai/*`, `/api/prediction/*`, chart reads, …). On a cache hit it
+  answers straight from Redis with an `X-Cache: HIT` header; on a miss it
+  computes from MongoDB and stores the JSON result in Redis with a short TTL
+  (15–120s, see `CACHE_RULES` in `index.js`). If Redis is unreachable, every
+  one of these routes falls back to reading MongoDB directly — the app never
+  breaks because of Redis.
+- **Kafka hot feed (optional, RAM-first):** `Infrastructure/kafka/consumer.py`
+  writes each event batch to **both** Redis (`feed:{TICKER}` sorted set +
+  `event:{id}` hashes — what `GET /api/feed/:ticker` reads from) **and**
+  MongoDB, then commits the Kafka offset only after both writes succeed —
+  a deliberate crash-safety guarantee (see the docstring at the top of
+  `consumer.py`): if the process dies mid-batch, Kafka redelivers it on
+  restart instead of silently losing it. Batches are small (≤50 messages,
+  ~1s poll) which already throttles disk writes rather than hitting Mongo on
+  every message; `batch_size` in `MessageConsumer.run()` is the one knob to
+  raise if you want a coarser "flush every few minutes" cadence instead —
+  nothing else in that file needs to change for that.
+- **MongoDB indexes** are created once at backend startup (see the
+  `createIndex(...)` calls in `index.js`) so the disk-tier queries that do
+  run (cache misses, Kafka's durable write) stay fast.
+- **HTTP compression:** both the backend and chart-service gzip/brotli their
+  JSON responses (`compression` on Express, `Flask-Compress` on Flask) — a
+  pure wire-transport optimization that doesn't touch any computed value.
+
+Kafka is fully optional — both services run correctly with
+`KAFKA_BOOTSTRAP_SERVERS` unset. On Railway, point `MONGODB_URI`/`MONGO_URI`
+and `REDIS_URL` at the database services using Railway's
+`${{ServiceName.VARIABLE}}` reference syntax (e.g.
+`mongodb://${{MongoDB.RAILWAY_PRIVATE_DOMAIN}}:27017/feedflash`) rather than
+a raw hostname — functionally identical, but it's what makes Railway draw
+the connection lines between services in its project graph.
+
 ### Dashboard Pages
 | Page | Description |
 |------|-------------|
@@ -107,6 +147,9 @@ All variables are optional with sensible defaults. The dashboard works without s
 | `CORS_ORIGIN` | `*` | Allowed origins for browser API calls |
 | `DEFAULT_FETCH_MODE` | `fast` | `fast` or `full` data refresh mode |
 | `MONGO_SERVER_SELECTION_TIMEOUT_MS` | `3000` | MongoDB connection timeout |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection string — RAM cache + hot feed (see [RAM-speed design](#ram-speed-design-redis--kafka)) |
+| `CHART_SERVICE_URL` | `http://localhost:5055` | Where the backend finds chart-service — entry/exit screener depend on this being reachable |
+| `KAFKA_BOOTSTRAP_SERVERS` | — | Kafka broker address; unset = Kafka features report `not_configured`, everything else keeps working |
 
 ### API Keys (optional)
 

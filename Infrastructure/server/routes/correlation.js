@@ -2,6 +2,32 @@ import { Router } from 'express'
 import mongoose from 'mongoose'
 import Correlation from '../models/Correlation.js'
 
+// GET  /api/correlation      — computes and returns news/social-to-price
+//                              correlation signals for the active ticker
+//                              universe (see generatedCorrelations() below).
+// POST /api/correlation/run  — same computation, but also upserts the rows
+//                              into the `correlations` collection (used by
+//                              anything that reads Correlation.find(...)
+//                              directly instead of calling this route).
+//
+// Pipeline, top to bottom:
+//   1. Pull recent `articles` and `socials` docs and, per ticker, aggregate
+//      them into a mention count + sentiment (articlePipeline/socialPipeline).
+//   2. Turn each ticker's article/social aggregate + its current screener
+//      quote into one scored "entry" (buildEntry) — an evidence-weighted
+//      sentiment/price alignment signal, not a raw correlation of any single
+//      ticker's own time series (there isn't enough same-ticker history for
+//      that here; this is a CROSS-SECTIONAL correlation across tickers).
+//   3. The route handler aggregates those per-ticker entries into a single
+//      Pearson r (weightedPearsonStats) describing how well sentiment
+//      pressure tracks price movement across the whole reliable universe.
+//
+// None of the weighting/shrinkage constants below (evidence priors, the
+// news/social weight split, the 0.55/0.45 sentiment-vs-momentum blend, etc.)
+// are arbitrary — they are this project's specific formula and are NOT to be
+// changed here; comments in this file describe what the code computes, not
+// why a given constant was chosen.
+
 const router = Router()
 
 const NON_STOCK_TICKERS = new Set([
@@ -11,6 +37,8 @@ const NON_STOCK_TICKERS = new Set([
 ])
 const US_EXCHANGES = new Set(['NASDAQ', 'NYSE', 'AMEX'])
 const MAX_SIGNAL_CHANGE_PCT = Math.max(10, Number(process.env.MAX_SIGNAL_CHANGE_PCT || 300))
+
+// ── Small numeric/string helpers ────────────────────────────────────────────
 
 function clamp(value, min, max) {
   const n = Number(value)
@@ -32,6 +60,11 @@ function normalizeTicker(value) {
   return ticker
 }
 
+// Mongo $match fragment: "does this doc have ANY recognized timestamp field
+// within the last `days` days". Checked across every timestamp field name
+// this data ever gets stored under (publish_date, fetched_date, detected_at,
+// fetched_at, timestamp, created_at/createdAt) and both epoch-seconds and
+// BSON Date representations, since different collectors write different shapes.
 function recentMatch(days = 2) {
   const n = Math.max(1, Number(days || 2))
   const cutoffMs = Date.now() - n * 86_400_000
@@ -53,6 +86,13 @@ function recentMatch(days = 2) {
   }
 }
 
+// ── Mongo aggregation expression builders (sentiment + ticker extraction) ──
+// These return Mongo aggregation-pipeline expression objects (not JS values)
+// — they're spliced into $addFields/$group stages below, so Mongo itself
+// evaluates them per-document during the aggregation.
+
+// +1 if the doc's sentiment label reads bullish/positive, -1 if bearish/
+// negative, 0 otherwise (label text match, case-insensitive).
 function sentimentDirectionExpr(field = '$sentiment') {
   return {
     $switch: {
@@ -65,6 +105,9 @@ function sentimentDirectionExpr(field = '$sentiment') {
   }
 }
 
+// Per-document signed sentiment score in [-1, 1]: prefers an explicit numeric
+// `sentiment_score` field if present, otherwise falls back to direction ×
+// confidence, otherwise falls back to bare direction (+1/-1/0).
 function sentimentScoreExpr({ sentimentField = '$sentiment', scoreField = '$sentiment_score', confidenceField = '$ml_confidence' } = {}) {
   return {
     $switch: {
@@ -80,6 +123,12 @@ function sentimentScoreExpr({ sentimentField = '$sentiment', scoreField = '$sent
   }
 }
 
+// Mongo pipeline stages that extract every plausible ticker mention out of a
+// social-post-shaped doc: explicit ticker/symbol/cashtag/tickers_mentioned
+// fields first; if none of those are populated, fall back to regex-scanning
+// the post's own text/content/title for "$TICKER" cashtags and any
+// matched_mover_tickers already attached upstream. Produces `_ticker_candidates`,
+// an array field that the caller then $unwind's (one output row per mention).
 function tickerCandidateStages() {
   return [
     {
@@ -174,6 +223,15 @@ function tickerCandidateStages() {
   ]
 }
 
+// ── Per-collection aggregation pipelines ────────────────────────────────────
+// Both pipelines end up with the same shape: one row per ticker with a
+// mention count, bullish/bearish/neutral counts, a summed sentiment score,
+// and a "latest activity" timestamp — that row is what buildEntry() below
+// consumes as articleRow / socialRow.
+
+// `articles` docs already carry an explicit `ticker` field (comma-separable
+// for multi-ticker articles), so this skips the text/cashtag fallback in
+// tickerCandidateStages() and reuses only its filtering/cleanup stages.
 function articlePipeline(days, limit) {
   return [
     { $match: { ...recentMatch(days), ticker: { $exists: true, $nin: ['', null] } } },
@@ -209,6 +267,8 @@ function articlePipeline(days, limit) {
   ]
 }
 
+// `socials` docs don't reliably carry a clean ticker field, so this runs the
+// FULL tickerCandidateStages() (including the text/cashtag regex fallback).
 function socialPipeline(days, limit) {
   return [
     { $match: recentMatch(days) },
@@ -232,6 +292,14 @@ function socialPipeline(days, limit) {
   ]
 }
 
+// ── Evidence-weighting (Bayesian shrinkage) ─────────────────────────────────
+// The shared idea below: a ticker with very few mentions should not be able
+// to post a "perfect" sentiment score — its raw mean gets shrunk toward 0
+// (neutral) in proportion to how little evidence backs it, and only
+// approaches its raw mean as mention count grows past `prior`/`target`.
+
+// Shrunk mean sentiment for one ticker's aggregate row: raw mean score_sum/count,
+// pulled toward 0 by count/(count+prior) — low-mention tickers land near 0.
 function evidenceScore(row, prior = 8) {
   const count = Number(row?.count || 0)
   if (!count) return 0
@@ -239,10 +307,19 @@ function evidenceScore(row, prior = 8) {
   return clamp(rawMean * (count / (count + prior)), -1, 1)
 }
 
+// 0..1 confidence from mention count alone (log-scaled, saturates near
+// `target` mentions) — used to weight news vs. social evidence against each
+// other in buildEntry() below.
 function evidenceConfidence(count, target = 40) {
   return clamp(Math.log1p(Number(count || 0)) / Math.log1p(target), 0, 1)
 }
 
+// ── Weighted Pearson correlation across tickers ─────────────────────────────
+// Standard weighted-Pearson-r formula (weighted covariance over the
+// geometric mean of weighted variances), just applied CROSS-SECTIONALLY —
+// each "sample" is one ticker's (x, y) pair for the current window, weighted
+// by that ticker's evidence reliability, not a time-series of one ticker.
+// Requires at least 5 usable (finite, positively-weighted) pairs, else null.
 function weightedPearson(rows, xKey, yKey, weightKey) {
   const pairs = rows
     .map(row => [Number(row[xKey]), Number(row[yKey]), Math.max(0, Number(row[weightKey] || 0))])
@@ -267,6 +344,11 @@ function weightedPearson(rows, xKey, yKey, weightKey) {
   return Number(clamp(cov / denom, -1, 1).toFixed(3))
 }
 
+// Same computation as weightedPearson(), but also returns n (raw pair count),
+// total_weight, and effective_n — the Kish effective sample size
+// (totalWeight² / Σweight²), which is smaller than n when weight is
+// concentrated in a few tickers, i.e. it flags "this r is really driven by a
+// handful of high-confidence rows" even when the raw row count looks large.
 function weightedPearsonStats(rows, xKey, yKey, weightKey) {
   const pairs = rows
     .map(row => [Number(row[xKey]), Number(row[yKey]), Math.max(0, Number(row[weightKey] || 0))])
@@ -287,12 +369,16 @@ function weightedPearsonStats(rows, xKey, yKey, weightKey) {
   }
 }
 
+// Plain unweighted mean of a numeric field across rows (used for the
+// summary's avg_* display fields — NOT part of the Pearson/signal math).
 function averageValue(rows, key) {
   const values = rows.map(row => Number(row[key])).filter(Number.isFinite)
   if (!values.length) return null
   return Number((values.reduce((sum, value) => sum + value, 0) / values.length).toFixed(3))
 }
 
+// Plain-English label for a Pearson r magnitude — display copy only, no
+// effect on any stored/returned numeric value.
 function interpretPearson(value) {
   if (!Number.isFinite(Number(value))) return 'Not enough reliable rows for a true Pearson reading yet.'
   const abs = Math.abs(Number(value))
@@ -302,6 +388,13 @@ function interpretPearson(value) {
   return 'Strong linear relationship across reliable ticker rows.'
 }
 
+// ── Per-ticker signal builder ────────────────────────────────────────────────
+// Combines one ticker's article aggregate, social aggregate, and current
+// screener quote into a single evidence-weighted sentiment/price alignment
+// entry. Returns null (drops the ticker) if it fails a data-quality gate:
+// not on a US exchange, no valid price, no valid change_pct, an
+// implausible change_pct (see MAX_SIGNAL_CHANGE_PCT), or zero evidence.
+// See the file-header comment for what this signal is (and isn't).
 function buildEntry(ticker, articleRow, socialRow, quote, days) {
   const exchange = normalizeExchange(quote?.exchange)
   const changePct = Number(quote?.change_pct ?? quote?.change_percent)
@@ -390,6 +483,11 @@ function buildEntry(ticker, articleRow, socialRow, quote, days) {
   }
 }
 
+// ── Top-level orchestration ─────────────────────────────────────────────────
+// Runs both aggregation pipelines, joins article/social/quote data per
+// ticker, scores each via buildEntry(), and returns the sorted list (largest
+// |correlation| first, ties broken by sample size). This is what both route
+// handlers below call.
 async function generatedCorrelations({ days = 2, limit = 150 } = {}) {
   const db = mongoose.connection.db
   if (!db) return []
@@ -419,6 +517,8 @@ async function generatedCorrelations({ days = 2, limit = 150 } = {}) {
     .slice(0, requestedLimit)
 }
 
+// GET /api/correlation — compute-only; does not write to the database.
+// See the file-header comment for the full pipeline description.
 router.get('/', async (req, res) => {
   try {
     const days = Number(req.query.days || 2)
@@ -488,6 +588,10 @@ router.get('/', async (req, res) => {
   }
 })
 
+// POST /api/correlation/run — same computation as GET / above, but also
+// upserts each ticker's entry into the `correlations` collection and deletes
+// any previously-saved ticker that isn't in this run's result set, so that
+// collection always mirrors exactly the latest run's tickers.
 router.post('/run', async (req, res) => {
   try {
     const rows = await generatedCorrelations({ days: Number(req.query.days || req.body?.days || 2), limit: 300 })

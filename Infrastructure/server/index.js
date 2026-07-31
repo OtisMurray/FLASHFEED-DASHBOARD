@@ -2,6 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import mongoose from 'mongoose'
 import cors    from 'cors'
+import compression from 'compression'   // gzip/brotli response compression — transport-only, no effect on any computed values
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -147,6 +148,10 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://
   .map(s => s.trim())
   .filter(Boolean)
 app.use(cors({ origin: CORS_ORIGINS }))
+// Speed: gzip/brotli-compress every JSON response above ~1KB. Pure HTTP
+// transport optimization — it compresses bytes on the wire, it does not
+// touch, reorder, or recompute anything the routes below produce.
+app.use(compression())
 app.use(express.json({ limit: '2mb' }))
 
 // ── RAM speed layer: Redis hot cache + Kafka→Redis feed reads ─────────────────
