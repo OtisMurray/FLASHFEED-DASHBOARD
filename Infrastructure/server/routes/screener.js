@@ -1875,6 +1875,22 @@ function socialTimeStages() {
         },
       },
     },
+    // Mirrors the `_is_ape_summary` flag in Infrastructure/server/index.js.
+    // ApeWisdom rows are per-ticker daily mention *counts* stored as platform
+    // "reddit"; they are not messages and must not reach the squeeze gate's
+    // social threshold. Evaluated at read time so new rows from the external
+    // collector are caught without a migration.
+    {
+      $addFields: {
+        _is_ape_summary: {
+          $or: [
+            { $regexMatch: { input: { $toLower: { $toString: { $ifNull: ['$collector', ''] } } }, regex: 'apewisdom' } },
+            { $regexMatch: { input: { $toLower: { $toString: { $ifNull: ['$author', ''] } } }, regex: 'apewisdom' } },
+            { $ne: [{ $type: '$_ape_id' }, 'missing'] },
+          ],
+        },
+      },
+    },
   ]
 }
 
@@ -3264,6 +3280,9 @@ async function loadAdaptiveSocialStatsForRows(db, rows, windowOverride = null) {
     ...socialTimeStages(),
     ...socialTickerCandidateStages(),
     { $match: { $or: or } },
+    // ApeWisdom mention-count rows are not messages — keep them out of the
+    // squeeze gate's `≥ N social messages in the rolling window` threshold.
+    { $match: { _is_ape_summary: { $ne: true } } },
     { $unwind: '$_ticker_candidates' },
     { $match: { _ticker_candidates: { $in: rows.map(row => row.ticker) } } },
     {
@@ -3271,6 +3290,7 @@ async function loadAdaptiveSocialStatsForRows(db, rows, windowOverride = null) {
         _norm_platform: {
           $switch: {
             branches: [
+              { case: '$_is_ape_summary', then: 'ApeWisdom Summary' },
               { case: { $regexMatch: { input: { $toLower: { $toString: { $ifNull: ['$platform', ''] } } }, regex: 'stocktwits' } }, then: 'StockTwits' },
               { case: { $regexMatch: { input: { $toLower: { $toString: { $ifNull: ['$platform', ''] } } }, regex: 'twitter|x' } }, then: 'Twitter' },
               { case: { $regexMatch: { input: { $toLower: { $toString: { $ifNull: ['$platform', ''] } } }, regex: 'reddit' } }, then: 'Reddit' },

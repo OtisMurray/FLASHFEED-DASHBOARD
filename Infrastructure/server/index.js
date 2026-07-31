@@ -2101,6 +2101,9 @@ async function loadSocialStatsForTickers(db, tickers = [], windowMinutes = 1440)
   const rows = await db.collection("socials").aggregate([
     ...socialTimeStages(),
     { $match: { _event_sec: { $gte: sinceSec } } },
+    // ApeWisdom rows are mention counts, not messages — excluded so they never
+    // inflate `count` / `bullish` / `bearish` for any threshold that reads them.
+    { $match: { _is_ape_summary: { $ne: true } } },
     { $match: { _ticker_candidates: { $in: wanted } } },
     { $unwind: "$_ticker_candidates" },
     { $match: { _ticker_candidates: { $in: wanted } } },
@@ -3885,11 +3888,43 @@ function socialTimeStages() {
         }
       }
     },
+    // ApeWisdom rows are aggregate mention *counts* rendered as social posts
+    // ("$ORCL is #16 on Reddit by mentions — 54 mentions in the last 24h"), one
+    // row per ticker per day, written by an external collector that stores them
+    // as platform "reddit". They are real data but they are not messages, so
+    // they must never be counted toward social volume or feed a message-density
+    // gate. Detection is evaluated at read time from stored fields, so rows the
+    // external writer adds later are classified automatically.
+    {
+      $addFields: {
+        _is_ape_summary: {
+          $or: [
+            {
+              $regexMatch: {
+                input: { $toLower: { $toString: { $ifNull: ["$collector", ""] } } },
+                regex: "apewisdom"
+              }
+            },
+            {
+              $regexMatch: {
+                input: { $toLower: { $toString: { $ifNull: ["$author", ""] } } },
+                regex: "apewisdom"
+              }
+            },
+            { $ne: [{ $type: "$_ape_id" }, "missing"] }
+          ]
+        }
+      }
+    },
     {
       $addFields: {
         _norm_platform: {
           $switch: {
             branches: [
+              {
+                case: "$_is_ape_summary",
+                then: "ApeWisdom Summary"
+              },
               {
                 case: {
                   $regexMatch: {
@@ -4216,6 +4251,9 @@ app.get("/api/social/rolling", async (req, res) => {
 	        x: "Grok/X",
 	        grok: "Grok/X",
         stocktwits: "StockTwits",
+        apewisdom: "ApeWisdom Summary",
+        "apewisdom summary": "ApeWisdom Summary",
+        apewisdom_summary: "ApeWisdom Summary",
       }
       pipeline.push({ $match: { _norm_platform: platformMap[platform] || platform } })
     }
@@ -4366,6 +4404,10 @@ async function buildLocalGrokSocialAnalysis(db, ticker, context = "") {
     db.collection("socials").aggregate([
       ...socialTimeStages(),
       { $match: { _event_sec: { $gte: sinceSec }, _ticker_candidates: cleanTicker } },
+      // Mention-count rows read as real posts once they are in an LLM prompt
+      // ("$ORCL is #16 on Reddit by mentions"), so keep them out of the sample
+      // the sentiment analysis summarises.
+      { $match: { _is_ape_summary: { $ne: true } } },
       { $sort: { _event_sec: -1 } },
       { $limit: 80 },
       {
@@ -4501,6 +4543,8 @@ app.get("/api/social/series/:ticker", async (req, res) => {
     const rows = await db.collection("socials").aggregate([
       ...socialTimeStages(),
       { $match: { _event_sec: { $gte: sinceSec } } },
+      // Mention-count rows must not appear as message density in the series.
+      { $match: { _is_ape_summary: { $ne: true } } },
       { $match: { _ticker_candidates: ticker } },
       {
       $addFields: {
@@ -5473,6 +5517,9 @@ async function chartSocialSeries(db, ticker, windowMinutes, bucketMinutes, optio
     ...socialTimeStages(),
     { $match: { _event_sec: { $gte: sinceSec } } },
     { $match: { _event_sec: { $lte: endSec } } },
+    // Mention-count rows must not appear as message density in the chart series
+    // that the correlation/entry logic reads.
+    { $match: { _is_ape_summary: { $ne: true } } },
     { $match: { _ticker_candidates: ticker } },
     {
       $addFields: {
@@ -6540,6 +6587,9 @@ app.get(["/api/sentiment/audit", "/api/sentiment/snapshot"], async (req, res) =>
       db.collection("socials").aggregate([
         ...socialTimeStages(),
         { $match: { _event_sec: { $gte: socialSinceSec }, _ticker_candidates: { $ne: [] } } },
+        // Synthetic mention-count rows carry a canned Bullish/Neutral label that
+        // would skew the audit's sentiment totals.
+        { $match: { _is_ape_summary: { $ne: true } } },
         {
           $addFields: {
             _social_score: {
@@ -6798,6 +6848,9 @@ app.get("/api/prediction/features", async (req, res) => {
         ...socialTimeStages(),
         ...socialTickerCandidateStages(),
         { $match: { _event_sec: { $gte: sinceSec }, _ticker_candidates: { $in: tickers } } },
+        // Keep mention-count rows out of `social_count`, which feeds the
+        // prediction feature vector.
+        { $match: { _is_ape_summary: { $ne: true } } },
         { $unwind: "$_ticker_candidates" },
         { $match: { _ticker_candidates: { $in: tickers } } },
         {
