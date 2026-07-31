@@ -3,7 +3,7 @@ import mongoose from 'mongoose'
 import Screener from '../models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './screener.js'
 import { CLEAN_UNIVERSE_MONGO_FILTER } from '../lib/cleanUniverse.js'
-import { classifyRow, POSITION_HISTORY_COLLECTION } from '../lib/positionHistory.js'
+import { classifyRow, isFillExitReason, POSITION_HISTORY_COLLECTION } from '../lib/positionHistory.js'
 import { loadAiPositionCandidates } from '../lib/aiPositionCandidates.js'
 import {
   POSITION_PARAM_LIMITS,
@@ -151,6 +151,10 @@ export function recordedPositionRow(doc = {}, { today, companyByTicker } = {}) {
     // more precisely labelled — by data_status: 'stale' / the Unsettled badge.
     pnl_pending: false,
     bars_since_entry: doc.bars_since_entry ?? null,
+    // null on rows recorded before the gate existed — that IS the answer for a
+    // pre-gate row, and it is what distinguishes the two regimes in history.
+    rth_applied: doc.rth_applied ?? null,
+    rth_rule_version: doc.rth_rule_version ?? null,
     // The parameters this row was actually simulated under — which are the
     // canonical ones, and may differ from what the caller asked for.
     threshold: doc.threshold,
@@ -185,7 +189,10 @@ function shiftDateKey(dateKey, deltaDays) {
   return new Date(Date.UTC(y, m - 1, d + deltaDays)).toISOString().slice(0, 10)
 }
 
-async function fetchChartService(path, params) {
+// `envelope: true` returns the whole payload instead of just `results`, for the
+// callers that need batch-level context (the regular-hours policy) alongside the
+// per-ticker rows.
+async function fetchChartService(path, params, { envelope = false } = {}) {
   const url = `${CHART_SERVICE_URL}${path}?${params.toString()}`
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 60_000)
@@ -193,6 +200,7 @@ async function fetchChartService(path, params) {
     const res = await fetch(url, { signal: controller.signal })
     if (!res.ok) throw new Error(`chart-service responded ${res.status}`)
     const data = await res.json()
+    if (envelope) return data || {}
     return data?.results || {}
   } finally {
     clearTimeout(timer)
@@ -309,6 +317,7 @@ router.get('/', async (req, res) => {
     let positions = {}
     let corrResults = {}
     let chartServiceOk = true
+    let rthPolicy = null
     if (tickers.length) {
       const positionParams = new URLSearchParams({
         tickers: tickers.join(','),
@@ -317,11 +326,15 @@ router.get('/', async (req, res) => {
       })
       const corrParams = new URLSearchParams({ tickers: tickers.join(',') })
       const [positionsResult, corrResult] = await Promise.allSettled([
-        fetchChartService('/api/sentchart/positions/batch', positionParams),
+        fetchChartService('/api/sentchart/positions/batch', positionParams, { envelope: true }),
         fetchChartService('/api/sentchart/corr/batch', corrParams),
       ])
-      if (positionsResult.status === 'fulfilled') positions = positionsResult.value
-      else {
+      if (positionsResult.status === 'fulfilled') {
+        positions = positionsResult.value?.results || {}
+        // Absent when the chart-service predates the gate; the page then says
+        // "unreported" rather than asserting an unrestricted session.
+        rthPolicy = positionsResult.value?.rth || null
+      } else {
         chartServiceOk = false
         console.error('GET /api/position-screener positions batch failed:', positionsResult.reason?.message)
       }
@@ -389,7 +402,13 @@ router.get('/', async (req, res) => {
       }
 
       for (const trade of trades) {
-        const riskExit = trade.status === 'Stopped Out'
+        // Did this trade FILL? Read the reason, which is authoritative, and fall
+        // back to the display string only for a chart-service old enough not to
+        // send one. Sniffing 'Stopped Out' alone would misread a 16:00 flatten
+        // (exit_reason 'rth_close') as a position still running.
+        const exitReason = trade.exit_reason
+          || (trade.status === 'Stopped Out' ? 'price_trailing_stop' : 'session_end')
+        const riskExit = isFillExitReason(exitReason)
         const refPrice = riskExit ? trade.exit_price : currentPrice
         const stopPrice = trade.peak_price != null ? trade.peak_price * (1 - stopPct / 100) : null
         const pnlPending = pnlPendingFor(trade, { riskExit })
@@ -414,7 +433,7 @@ router.get('/', async (req, res) => {
           entry_corr: trade.entry_corr,
           exit_price: riskExit ? trade.exit_price : null,
           exit_time: riskExit ? trade.exit_time : null,
-          exit_reason: trade.exit_reason || (riskExit ? 'price_trailing_stop' : 'session_end'),
+          exit_reason: exitReason,
           exit_corr: trade.exit_corr,
           current_price: currentPrice,
           peak_price: trade.peak_price,
@@ -428,6 +447,10 @@ router.get('/', async (req, res) => {
           pnl_is_realized: riskExit,
           pnl_pending: pnlPending,
           bars_since_entry: trade.bars_since_entry ?? null,
+          // Whether the regular-hours gate bound THIS ticker — false for an
+          // exempt name even while the restriction is on for everything else.
+          rth_applied: result.rth_applied ?? null,
+          rth_rule_version: result.rth_rule_version ?? null,
           market_cap_tier: marketCapTier,
           threshold,
           stop_pct: stopPct,
@@ -533,6 +556,10 @@ router.get('/', async (req, res) => {
       // that no tier is tuned rather than implying tuning that has not happened.
       position_policy: positionPolicySnapshot(),
       corr_window_minutes: CORR_WINDOW_MINUTES,
+      // Regular-hours restriction as the chart-service reported it, echoed
+      // verbatim. The exemption list is configuration the page states out loud
+      // rather than behaviour a reader has to infer from missing trades.
+      rth: rthPolicy,
       chart_service_ok: chartServiceOk,
       tickers_scanned: candidates.length,
       universe_size: universe.length,

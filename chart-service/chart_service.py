@@ -652,6 +652,85 @@ STRAT_ENTRY_THRESHOLD = 0.10
 STRAT_STOP_PCT = 30.0
 STRAT_CORR_EXIT_THRESHOLD = None
 
+# ── REGULAR-HOURS TRADING RESTRICTION ────────────────────────────────────────
+#
+# By default the strategy may only ACT — enter, stop out, break on correlation —
+# between 09:30 and 16:00 ET. Extended-hours prints are thin enough that a fill
+# there is not something the strategy could rely on, so acting on them
+# manufactures trades that could not have been worked.
+#
+# THIS GATES ACTIONS ONLY. The 360-minute rolling correlation still warms up and
+# computes across the whole session grid exactly as before: the window has to
+# span 360 real minutes for the math to match the research definition, and
+# clipping it to regular hours would silently redefine the indicator. What
+# changes is whether a crossing is allowed to become a trade.
+#
+# A crossing outside regular hours is DESTROYED, not deferred. `crossed_up` is a
+# transition test, so a pre-market cross that never re-crosses after 09:30 simply
+# never becomes a trade that day. That is the deliberate choice: a level test at
+# the boundary would be a different entry rule, not a restriction of this one.
+#
+# Tickers in RTH_EXEMPT_TICKERS keep the full [04:00, 20:00) behaviour.
+RTH_OPEN_MINUTE = 9 * 60 + 30          # 09:30 ET
+RTH_CLOSE_MINUTE = 16 * 60             # 16:00 ET
+
+# Stamped onto position-history rows so a later analysis can tell a pre-gate
+# trade from a post-gate one. Bump this if the gate's semantics change.
+RTH_RULE_VERSION = "rth_v1_0930_1600_et"
+
+
+def _parse_exempt_tickers(raw):
+    """RTH_EXEMPT_TICKERS='AAPL, tsla,,NVDA' -> frozenset({'AAPL','TSLA','NVDA'})."""
+    out = set()
+    for part in str(raw or "").replace(";", ",").split(","):
+        t = part.strip().upper()
+        if t:
+            out.add(t)
+    return frozenset(out)
+
+
+# Parsed once at import. Changing it is a Railway variable edit, which redeploys.
+RTH_EXEMPT_TICKERS = _parse_exempt_tickers(os.environ.get("RTH_EXEMPT_TICKERS"))
+
+
+def _minute_of_day(dt):
+    return dt.hour * 60 + dt.minute
+
+
+def _rth_entry_allowed(dt):
+    """[09:30, 16:00) — an entry AT the close would be flattened the same minute,
+    so the open interval keeps the gate from manufacturing zero-length trades."""
+    return RTH_OPEN_MINUTE <= _minute_of_day(dt) < RTH_CLOSE_MINUTE
+
+
+def _rth_exit_allowed(dt):
+    """[09:30, 16:00] — closed at the top end, because 16:00 is exactly when a
+    restricted position is flattened, and that flatten is an allowed action."""
+    return RTH_OPEN_MINUTE <= _minute_of_day(dt) <= RTH_CLOSE_MINUTE
+
+
+# Display status per exit reason. "Stopped Out" is the fallback so an unknown
+# future reason is treated as a fill rather than as a still-running position.
+_EXIT_STATUS = {
+    "session_end": "Holding",
+    "rth_close": "Flattened at close",
+    "price_trailing_stop": "Stopped Out",
+    "correlation_break": "Stopped Out",
+}
+
+
+def rth_policy_snapshot(restrict_rth=True):
+    """What the gate is doing right now, for the API payloads. Configuration a
+    reader cannot see is configuration they cannot check."""
+    return {
+        "restricted": bool(restrict_rth),
+        "open_et": "09:30",
+        "close_et": "16:00",
+        "rule_version": RTH_RULE_VERSION,
+        "exempt_tickers": sorted(RTH_EXEMPT_TICKERS),
+        "exempt_count": len(RTH_EXEMPT_TICKERS),
+    }
+
 
 def _epoch_utc(ts) -> int:
     """Naive ET wall-clock encoded as a UTC unix second — the SAME convention the
@@ -762,7 +841,8 @@ def _price_density_grid(msgs, bars, date_used):
 
 
 def _compute_strategy_signals(ticker, bars, date_used, threshold, stop_pct, msgs=None,
-                              corr_exit_threshold=STRAT_CORR_EXIT_THRESHOLD):
+                              corr_exit_threshold=STRAT_CORR_EXIT_THRESHOLD,
+                              restrict_rth=True):
     """Run the entry/exit strategy for one session. Returns (markers, stats).
     markers: [{time, type:"entry"|"exit", price, ...}], time as candle-axis epoch.
     msgs may be pre-fetched (the exit-screener batch path reads the resting store
@@ -781,6 +861,19 @@ def _compute_strategy_signals(ticker, bars, date_used, threshold, stop_pct, msgs
 
     stop_frac = stop_pct / 100.0
     n = len(grid)
+
+    # Regular-hours gate. Resolved per ticker: an exempt name runs the full
+    # [04:00, 20:00) session exactly as before this change.
+    restricted = bool(restrict_rth) and str(ticker or "").upper() not in RTH_EXEMPT_TICKERS
+    # Where a restricted position flattens: the last grid minute at or before
+    # 16:00. None when the grid never reaches regular hours at all.
+    rth_close_idx = None
+    if restricted:
+        for idx in range(n - 1, -1, -1):
+            if _minute_of_day(grid[idx]) <= RTH_CLOSE_MINUTE:
+                rth_close_idx = idx
+                break
+
     markers, trades = [], 0
     i = 1
     while i < n:
@@ -797,6 +890,12 @@ def _compute_strategy_signals(ticker, bars, date_used, threshold, stop_pct, msgs
         if not crossed_up:
             i += 1
             continue
+        # DESTROYED, NOT DEFERRED: the crossing is consumed and the day moves on.
+        # Because crossed_up is a transition, a pre-market cross that stays above
+        # the threshold never re-crosses, so it simply never becomes a trade.
+        if restricted and not _rth_entry_allowed(grid[i]):
+            i += 1
+            continue
         entry_bar = eff_bar[i]
         if entry_bar is None:             # corr defined but no backing bar (shouldn't happen)
             i += 1
@@ -810,7 +909,13 @@ def _compute_strategy_signals(ticker, bars, date_used, threshold, stop_pct, msgs
         j = i + 1
         while j < n:
             pj = price[j]
-            if pj is not None:
+            # One gate covers BOTH the ratchet and the exit, on purpose. The peak
+            # exists only to define a trailing stop, so letting an after-hours
+            # print raise it would set a stop against a high the strategy could
+            # never have worked — and then trip that stop at 09:30 the next
+            # morning against a level that was never actionable. Freezing the
+            # ratchet and freezing the exit are the same rule.
+            if pj is not None and ((not restricted) or _rth_exit_allowed(grid[j])):
                 if pj > peak:
                     peak = pj
                 price_stop_hit = pj <= peak * (1 - stop_frac)
@@ -824,12 +929,26 @@ def _compute_strategy_signals(ticker, bars, date_used, threshold, stop_pct, msgs
             j += 1
         if exit_idx is not None:
             exit_bar = eff_bar[exit_idx]
+        elif restricted and rth_close_idx is not None and rth_close_idx < n - 1:
+            # The tape runs past 16:00 and this ticker may not act out there, so
+            # the position is FLATTENED AT THE CLOSE rather than carried into
+            # hours it cannot be managed in. This is a real fill at a real bar,
+            # so it settles as a realized P&L — not a frozen mark.
+            #
+            # Nothing carries overnight either way: classifyRow already settles
+            # every position at its session's end, so this moves the flatten from
+            # 20:00 to 16:00 rather than introducing a new kind of close.
+            exit_idx = rth_close_idx
+            exit_bar = eff_bar[exit_idx]
+            exit_reason = "rth_close"
         else:
             # The grid ends at the data frontier, so its last minute IS the last
             # real candle — eff_bar[n-1], not bars[-1], which could sit outside
             # the [04:00, 20:00) window the grid is built from. Mid-session this
             # "session end" is the frontier: the position is still open and the
             # mark is the newest real bar, which is what the caller reports.
+            # A restricted ticker lands here while the frontier is still inside
+            # regular hours — the position is genuinely open, not yet flattened.
             exit_idx = n - 1
             exit_bar = eff_bar[exit_idx]
             exit_reason = "session_end"
@@ -850,7 +969,11 @@ def _compute_strategy_signals(ticker, bars, date_used, threshold, stop_pct, msgs
     stats = {"trades": trades,
              "corr_defined": sum(1 for c in corr if c is not None),
              "messages": len(msgs),
-             "corr_exit_threshold": corr_exit_threshold}
+             "corr_exit_threshold": corr_exit_threshold,
+             # Whether the gate actually applied to THIS ticker — false for an
+             # exempt name even when the restriction is switched on globally.
+             "rth_applied": restricted,
+             "rth_rule_version": RTH_RULE_VERSION if restricted else None}
     return markers, stats
 
 
@@ -1219,9 +1342,13 @@ def api_signals(ticker):
                         "markers": []})
 
     # Strategy runs on the FULL session (the 360-min warmup + non-overlap need it).
+    # restrict_rth is passed explicitly and identically to the positions path: the
+    # research chart has to draw the trades the live strategy would actually take,
+    # or the picture and the position stop agreeing.
     markers, stats = _compute_strategy_signals(
         ticker, bars, date_used, threshold, stop_pct,
         corr_exit_threshold=corr_exit_threshold,
+        restrict_rth=True,
     )
 
     # If the chart is zoomed to a 2h/1h window, only return markers inside it so
@@ -1236,6 +1363,8 @@ def api_signals(ticker):
         "corr_exit_threshold": corr_exit_threshold,
         "n": len(bars), "trades": stats["trades"],
         "corr_defined": stats["corr_defined"], "messages": stats["messages"],
+        "rth": rth_policy_snapshot(restrict_rth=True),
+        "rth_applied": stats["rth_applied"],
         "markers": markers,
     }
     if not markers:
@@ -1443,11 +1572,16 @@ def _compute_positions_row(ticker, date_req, today, stop_pct, threshold, corr_ex
     msgs = social_store.docs_to_msgs(doc.get("messages"))
     row["messages"] = len(msgs)
 
-    markers, _stats = _compute_strategy_signals(
+    markers, sig_stats = _compute_strategy_signals(
         ticker, bars, date_used, threshold, stop_pct,
         msgs=msgs,
         corr_exit_threshold=corr_exit_threshold,
+        restrict_rth=True,
     )
+    # Per-ticker, because the exemption is per-ticker: the batch-level snapshot
+    # says what the policy is, this says whether it bound THIS name.
+    row["rth_applied"] = sig_stats["rth_applied"]
+    row["rth_rule_version"] = sig_stats["rth_rule_version"]
     # How much real tape a trade has actually had. An entry on the frontier bar
     # has none: its mark IS its fill, so the 0.00% that falls out is arithmetic,
     # not an outcome, and the caller must label it rather than print a flat
@@ -1473,7 +1607,11 @@ def _compute_positions_row(ticker, date_req, today, stop_pct, threshold, corr_ex
                 "exit_corr": m.get("corr"),
                 "peak_price": m.get("peak"),
                 "bars_since_entry": sum(1 for e in bar_epochs if e > entry["time"]),
-                "status": "Holding" if m["reason"] == "session_end" else "Stopped Out",
+                # Only session_end leaves a position running. Everything else —
+                # a risk exit or a 16:00 flatten — is a real fill. The consumer
+                # keys "did this fill?" off exit_reason, not off this string, so
+                # a flatten reads honestly instead of claiming a stop-out.
+                "status": _EXIT_STATUS.get(m["reason"], "Stopped Out"),
             })
             entry = None
     return row
@@ -1544,6 +1682,9 @@ def api_positions_batch():
     return jsonify({"date": date_req or "latest", "stop_pct": stop_pct,
                     "threshold": threshold,
                     "corr_exit_threshold": corr_exit_threshold,
+                    # Visible configuration: the caller (and the Positions page)
+                    # can see which tickers are exempt rather than inferring it.
+                    "rth": rth_policy_snapshot(restrict_rth=True),
                     "count": len(results),
                     "results": results})
 

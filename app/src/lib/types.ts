@@ -781,6 +781,19 @@ export type PositionDataStatus =
   | 'no_bars'                     // no intraday bars for this ticker/session
   | 'chart_service_unavailable'
 
+// The regular-hours trading restriction as the chart-service reports it. The
+// strategy may only ACT between open_et and close_et; the rolling correlation
+// still warms up across the whole session. Exempt tickers keep the full
+// 04:00-20:00 behaviour, which is why the list is stated rather than implied.
+export interface PositionRthPolicy {
+  restricted:      boolean
+  open_et:         string
+  close_et:        string
+  rule_version:    string
+  exempt_tickers:  string[]
+  exempt_count:    number
+}
+
 export interface PositionScreenerRow {
   group:                 PositionGroup
   provenance:            PositionProvenance
@@ -794,7 +807,7 @@ export interface PositionScreenerRow {
   entry_corr?:           number | null
   exit_price?:           number | null
   exit_time?:            string | null
-  exit_reason?:          'price_trailing_stop' | 'correlation_break' | 'session_end' | string | null
+  exit_reason?:          'price_trailing_stop' | 'correlation_break' | 'session_end' | 'rth_close' | string | null
   exit_corr?:            number | null
   current_price?:        number | null
   peak_price?:           number | null
@@ -807,6 +820,10 @@ export interface PositionScreenerRow {
   // as a label, never as a flat percentage.
   pnl_pending?:          boolean | null
   bars_since_entry?:     number | null
+  // Whether the regular-hours gate bound this ticker. null on rows recorded
+  // before the gate existed — which is how the two regimes stay tellable apart.
+  rth_applied?:          boolean | null
+  rth_rule_version?:     string | null
   threshold?:            number | null
   stop_pct?:             number | null
   // watch rows only
@@ -834,6 +851,9 @@ export interface PositionScreenerResponse {
   canonical:             { threshold: number; stop_pct: number }
   is_canonical:          boolean
   corr_window_minutes:   number
+  // Regular-hours restriction as the chart-service reported it. null when the
+  // chart-service predates the gate — 'unreported', not 'unrestricted'.
+  rth?:                  PositionRthPolicy | null
   chart_service_ok:      boolean
   tickers_scanned:       number
   universe_size:         number

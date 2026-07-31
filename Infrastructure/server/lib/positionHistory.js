@@ -44,7 +44,22 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 // Exit reasons the chart-service can emit. A "risk exit" is a real, final fill;
 // session_end is the sim flattening at the last bar it had, which is only a
 // closed position once that session is actually over (see classifyRow).
-const RISK_EXIT_REASONS = new Set(['price_trailing_stop', 'correlation_break'])
+// Exit reasons that represent an ACTUAL FILL, as opposed to a position still
+// running and merely marked to the latest bar. This drives isFinalTrade,
+// classifyRow, pnl_is_realized, and whether exit_price or session_end_price is
+// the populated field — so membership here is the difference between "this trade
+// concluded" and "this is a mid-flight mark".
+//
+// rth_close is a fill: a non-exempt position flattened at 16:00 ET under the
+// regular-hours restriction closed at that bar, at that price. Only session_end
+// leaves a position genuinely open.
+const RISK_EXIT_REASONS = new Set(['price_trailing_stop', 'correlation_break', 'rth_close'])
+
+// The same question, exported for the live path so it does not have to sniff a
+// display string to decide whether a trade filled.
+export function isFillExitReason(reason) {
+  return RISK_EXIT_REASONS.has(String(reason || ''))
+}
 
 export const POSITION_HISTORY_COLLECTION = 'screener_position_history'
 
@@ -181,6 +196,15 @@ export function normalizeTrade(trade = {}, context = {}) {
     position_policy_id: policyId,
     market_cap_tier: context.marketCapTier || null,
 
+    // Which TRADING-HOURS regime produced this row. Same purpose as
+    // position_policy_id: history spans a rule change, so a later analysis must
+    // be able to separate pre-gate trades (free to enter and exit across
+    // 04:00-20:00) from post-gate ones (regular hours only, unless exempt).
+    // null means either a pre-gate row or an exempt ticker — rth_applied
+    // disambiguates, and rows written before this change lack both fields.
+    rth_rule_version: trade.rth_rule_version ?? context.rthRuleVersion ?? null,
+    rth_applied: trade.rth_applied ?? context.rthApplied ?? null,
+
     // Entry: immutable once observed.
     entry_epoch: Math.floor(entryEpoch),
     entry_price: round(entryPrice, 4),
@@ -241,9 +265,19 @@ export function mergeTradeSnapshot(existing, incoming, { today } = {}) {
   // incoming peak means the sim saw fewer bars than before (truncated fetch),
   // not that the high went away — keep the high-water mark and say so rather
   // than silently loosening the stop.
+  //
+  // ...UNLESS the trading-hours regime changed underneath the row. The ratchet
+  // assumes both peaks were measured by the same rules; when the regular-hours
+  // gate turns on, a LOWER incoming peak is not a truncated fetch, it is the new
+  // rule correctly refusing to count an after-hours high the strategy could never
+  // have acted on. Holding the old high-water mark there would keep a stop
+  // pinned to an unactionable price and quietly defeat the freeze — so on a
+  // regime change the incoming peak wins.
   const existingPeak = finiteNumber(existing.peak_price)
   const incomingPeak = finiteNumber(incoming.peak_price)
-  const peakRegressed = existingPeak != null && incomingPeak != null && incomingPeak < existingPeak
+  const regimeChanged = String(existing.rth_rule_version || '') !== String(incoming.rth_rule_version || '')
+  const peakRegressed = !regimeChanged
+    && existingPeak != null && incomingPeak != null && incomingPeak < existingPeak
   const peakPrice = peakRegressed ? existingPeak : (incomingPeak ?? existingPeak)
 
   // Entry is keyed and immutable. If the sim reports a different fill for the
@@ -311,6 +345,10 @@ export function rowsFromPositionsBatch(results = {}, context = {}) {
         corrExitThreshold: context.corrExitThreshold,
         policyId: context.policyId,
         marketCapTier: tiers.get(ticker) || null,
+        // Per-ticker: the batch ran under one policy, but an exempt name was
+        // not bound by it, and the row has to record which was true for itself.
+        rthRuleVersion: result.rth_rule_version ?? null,
+        rthApplied: result.rth_applied ?? null,
         corrStatus: status,
         chartServiceDate: result.date,
         observedAt,

@@ -103,6 +103,10 @@ function exitReasonLabel(value?: string | null): string {
   if (value === 'price_trailing_stop') return 'Price stop'
   if (value === 'correlation_break') return 'Corr break'
   if (value === 'session_end') return 'Session end'
+  // A real fill at the 16:00 bar, not a stop and not a mid-session mark: the
+  // regular-hours gate flattens a non-exempt position at the close rather than
+  // carrying it into hours it could not be managed in.
+  if (value === 'rth_close') return 'Closed 16:00'
   return value || '—'
 }
 
@@ -403,6 +407,43 @@ export function PositionsPage() {
             {!data.chart_service_ok && ' · chart-service unreachable, so no live positions could be simulated'}
             {data.history_truncated && ` · history truncated at ${data.history_rows} rows`}
             . Tickers that could not be simulated appear in Watch with the reason, not omitted.
+          </div>
+        </div>
+      )}
+
+      {/* Trading hours. Rendered UNCONDITIONALLY when the chart-service reports
+          it: the restriction changes which trades exist at all, so it is stated
+          on every load rather than surfacing only when something went wrong.
+          A missing policy is reported as unreported, never as unrestricted. */}
+      {data && (
+        <div className="bg-surface border border-border rounded-lg px-4 py-3 mb-3">
+          <div className="text-[11px] text-neutral leading-relaxed">
+            <span className="text-slate-300 font-semibold">Trading hours: </span>
+            {!data.rth ? (
+              <>not reported by the chart-service, so whether the regular-hours
+                restriction applied to these rows is unknown.</>
+            ) : !data.rth.restricted ? (
+              <>unrestricted — entries and exits may fire across the full
+                04:00–20:00 ET session for every ticker.</>
+            ) : (
+              <>
+                entries and exits only fire {data.rth.open_et}–{data.rth.close_et} ET.
+                A correlation crossing outside those hours is dropped, not deferred,
+                and an open position is flattened at {data.rth.close_et} rather than
+                carried into hours it cannot be managed in. The 360-minute
+                correlation still warms up across the whole session — this gates
+                the action, not the indicator.
+                {data.rth.exempt_count > 0 ? (
+                  <> Exempt ({data.rth.exempt_count}), trading the full session:{' '}
+                    <span className="text-slate-300 font-mono">
+                      {data.rth.exempt_tickers.join(', ')}
+                    </span>.
+                  </>
+                ) : (
+                  <> No tickers are exempt.</>
+                )}
+              </>
+            )}
           </div>
         </div>
       )}

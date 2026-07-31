@@ -220,10 +220,15 @@ class RealEntriesUnaffectedTests(unittest.TestCase):
         )
 
     def test_session_end_exit_marks_the_frontier_bar(self):
+        # restrict_rth=False isolates the frontier bound from the regular-hours
+        # gate. This tape's frontier is 16:16, so with the gate on, the position
+        # would flatten at 16:00 and never reach the frontier — a different
+        # behaviour, covered in test_rth_gate.py. Here the question is only
+        # whether a session_end exit lands on the last REAL bar.
         bars, msgs = phase_flip_tape()
         last_bar = max(bars, key=lambda b: b["ts"])
         markers, _s = chart_service._compute_strategy_signals(
-            "TEST", bars, DATE, 0.10, 5.0, msgs=msgs)
+            "TEST", bars, DATE, 0.10, 5.0, msgs=msgs, restrict_rth=False)
         holds = [m for m in markers
                  if m["type"] == "exit" and m.get("reason") == "session_end"]
         self.assertTrue(holds, "fixture must leave a position open at the frontier")

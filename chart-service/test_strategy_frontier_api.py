@@ -22,9 +22,14 @@ from test_strategy_frontier import DATE, phase_flip_tape
 _NO_OVERNIGHT = types.ModuleType("tv_overnight")
 _NO_OVERNIGHT.overnight_bars = lambda *_a, **_k: []
 
-BARS, MSGS = phase_flip_tape()          # real entry at 13:19, frontier 16:16
-FRONTIER_HHMM = "16:16"
-REAL_MINUTES = 737                      # 04:00..16:16 inclusive
+# Frontier deliberately INSIDE regular hours (14:30). These tests are about the
+# data-frontier bound, and a frontier past 16:00 would hand the position to the
+# regular-hours gate, which flattens it at the close — a different behaviour,
+# covered in test_rth_gate.py. Keeping the frontier at 14:30 leaves the position
+# genuinely open at the last real bar, which is what these assertions are for.
+BARS, MSGS = phase_flip_tape(14, 30)    # real entry at 13:19, frontier 14:30
+FRONTIER_HHMM = "14:30"
+REAL_MINUTES = 631                      # 04:00..14:30 inclusive
 
 
 def fake_doc(*_a, **_k):
@@ -80,7 +85,7 @@ class FrontierApiTests(unittest.TestCase):
         trade = row["trades"][0]
         self.assertIn("bars_since_entry", trade)
         self.assertEqual(trade["entry_time"], "13:19")
-        self.assertEqual(trade["bars_since_entry"], 177)      # 13:19 -> 16:16
+        self.assertEqual(trade["bars_since_entry"], 71)       # 13:19 -> 14:30
         self.assertEqual(trade["status"], "Holding")
 
     def test_open_position_is_marked_to_the_frontier_bar(self):
