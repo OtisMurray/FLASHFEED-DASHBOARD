@@ -618,6 +618,10 @@ function PositionRow({ row }: { row: PositionScreenerRow }) {
   const isWatch = row.group === 'watch'
   // Never concluded: flagged on the row itself, not only in the DATA column.
   const unsettled = row.data_status === 'stale'
+  // Entered on the newest real bar, so there is no elapsed session to have a
+  // return over yet. Same honesty convention as `unsettled`: the P&L cell says
+  // what the row is instead of printing a 0.00% that reads as a flat outcome.
+  const pnlPending = row.pnl_pending === true && !unsettled
 
   return (
     <tr className={clsx(
@@ -703,6 +707,20 @@ function PositionRow({ row }: { row: PositionScreenerRow }) {
       <td className="px-2 py-2 whitespace-nowrap">
         {row.pnl_pct == null ? (
           <span className="font-mono text-neutral">—</span>
+        ) : pnlPending ? (
+          // No percentage at all: the fill IS the mark, so any number here would
+          // be asserting an outcome the position has not had time to have.
+          <span
+            className="font-mono text-[11px] text-sky-300 italic"
+            title={'Entered on the newest bar of the session — the mark is the fill, so there is no '
+              + 'elapsed session to measure a return over yet. A P&L appears once the tape prints '
+              + 'past the entry.'}
+          >
+            just entered
+            <span className="text-[9px] uppercase tracking-wide ml-1 not-italic text-sky-500/80">
+              no elapsed session
+            </span>
+          </span>
         ) : (
           <span className="font-mono">
             <span

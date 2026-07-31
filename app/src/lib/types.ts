@@ -802,6 +802,11 @@ export interface PositionScreenerRow {
   distance_to_stop_pct?: number | null
   pnl_pct?:              number | null
   pnl_is_realized?:      boolean | null
+  // True when an open position entered on the newest real bar, so its mark IS
+  // its fill and pnl_pct is 0 by construction rather than by outcome. Rendered
+  // as a label, never as a flat percentage.
+  pnl_pending?:          boolean | null
+  bars_since_entry?:     number | null
   threshold?:            number | null
   stop_pct?:             number | null
   // watch rows only

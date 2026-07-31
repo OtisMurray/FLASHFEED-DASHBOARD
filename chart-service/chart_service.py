@@ -643,6 +643,10 @@ def _build_social_series(msgs: list, date_str: str, roll_window: int = None) -> 
 # per-minute message count — the same stored social messages the chart overlay
 # serves (via social_store) — NOT the smoothed overlay line. Each entry/exit is
 # snapped to a real candle for display.
+#
+# ...but the grid is BOUNDED AT THE DATA FRONTIER — see _price_density_grid. The
+# fill exists to make a window span 360 real minutes across gaps INSIDE the tape,
+# never to extend the tape past its last real bar.
 STRAT_ROLL_WINDOW = 360
 STRAT_ENTRY_THRESHOLD = 0.10
 STRAT_STOP_PCT = 30.0
@@ -694,9 +698,38 @@ def _rolling_corr_pd(price: list, density: list, window: int = STRAT_ROLL_WINDOW
 
 def _price_density_grid(msgs, bars, date_used):
     """Per-minute density (raw message counts) and forward-filled price on the
-    continuous 1-min ET session grid, plus the real bar backing each minute.
-    Shared by the strategy signals and the entry-screener batch correlation so
-    both stay on the exact same definition. Returns (grid, density, price, eff_bar)."""
+    1-min ET session grid, plus the real bar backing each minute, TRUNCATED AT THE
+    LAST REAL BAR. Shared by the strategy signals and the entry-screener batch
+    correlation so both stay on the exact same definition.
+    Returns (grid, density, price, eff_bar), all the same length.
+
+    THE FRONTIER BOUND — why the grid stops at the last real bar.
+
+    The grid is nominally the whole session, [04:00, 20:00). Mid-session the tape
+    only reaches "now", so every later minute used to be filled with the last
+    close carried flat and a zero message count, and the rolling correlation
+    stayed DEFINED across all of it (601 minutes for every ticker, whatever its
+    bar count). The strategy then walked those minutes and took entries on them:
+    observed live on 2026-07-30 at 16:16 ET, entries firing at grid minutes 16:21,
+    17:31, 17:36 and 18:11 — minutes that had not happened. Each was snapped back
+    to `bars[-1]` for display, which is why entry == peak == current_price exactly
+    and the position read 0.00%. The same carry contaminated the SERVED
+    correlation, which _compute_corr_row takes at the last defined minute (19:59,
+    a window ~62% filler): STKH's frontier corr of +0.093 was served as -0.091.
+
+    Same distinction ResearchChart draws with its `isReal` mask, moved to the
+    computation layer. There the carried price is still DRAWN (dashed, for visual
+    continuity) but is excluded from anything that asserts a fact about the tape —
+    "the High/Low markers, which must only ever mark traded prices". A strategy
+    entry is exactly that kind of assertion, so it gets the same treatment: carried
+    minutes may support a window, they may never carry a decision.
+
+    Gaps INSIDE the tape keep their forward fill — those minutes really elapsed,
+    the stock just did not print, and the research definition counts them. Only
+    the open-ended tail past the last real bar is dropped, which also covers a
+    name whose tape dies early in a PAST session (previously good for four hours
+    of phantom entries after its last trade).
+    """
     # per-minute density = raw message counts (the research `msg_density`)
     minute_count = Counter()
     for dt_et, _sent in msgs:
@@ -710,14 +743,22 @@ def _price_density_grid(msgs, bars, date_used):
     price = [None] * len(grid)
     eff_bar = [None] * len(grid)          # last actual bar at/before each grid minute
     last = None
+    frontier = -1                         # last grid index backed by a REAL bar
     for idx, m in enumerate(grid):
         b = bar_by_min.get(m)
         if b is not None:
             last = b
+            frontier = idx
         if last is not None:
             price[idx] = last["close"]
             eff_bar[idx] = last
-    return grid, density, price, eff_bar
+
+    # Truncate to the frontier. Indexed off the grid rather than max(bars) so a
+    # bar outside [04:00, 20:00) cannot push the bound past the grid itself; a
+    # ticker with no in-window bar at all yields empty lists, and every caller
+    # already treats "no minutes" as "no signal".
+    end = frontier + 1
+    return grid[:end], density[:end], price[:end], eff_bar[:end]
 
 
 def _compute_strategy_signals(ticker, bars, date_used, threshold, stop_pct, msgs=None,
@@ -784,8 +825,13 @@ def _compute_strategy_signals(ticker, bars, date_used, threshold, stop_pct, msgs
         if exit_idx is not None:
             exit_bar = eff_bar[exit_idx]
         else:
+            # The grid ends at the data frontier, so its last minute IS the last
+            # real candle — eff_bar[n-1], not bars[-1], which could sit outside
+            # the [04:00, 20:00) window the grid is built from. Mid-session this
+            # "session end" is the frontier: the position is still open and the
+            # mark is the newest real bar, which is what the caller reports.
             exit_idx = n - 1
-            exit_bar = bars[-1]           # real last candle == session end
+            exit_bar = eff_bar[exit_idx]
             exit_reason = "session_end"
 
         markers.append({"time": _epoch_utc(entry_bar["ts"]), "type": "entry",
@@ -1402,6 +1448,14 @@ def _compute_positions_row(ticker, date_req, today, stop_pct, threshold, corr_ex
         msgs=msgs,
         corr_exit_threshold=corr_exit_threshold,
     )
+    # How much real tape a trade has actually had. An entry on the frontier bar
+    # has none: its mark IS its fill, so the 0.00% that falls out is arithmetic,
+    # not an outcome, and the caller must label it rather than print a flat
+    # percentage that reads as "held and went nowhere". Counted in REAL bars
+    # (not clock minutes) so an illiquid name that prints once every ten minutes
+    # is not credited with elapsed session it never had.
+    bar_epochs = [_epoch_utc(b["ts"]) for b in bars]
+
     # markers arrive as strict entry/exit pairs (see _compute_strategy_signals)
     entry = None
     for m in markers:
@@ -1418,6 +1472,7 @@ def _compute_positions_row(ticker, date_req, today, stop_pct, threshold, corr_ex
                 "exit_reason": m["reason"],
                 "exit_corr": m.get("corr"),
                 "peak_price": m.get("peak"),
+                "bars_since_entry": sum(1 for e in bar_epochs if e > entry["time"]),
                 "status": "Holding" if m["reason"] == "session_end" else "Stopped Out",
             })
             entry = None

@@ -99,6 +99,24 @@ export function tradeIdentity(row = {}) {
   ].join('|')
 }
 
+// Has this trade had any tape to move against yet?
+//
+// An open position entered on the newest real bar is marked at its own fill, so
+// pnl_pct is 0 by construction. The number is arithmetically true and
+// presentationally a lie: it reads as "held and went nowhere" when the truth is
+// "no elapsed session yet". The client renders the label instead of the figure —
+// the same convention as the Unsettled badge, which refuses to let a frozen
+// mid-session mark pass as a settled result.
+//
+// A risk exit is NEVER pending: stopping out is a real outcome no matter how few
+// bars it took. `bars_since_entry` absent (an older chart-service, or a recorded
+// row that predates the field) means unknown, which must not read as pending —
+// an unlabelled real P&L is a smaller lie than a labelled fake one.
+export function pnlPendingFor(trade = {}, { riskExit = false } = {}) {
+  if (riskExit) return false
+  return trade.bars_since_entry === 0
+}
+
 export function recordedPositionRow(doc = {}, { today, companyByTicker } = {}) {
   const stale = doc.finalized !== true
   const group = classifyRow(doc, { today })
@@ -128,6 +146,11 @@ export function recordedPositionRow(doc = {}, { today, companyByTicker } = {}) {
     distance_to_stop_pct: doc.distance_to_stop_pct,
     pnl_pct: doc.pnl_pct,
     pnl_is_realized: realized,
+    // Never pending on a recorded row: a stored row is a past session's trade,
+    // and a stored row that never reached a conclusion is already covered — and
+    // more precisely labelled — by data_status: 'stale' / the Unsettled badge.
+    pnl_pending: false,
+    bars_since_entry: doc.bars_since_entry ?? null,
     // The parameters this row was actually simulated under — which are the
     // canonical ones, and may differ from what the caller asked for.
     threshold: doc.threshold,
@@ -369,6 +392,7 @@ router.get('/', async (req, res) => {
         const riskExit = trade.status === 'Stopped Out'
         const refPrice = riskExit ? trade.exit_price : currentPrice
         const stopPrice = trade.peak_price != null ? trade.peak_price * (1 - stopPct / 100) : null
+        const pnlPending = pnlPendingFor(trade, { riskExit })
         rows.push({
           // Classified from the SESSION THE SIM ACTUALLY RETURNED, not assumed to
           // be today. The chart-service simulates the most recent session that
@@ -402,6 +426,8 @@ router.get('/', async (req, res) => {
             ? round(((refPrice - trade.entry_price) / trade.entry_price) * 100, 2)
             : null,
           pnl_is_realized: riskExit,
+          pnl_pending: pnlPending,
+          bars_since_entry: trade.bars_since_entry ?? null,
           market_cap_tier: marketCapTier,
           threshold,
           stop_pct: stopPct,
