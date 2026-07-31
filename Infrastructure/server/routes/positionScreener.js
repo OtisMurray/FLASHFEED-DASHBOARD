@@ -155,6 +155,13 @@ export function recordedPositionRow(doc = {}, { today, companyByTicker } = {}) {
     // pre-gate row, and it is what distinguishes the two regimes in history.
     rth_applied: doc.rth_applied ?? null,
     rth_rule_version: doc.rth_rule_version ?? null,
+    // Integrity markers. These were being written to Mongo and never projected,
+    // so a row could carry a known problem that nothing on the page could show.
+    // A detection nobody can see is not a detection.
+    price_basis: doc.price_basis ?? null,
+    entry_price_drift: doc.entry_price_drift ?? null,
+    peak_regressed: doc.peak_regressed ?? null,
+    pnl_withheld_reason: doc.pnl_withheld_reason ?? null,
     // The parameters this row was actually simulated under — which are the
     // canonical ones, and may differ from what the caller asked for.
     threshold: doc.threshold,

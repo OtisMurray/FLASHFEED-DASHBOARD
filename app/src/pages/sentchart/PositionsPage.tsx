@@ -236,12 +236,29 @@ export function PositionsPage() {
     }
     const realized = bucket(rows.filter(r => r.pnl_is_realized === true))
     const unrealized = bucket(rows.filter(r => r.group === 'open' && r.pnl_is_realized !== true))
+
+    // WHICH RULE SET PRODUCED THESE TRADES. History spans rule changes — the
+    // data-frontier bound and then the regular-hours gate — and a past session is
+    // never re-simulated, so its rows keep whatever rules were live when they were
+    // written. Counted here rather than hardcoded so the caveat shrinks on its own
+    // as pre-gate sessions age out of the retention window, and disappears when
+    // every remaining row is on one rule set.
+    const counted = [
+      ...dedupe(rows.filter(r => r.pnl_is_realized === true)),
+      ...dedupe(rows.filter(r => r.group === 'open' && r.pnl_is_realized !== true)),
+    ].filter(r => r.pnl_pct != null)
+    const priorRegime = counted.filter(r => !r.rth_rule_version)
+    const priorRegimeSum = priorRegime.reduce((a, r) => a + (r.pnl_pct ?? 0), 0)
+
     return {
       realized,
       unrealized,
       combined: realized.sum + unrealized.sum,
       collapsed: realized.collapsed + unrealized.collapsed,
       sessions: new Set(rows.map(r => r.date).filter(Boolean)).size,
+      countedN: counted.length,
+      priorRegimeN: priorRegime.length,
+      priorRegimeSum,
     }
   }, [data])
 
@@ -323,8 +340,30 @@ export function PositionsPage() {
             </div>
           </div>
 
-          {/* The two things that would otherwise make the headline misleading. */}
+          {/* WHAT THIS NUMBER IS NOT. It is a gross, unbenchmarked, unvalidated
+              sum across rule sets — every one of those qualifiers came out of an
+              audit, and each is stated here rather than left for the reader to
+              discover the same way. Same convention as the Unsettled badge: the
+              figure stays, the claim it implies does not. */}
           <div className="text-[10px] text-slate-500 mt-3 leading-relaxed border-t border-border pt-2 space-y-1">
+            <div className="text-amber-200/80">
+              Not a validated performance figure. It is not benchmarked against buy-and-hold, and at this sample size
+              it is not statistically distinguishable from zero — a total like this is typically carried by a few
+              outlier trades while the median trade loses. Read it as a description of what the simulation did, not as
+              evidence that the strategy works.
+            </div>
+            {pnl.priorRegimeN > 0 && (
+              <div className="text-amber-200/80">
+                Mixes rule sets: {pnl.priorRegimeN} of {pnl.countedN} trades ({fmtPct(pnl.priorRegimeSum, true)}) were
+                simulated before the regular-hours gate, under rules that allowed entries and exits outside
+                09:30–16:00. Past sessions are never re-simulated, so those rows keep the rules they were written
+                under and the total spans both.
+              </div>
+            )}
+            <div>
+              Gross. No commission, spread, slippage, borrow or fill modelling — fills are assumed at the 1-minute bar
+              close, which is optimistic for thinly-traded names.
+            </div>
             <div>
               Percentage points, summed across distinct trades — equivalent to equal capital per position. The API
               carries no position size, so this is deliberately not shown as a dollar figure.
@@ -663,6 +702,11 @@ function PositionRow({ row }: { row: PositionScreenerRow }) {
   // return over yet. Same honesty convention as `unsettled`: the P&L cell says
   // what the row is instead of printing a 0.00% that reads as a flat outcome.
   const pnlPending = row.pnl_pending === true && !unsettled
+  // Stored prices are as-traded; a split restates the bars but not the record.
+  // The RETURN is still right — returns are ratios and survive a split — so this
+  // badges the price columns rather than discrediting the P&L.
+  const basis = row.price_basis
+  const basisBroken = basis != null && basis.comparable === false
 
   return (
     <tr className={clsx(
@@ -812,7 +856,28 @@ function PositionRow({ row }: { row: PositionScreenerRow }) {
       </td>
 
       <td className="px-2 py-2 whitespace-nowrap">
-        <DataBadge status={row.data_status} />
+        <div className="flex items-center gap-1">
+          <DataBadge status={row.data_status} />
+          {basisBroken && (
+            <span
+              title={basis?.note
+                ?? 'Stored prices are on a different basis from current bars; the return is unaffected but the price levels are not comparable to a chart.'}
+              className="rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wide border whitespace-nowrap
+                         text-orange-200 border-orange-400/70 border-dashed bg-orange-500/20 font-semibold"
+            >
+              {basis?.split_suspected ? `Split ${basis.split_ratio}` : 'Basis'}
+            </span>
+          )}
+          {row.pnl_withheld_reason === 'price_basis_mismatch' && (
+            <span
+              title="P&L withheld: the stored entry and the latest mark are on different price bases, so any return computed across them would be fabricated. The last figure from a consistent pair is retained."
+              className="rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wide border whitespace-nowrap
+                         text-red-200 border-red-400/70 border-dashed bg-red-500/20 font-semibold"
+            >
+              P&amp;L held
+            </span>
+          )}
+        </div>
       </td>
     </tr>
   )

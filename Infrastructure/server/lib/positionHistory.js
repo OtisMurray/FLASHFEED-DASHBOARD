@@ -37,6 +37,7 @@
 // pure bookkeeping over the chart-service's own clean reimplementation.
 
 import { BASELINE_POSITION_POLICY_ID } from './positionPolicy.js'
+import { detectPriceBasisMismatch, priceBasisStamp } from './priceBasis.js'
 
 const TICKER_RE = /^[A-Z][A-Z0-9.-]{0,7}$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
@@ -286,6 +287,17 @@ export function mergeTradeSnapshot(existing, incoming, { today } = {}) {
     && finiteNumber(incoming.entry_price) != null
     && Number(existing.entry_price) !== Number(incoming.entry_price)
 
+  // A drifting entry price for the SAME minute is usually a small vendor
+  // correction. When it drifts by a whole-number factor it is a split, and the
+  // stored entry is now on a different basis from the incoming mark. Computing
+  // pnl_pct across the two would emit a plausible-looking, wholly fabricated
+  // number — a stored $0.295 entry against a re-fetched $3.243 mark reads as
+  // +1000%. Better to publish no P&L and say why.
+  const basisMismatch = entryDrift
+    ? detectPriceBasisMismatch(existing.entry_price, incoming.entry_price)
+    : null
+  const basisBroken = basisMismatch != null
+
   const stopPct = finiteNumber(existing.stop_pct) ?? finiteNumber(incoming.stop_pct)
   const stopPrice = peakPrice != null && stopPct != null ? peakPrice * (1 - stopPct / 100) : null
   const riskExit = RISK_EXIT_REASONS.has(String(incoming.exit_reason || ''))
@@ -302,14 +314,36 @@ export function mergeTradeSnapshot(existing, incoming, { today } = {}) {
     first_seen_at: existing.first_seen_at ?? existing.observed_at ?? incoming.observed_at,
     peak_price: round(peakPrice, 4),
     stop_price: round(stopPrice, 4),
-    distance_to_stop_pct: refPrice != null && stopPrice != null && refPrice !== 0
-      ? round(((refPrice - stopPrice) / refPrice) * 100, 2)
-      : null,
-    pnl_pct: refPrice != null && entryPrice ? round(((refPrice - entryPrice) / entryPrice) * 100, 2) : null,
+    // Both of these mix the stored entry with the incoming mark, so both are
+    // withheld when the two are on different bases. The previously stored values
+    // survive via the `...existing` spread — the last figures computed from a
+    // consistent pair — rather than being overwritten with mixed-basis ones.
+    distance_to_stop_pct: basisBroken
+      ? (existing.distance_to_stop_pct ?? null)
+      : (refPrice != null && stopPrice != null && refPrice !== 0
+        ? round(((refPrice - stopPrice) / refPrice) * 100, 2)
+        : null),
+    pnl_pct: basisBroken
+      ? (existing.pnl_pct ?? null)
+      : (refPrice != null && entryPrice ? round(((refPrice - entryPrice) / entryPrice) * 100, 2) : null),
     snapshots: Number(existing.snapshots || 1) + 1,
     finalized: isFinalTrade(incoming, { today }),
     ...(peakRegressed ? { peak_regressed: true } : {}),
     ...(entryDrift ? { entry_price_drift: round(incoming.entry_price, 4) } : {}),
+    // Stamped from what the merge itself observed, so a row caught this way is
+    // labelled without waiting for the periodic audit to come round.
+    ...(basisBroken
+      ? {
+        price_basis: priceBasisStamp({
+          storedPrice: existing.entry_price,
+          freshPrice: incoming.entry_price,
+          minute: existing.entry_time ?? null,
+          source: 'merge_entry_drift',
+          now: incoming.observed_at instanceof Date ? incoming.observed_at : undefined,
+        }),
+        pnl_withheld_reason: 'price_basis_mismatch',
+      }
+      : {}),
   }
   return { doc, changed: true, reason: riskExit ? 'closed' : 'updated' }
 }

@@ -794,6 +794,22 @@ export interface PositionRthPolicy {
   exempt_count:    number
 }
 
+export interface PositionPriceBasis {
+  comparable:       boolean
+  checked_at?:      string | null
+  sampled_minute?:  string | null
+  stored_price?:    number | null
+  fresh_price?:     number | null
+  source?:          string | null
+  ratio?:           number | null
+  kind?:            'split' | 'unexplained' | 'implausible' | string | null
+  split_suspected?: boolean
+  split_ratio?:     string | null
+  split_factor?:    number | null
+  direction?:       'reverse' | 'forward' | string | null
+  note?:            string | null
+}
+
 export interface PositionScreenerRow {
   group:                 PositionGroup
   provenance:            PositionProvenance
@@ -824,6 +840,14 @@ export interface PositionScreenerRow {
   // before the gate existed — which is how the two regimes stay tellable apart.
   rth_applied?:          boolean | null
   rth_rule_version?:     string | null
+  // Integrity markers. price_basis records whether this row's stored prices are
+  // still comparable to freshly-fetched bars — a split restates the bars but not
+  // the stored record, so the RETURN stays valid while the price LEVELS stop
+  // matching a current chart.
+  price_basis?:          PositionPriceBasis | null
+  entry_price_drift?:    number | null
+  peak_regressed?:       boolean | null
+  pnl_withheld_reason?:  string | null
   threshold?:            number | null
   stop_pct?:             number | null
   // watch rows only

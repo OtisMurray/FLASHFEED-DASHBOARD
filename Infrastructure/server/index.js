@@ -45,6 +45,7 @@ import {
   POSITION_HISTORY_COLLECTION,
 } from './lib/positionHistory.js'
 import { POSITION_POLICY_ID, positionTierFor } from './lib/positionPolicy.js'
+import { priceBasisStamp } from './lib/priceBasis.js'
 import { normalizeRollingWindowMinutes, recordIsInsideRollingWindow, sliceCandlesToRollingWindow } from './lib/rollingWindow.js'
 import * as predictionThresholdPolicy from './lib/predictionThresholdPolicy.js'
 import { loadAiPositionCandidates } from './lib/aiPositionCandidates.js'
@@ -5489,6 +5490,151 @@ async function runPositionHistoryCycle(reason = 'scheduled') {
   return positionHistoryStatus
 }
 
+// PRICE-BASIS AUDIT
+//
+// Stored history holds AS-TRADED prices; Finviz restates its bars onto the
+// current share count after a split. Returns survive that (they are ratios), but
+// price LEVELS stop matching a current chart, and any tool that joins the two
+// produces a plausible fabrication — observed at +1022% for NEXR during the
+// 2026-07-31 audit, from a 1:11 reverse split.
+//
+// This job SAMPLES ONE BAR per (ticker, session) and stamps what it saw. It is
+// strictly additive: it writes `price_basis` and touches no price, no P&L and no
+// exit. The as-traded record stays exactly as recorded — a stored price that a
+// reader may already have seen is not restated behind them, and a basis that can
+// change again at the next corporate action is not baked in.
+const PRICE_BASIS_AUDIT_ENABLED = !['0', 'false', 'no']
+  .includes(String(process.env.PRICE_BASIS_AUDIT_ENABLED || 'true').toLowerCase())
+const PRICE_BASIS_AUDIT_INTERVAL_MS = Math.max(
+  10 * 60_000, Number(process.env.PRICE_BASIS_AUDIT_INTERVAL_MS || 6 * 60 * 60_000))
+// Finviz rate-limits concurrent history pulls, so this walks serially with a
+// small delay and a hard per-cycle cap rather than fanning out.
+const PRICE_BASIS_AUDIT_BATCH = Math.max(1, Number(process.env.PRICE_BASIS_AUDIT_BATCH || 25))
+const PRICE_BASIS_AUDIT_DELAY_MS = Math.max(0, Number(process.env.PRICE_BASIS_AUDIT_DELAY_MS || 1200))
+// Re-check a session occasionally: a split can land after the first look.
+const PRICE_BASIS_RECHECK_MS = 24 * 60 * 60_000
+
+const priceBasisStatus = {
+  enabled: PRICE_BASIS_AUDIT_ENABLED,
+  running: false,
+  lastStartedAt: null,
+  lastFinishedAt: null,
+  lastError: null,
+  lastChecked: 0,
+  lastFlagged: 0,
+  lastSkipped: 0,
+  totalFlagged: 0,
+}
+
+async function fetchSessionBars(ticker, date) {
+  const url = `${POSITION_HISTORY_CHART_SERVICE_URL}/api/sentchart/charts/${encodeURIComponent(ticker)}?date=${encodeURIComponent(date)}`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 60_000)
+  try {
+    const res = await fetch(url, { signal: controller.signal })
+    if (!res.ok) return null
+    const data = await res.json()
+    return Array.isArray(data?.candles) && data.candles.length ? data.candles : null
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+// The bar covering a stored HH:MM entry. Candle times are the naive ET wall
+// clock encoded as UTC, the same convention the chart axis uses.
+function barAtMinute(candles, entryTime) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(entryTime || ''))
+  if (!m) return null
+  const want = Number(m[1]) * 60 + Number(m[2])
+  for (const c of candles) {
+    const d = new Date(Number(c.time) * 1000)
+    if (d.getUTCHours() * 60 + d.getUTCMinutes() >= want) return c
+  }
+  return null
+}
+
+async function runPriceBasisAudit(reason = 'scheduled') {
+  if (!PRICE_BASIS_AUDIT_ENABLED || priceBasisStatus.running) return priceBasisStatus
+  const db = mongoose.connection.db
+  if (!db) return priceBasisStatus
+  priceBasisStatus.running = true
+  priceBasisStatus.lastStartedAt = new Date().toISOString()
+  priceBasisStatus.lastError = null
+  let checked = 0, flagged = 0, skipped = 0
+  try {
+    const coll = db.collection(POSITION_HISTORY_COLLECTION)
+    const staleBefore = new Date(Date.now() - PRICE_BASIS_RECHECK_MS)
+    // One representative row per (ticker, session) — sampling one bar answers
+    // the question for every row of that session.
+    const sessions = await coll.aggregate([
+      {
+        $match: {
+          superseded: { $ne: true },
+          entry_price: { $gt: 0 },
+          entry_time: { $type: 'string' },
+          $or: [
+            { 'price_basis.checked_at': { $exists: false } },
+            { 'price_basis.checked_at': { $lt: staleBefore } },
+          ],
+        },
+      },
+      { $group: { _id: { ticker: '$ticker', date: '$date' }, entry_time: { $first: '$entry_time' }, entry_price: { $first: '$entry_price' } } },
+      { $limit: PRICE_BASIS_AUDIT_BATCH },
+    ]).toArray().catch(() => [])
+
+    for (const s of sessions) {
+      const { ticker, date } = s._id || {}
+      if (!ticker || !date) { skipped += 1; continue }
+      const candles = await fetchSessionBars(ticker, date)
+      if (!candles) { skipped += 1; await sleep(PRICE_BASIS_AUDIT_DELAY_MS); continue }
+      const bar = barAtMinute(candles, s.entry_time)
+      if (!bar) { skipped += 1; await sleep(PRICE_BASIS_AUDIT_DELAY_MS); continue }
+      const stamp = priceBasisStamp({
+        storedPrice: s.entry_price,
+        freshPrice: bar.close,
+        minute: s.entry_time,
+        source: 'chart_service',
+      })
+      checked += 1
+      if (stamp.comparable === false) flagged += 1
+      // ADDITIVE ONLY — one field, on every row of this session.
+      await coll.updateMany({ ticker, date, superseded: { $ne: true } }, { $set: { price_basis: stamp } })
+        .catch(() => null)
+      await sleep(PRICE_BASIS_AUDIT_DELAY_MS)
+    }
+    priceBasisStatus.totalFlagged += flagged
+  } catch (err) {
+    priceBasisStatus.lastError = String(err?.message || err)
+  } finally {
+    priceBasisStatus.running = false
+    priceBasisStatus.lastFinishedAt = new Date().toISOString()
+    priceBasisStatus.lastChecked = checked
+    priceBasisStatus.lastFlagged = flagged
+    priceBasisStatus.lastSkipped = skipped
+    if (checked || flagged || skipped) {
+      console.log(`  [price-basis:${reason}] checked ${checked} sessions, flagged ${flagged}, skipped ${skipped}`)
+    }
+  }
+  return priceBasisStatus
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function startPriceBasisAuditScheduler() {
+  if (!PRICE_BASIS_AUDIT_ENABLED) {
+    console.log('  Price-basis audit disabled')
+    return
+  }
+  setTimeout(() => runPriceBasisAudit('startup').catch(() => {}), 90_000).unref?.()
+  const timer = setInterval(() => runPriceBasisAudit('scheduled').catch(() => {}), PRICE_BASIS_AUDIT_INTERVAL_MS)
+  if (timer.unref) timer.unref()
+  console.log(`  Price-basis audit enabled (${Math.round(PRICE_BASIS_AUDIT_INTERVAL_MS / 60000)} min, ${PRICE_BASIS_AUDIT_BATCH} sessions/cycle, additive stamps only)`)
+}
+
 function startPositionHistoryScheduler() {
   if (!POSITION_HISTORY_ENABLED) {
     console.log('  Positions → history scheduler disabled')
@@ -7984,6 +8130,7 @@ async function start() {
   await ensureRuntimeIndexes()
   startWatcherSnapshotScheduler()
   startPositionHistoryScheduler()
+  startPriceBasisAuditScheduler()
 
   // Shared guard so the heavy data-refresh cycle never runs twice at once
   // (double Run Now clicks, or Run Now firing while the auto-grabber is mid-cycle).
