@@ -6103,6 +6103,28 @@ app.get("/api/positions/history/status", async (_req, res) => {
       stored_rows: total,
       stored_dates: dates.length,
       latest_row: latest,
+      // NESTED, not spread: positionHistoryStatus is spread above and both
+      // objects carry `running`, `enabled` and `lastError`. Flattening the two
+      // would let one scheduler's health silently report as the other's.
+      //
+      // READ lastSkipped, NOT lastError. Every per-session failure inside the
+      // audit is caught locally and counted as skipped — an unreachable
+      // chart-service, a missing bar, a failed update all land there. lastError
+      // only fires if the cycle itself blows up, which is rare by construction.
+      // A run that checked nothing and skipped everything is the shape of
+      // trouble here, and it reports lastError: null.
+      price_basis_audit: {
+        ...priceBasisStatus,
+        interval_ms: PRICE_BASIS_AUDIT_INTERVAL_MS,
+        batch_size: PRICE_BASIS_AUDIT_BATCH,
+        delay_ms: PRICE_BASIS_AUDIT_DELAY_MS,
+        recheck_after_ms: PRICE_BASIS_RECHECK_MS,
+        // Derived so a reader does not have to know the rule above: a completed
+        // cycle that checked nothing while skipping work is degraded even though
+        // no error was thrown.
+        healthy: priceBasisStatus.lastError == null
+          && !(priceBasisStatus.lastChecked === 0 && priceBasisStatus.lastSkipped > 0),
+      },
     })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) })
