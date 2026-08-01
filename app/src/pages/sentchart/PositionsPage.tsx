@@ -9,6 +9,13 @@ import type {
   PositionDataStatus,
 } from '@/lib/types'
 import { sortRows } from '@/lib/tableSort'
+import {
+  ILLUSTRATIVE_NOTIONAL_USD,
+  NOTIONAL_ASSUMPTION_LABEL,
+  computePnlSummary,
+  dollarsFromPct,
+  fmtDollars,
+} from '@/lib/notional'
 
 // Positions — the professor's unified view: the exact entry the strategy took,
 // the exact exit it took (or the stop it is currently working), and the profit
@@ -125,6 +132,11 @@ export function PositionsPage() {
   const [threshold, setThreshold] = useState(0.1)
   const [stopPct, setStopPct] = useState(5)
   const [showWatch, setShowWatch] = useState(false)
+  // Dollars are OPT-IN and default off. The percentage points are the figure
+  // this page actually has evidence for; the dollar column exists only under an
+  // assumption the reader has to switch on deliberately, which is also what
+  // keeps the percentage unambiguously primary.
+  const [showDollars, setShowDollars] = useState(false)
   const [orderBy, setOrderBy] = useState<string>('')
   const [orderDir, setOrderDir] = useState<'asc' | 'desc'>('desc')
 
@@ -178,89 +190,11 @@ export function PositionsPage() {
   const offCanonical = data ? !data.is_canonical : false
   const watchRows = grouped.watch ?? []
 
-  // Overall P&L. Two buckets, kept apart on purpose:
-  //
-  //   realized   — pnl_is_realized === true. The trade reached a conclusion, so
-  //                the number is final. Covers today's closed rows (simulated
-  //                live) and earlier sessions (read back from history).
-  //   unrealized — still open, marked to the latest bar. Moves until it closes.
-  // Watch rows have no P&L at all and fall out naturally.
-  //
-  // DEDUPLICATION IS NOW DEFENCE IN DEPTH. It was originally load-bearing: the
-  // route hardcoded live rows as closed_today regardless of which session the
-  // simulator had actually covered, so after midnight ET the same trade came
-  // back twice — once live, once from recorded history — and summing them
-  // reported +5.46% where the truth was +24.94%.
-  //
-  // positionScreener.js now classifies live rows by their real session date and
-  // drops any that recorded history already describes, so the response should no
-  // longer contain a duplicate at all. This stays because the cost is one Map
-  // and the failure it prevents is silent and financial: a total that
-  // double-counts looks entirely plausible. `collapsed` is surfaced in the UI,
-  // so if the server ever regresses, the page says so instead of quietly
-  // inflating. Expect it to read 0.
-  //
-  // Identity is ticker + session + entry time + entry price: the same strategy
-  // entry, however it was reconstructed. Where a trade appears as both, the
-  // RECORDED row wins — it is the settled figure written at the canonical
-  // parameters, whereas the live row reflects whatever the sliders currently say.
-  //
-  // UNITS: every pnl_pct is a per-trade percentage return, and the API carries no
-  // position size. Summing them is only meaningful if each trade got the same
-  // capital, so the total is labelled in percentage points and the assumption is
-  // stated in the UI rather than implied by a dollar sign.
-  const pnl = useMemo(() => {
-    const rows = (data?.rows ?? []).filter(row => row.data_status !== 'stale')
-    const identity = (r: PositionScreenerRow) =>
-      [r.ticker, r.date ?? '', r.entry_time ?? '', r.entry_price ?? ''].join('|')
-    const dedupe = (subset: PositionScreenerRow[]) => {
-      const byTrade = new Map<string, PositionScreenerRow>()
-      for (const row of subset) {
-        const k = identity(row)
-        const held = byTrade.get(k)
-        if (!held || (held.data_status !== 'recorded' && row.data_status === 'recorded')) byTrade.set(k, row)
-      }
-      return [...byTrade.values()]
-    }
-    const bucket = (subset: PositionScreenerRow[]) => {
-      const unique = dedupe(subset)
-      const values = unique.map(r => r.pnl_pct).filter((v): v is number => v != null)
-      const sum = values.reduce((a, b) => a + b, 0)
-      return {
-        n: values.length,
-        sum,
-        mean: values.length ? sum / values.length : null,
-        wins: values.filter(v => v > 0).length,
-        collapsed: subset.length - unique.length,
-      }
-    }
-    const realized = bucket(rows.filter(r => r.pnl_is_realized === true))
-    const unrealized = bucket(rows.filter(r => r.group === 'open' && r.pnl_is_realized !== true))
-
-    // WHICH RULE SET PRODUCED THESE TRADES. History spans rule changes — the
-    // data-frontier bound and then the regular-hours gate — and a past session is
-    // never re-simulated, so its rows keep whatever rules were live when they were
-    // written. Counted here rather than hardcoded so the caveat shrinks on its own
-    // as pre-gate sessions age out of the retention window, and disappears when
-    // every remaining row is on one rule set.
-    const counted = [
-      ...dedupe(rows.filter(r => r.pnl_is_realized === true)),
-      ...dedupe(rows.filter(r => r.group === 'open' && r.pnl_is_realized !== true)),
-    ].filter(r => r.pnl_pct != null)
-    const priorRegime = counted.filter(r => !r.rth_rule_version)
-    const priorRegimeSum = priorRegime.reduce((a, r) => a + (r.pnl_pct ?? 0), 0)
-
-    return {
-      realized,
-      unrealized,
-      combined: realized.sum + unrealized.sum,
-      collapsed: realized.collapsed + unrealized.collapsed,
-      sessions: new Set(rows.map(r => r.date).filter(Boolean)).size,
-      countedN: counted.length,
-      priorRegimeN: priorRegime.length,
-      priorRegimeSum,
-    }
-  }, [data])
+  // Overall P&L — realized and unrealized kept apart, deduplicated by trade
+  // identity. Lives in lib/notional.ts so the aggregate can be checked against a
+  // real API response by a script instead of only by eye; see the commentary
+  // there for why the dedupe is load-bearing and what the units mean.
+  const pnl = useMemo(() => computePnlSummary(data?.rows ?? []), [data])
 
   const COLUMNS: Array<{ key: string; label: string; title?: string }> = [
     { key: 'ticker', label: 'TICKER' },
@@ -268,7 +202,17 @@ export function PositionsPage() {
     { key: 'date', label: 'SESSION' },
     { key: 'entry_price', label: 'ENTRY', title: 'The exact entry the strategy took: fill price, ET time, and the rolling correlation that triggered it' },
     { key: 'exit_price', label: 'EXIT / STOP', title: 'The exact exit taken, or for an open position the trailing stop currently being worked' },
-    { key: 'pnl_pct', label: 'P&L', title: 'Realized at the fill for a closed position; unrealized and marked to the latest bar for an open one' },
+    {
+      key: 'pnl_pct',
+      // The header names the assumption while it is in effect, so a reader who
+      // scrolled past the banner still meets it at the column it qualifies.
+      label: showDollars ? `P&L (% · $${ILLUSTRATIVE_NOTIONAL_USD.toLocaleString()} illus.)` : 'P&L',
+      title: 'Realized at the fill for a closed position; unrealized and marked to the latest bar for an open one'
+        + (showDollars
+          ? `. Dollar figures assume a flat $${ILLUSTRATIVE_NOTIONAL_USD.toLocaleString()} per trade — illustrative only, `
+            + 'not real position sizing; no position was sized, funded or executed.'
+          : ''),
+    },
     { key: 'distance_to_stop_pct', label: 'DIST TO STOP' },
     { key: 'threshold', label: 'PARAMS', title: 'The entry threshold and trailing stop this row was actually simulated under' },
     { key: 'data_status', label: 'DATA', title: 'Where this row came from and whether its number is settled' },
@@ -319,6 +263,7 @@ export function PositionsPage() {
               n={pnl.realized.n}
               mean={pnl.realized.mean}
               wins={pnl.realized.wins}
+              usd={showDollars ? pnl.realized.sumUsd : null}
             />
             <PnlStat
               label="Unrealized"
@@ -328,6 +273,7 @@ export function PositionsPage() {
               mean={pnl.unrealized.mean}
               wins={pnl.unrealized.wins}
               emptyLabel={pnl.unrealized.n === 0 ? 'No open positions' : undefined}
+              usd={showDollars ? pnl.unrealized.sumUsd : null}
             />
             <div className="border-l border-border pl-8">
               <PnlStat
@@ -336,9 +282,30 @@ export function PositionsPage() {
                 sum={pnl.combined}
                 n={pnl.realized.n + pnl.unrealized.n}
                 emphasis
+                usd={showDollars ? pnl.combinedUsd : null}
               />
             </div>
           </div>
+
+          {/* The assumption, restated wherever the dollars actually appear. A
+              disclaimer that lives only next to the toggle is a disclaimer the
+              reader scrolls past once and then never sees again while looking
+              at the numbers it qualifies. Dashed border + amber is the same
+              treatment the Unsettled and Basis badges use for "this figure is
+              not what it looks like". */}
+          {showDollars && (
+            <div className="mt-3 flex items-start gap-2 rounded border border-dashed border-amber-400/70 bg-amber-500/10 px-3 py-2">
+              <span className="rounded border border-amber-400/70 bg-amber-500/20 px-1.5 py-0.5 text-[9px] uppercase tracking-wide font-semibold text-amber-200 whitespace-nowrap">
+                Illustrative
+              </span>
+              <span className="text-[10px] text-amber-200/80 leading-relaxed">
+                {NOTIONAL_ASSUMPTION_LABEL}. Every dollar figure on this page is the percentage figure multiplied by a
+                flat ${ILLUSTRATIVE_NOTIONAL_USD.toLocaleString()} — no position was sized, funded or executed, and the
+                API carries no position size. It rescales the percentages for readability; it adds no information and
+                is not a statement of dollar performance.
+              </span>
+            </div>
+          )}
 
           {/* WHAT THIS NUMBER IS NOT. It is a gross, unbenchmarked, unvalidated
               sum across rule sets — every one of those qualifiers came out of an
@@ -366,7 +333,9 @@ export function PositionsPage() {
             </div>
             <div>
               Percentage points, summed across distinct trades — equivalent to equal capital per position. The API
-              carries no position size, so this is deliberately not shown as a dollar figure.
+              carries no position size. The optional dollar figure is that same equal-capital assumption made explicit
+              at ${ILLUSTRATIVE_NOTIONAL_USD.toLocaleString()} per trade and stated as an assumption; it is a rescaling
+              of these percentages, not a measurement of capital.
               {pnl.sessions === 1 && ' All rows are from a single session, so this is one day, not a track record.'}
             </div>
             {pnl.collapsed > 0 && (
@@ -547,6 +516,27 @@ export function PositionsPage() {
               Show watch candidates ({watchRows.length})
             </span>
           </label>
+          {/* Amber, not sky: this toggle does not fetch or reveal data, it
+              applies an assumption. Coloured like the page's other caveats so
+              switching it on does not look like switching on a fact. */}
+          <label
+            className="flex items-center gap-1.5 cursor-pointer"
+            title={`${NOTIONAL_ASSUMPTION_LABEL}. Multiplies every percentage figure by a flat `
+              + `$${ILLUSTRATIVE_NOTIONAL_USD.toLocaleString()}. No position was sized, funded or executed.`}
+          >
+            <input
+              type="checkbox"
+              checked={showDollars}
+              onChange={e => setShowDollars(e.target.checked)}
+              className="accent-amber-500"
+            />
+            <span className={clsx(
+              'text-[10px] uppercase tracking-wide font-medium',
+              showDollars ? 'text-amber-200' : 'text-neutral',
+            )}>
+              Show ${ILLUSTRATIVE_NOTIONAL_USD.toLocaleString()}/trade dollars (illustrative)
+            </span>
+          </label>
         </div>
 
         <div className="text-[10px] text-slate-500 mt-2 leading-relaxed">
@@ -579,6 +569,7 @@ export function PositionsPage() {
               orderBy={orderBy}
               orderDir={orderDir}
               onSort={toggleSort}
+              showDollars={showDollars}
               emptyLabel={
                 group.key === 'closed_earlier'
                   ? 'No recorded history yet — the scheduler writes it as sessions close.'
@@ -596,6 +587,7 @@ export function PositionsPage() {
               orderBy={orderBy}
               orderDir={orderDir}
               onSort={toggleSort}
+              showDollars={showDollars}
               emptyLabel="No watch candidates."
             />
           )}
@@ -606,7 +598,7 @@ export function PositionsPage() {
 }
 
 function PnlStat({
-  label, hint, sum, n, mean, wins, emphasis, emptyLabel,
+  label, hint, sum, n, mean, wins, emphasis, emptyLabel, usd,
 }: {
   label: string
   hint: string
@@ -616,6 +608,8 @@ function PnlStat({
   wins?: number
   emphasis?: boolean
   emptyLabel?: string
+  /** Illustrative dollars, or null when the toggle is off. Never a real amount. */
+  usd?: number | null
 }) {
   // A zero total from zero trades is not a flat result — it is an absent one.
   // Showing "0.00%" for both would make "no open positions" read as "open
@@ -628,6 +622,19 @@ function PnlStat({
       <div className={clsx('font-mono tabular-nums leading-tight', emphasis ? 'text-2xl' : 'text-xl', tone)}>
         {empty ? (emptyLabel ?? '—') : fmtPct(sum, true)}
       </div>
+      {/* Subordinate by construction: smaller, muted, and never given the
+          emerald/red win-loss tone the percentage owns. An absent bucket gets
+          no dollar figure either — "$0.00" would restate the same absence as
+          a result. */}
+      {usd != null && !empty && (
+        <div
+          className="font-mono tabular-nums text-[11px] text-amber-200/70 leading-tight mt-0.5"
+          title={`${NOTIONAL_ASSUMPTION_LABEL} — ${fmtPct(sum, true)} × $${ILLUSTRATIVE_NOTIONAL_USD.toLocaleString()}`}
+        >
+          {fmtDollars(usd)}
+          <span className="text-[9px] uppercase tracking-wide ml-1 text-amber-300/60">illus.</span>
+        </div>
+      )}
       <div className="text-[10px] text-slate-500 mt-0.5">
         {empty
           ? '0 trades'
@@ -640,7 +647,7 @@ function PnlStat({
 }
 
 function GroupTable({
-  title, blurb, rows, columns, orderBy, orderDir, onSort, emptyLabel,
+  title, blurb, rows, columns, orderBy, orderDir, onSort, emptyLabel, showDollars,
 }: {
   title: string
   blurb: string
@@ -650,6 +657,7 @@ function GroupTable({
   orderDir: 'asc' | 'desc'
   onSort: (key: string) => void
   emptyLabel: string
+  showDollars: boolean
 }) {
   return (
     <div className="bg-surface border border-border rounded-lg overflow-hidden">
@@ -682,7 +690,11 @@ function GroupTable({
             </thead>
             <tbody className="divide-y divide-slate-700/30">
               {rows.map(row => (
-                <PositionRow key={`${row.ticker}-${row.date}-${row.entry_epoch ?? 'watch'}`} row={row} />
+                <PositionRow
+                  key={`${row.ticker}-${row.date}-${row.entry_epoch ?? 'watch'}`}
+                  row={row}
+                  showDollars={showDollars}
+                />
               ))}
             </tbody>
           </table>
@@ -692,7 +704,7 @@ function GroupTable({
   )
 }
 
-function PositionRow({ row }: { row: PositionScreenerRow }) {
+function PositionRow({ row, showDollars }: { row: PositionScreenerRow; showDollars: boolean }) {
   const isOpen = row.group === 'open'
   const nearStop = isOpen && row.distance_to_stop_pct != null && row.distance_to_stop_pct <= NEAR_STOP_PCT
   const isWatch = row.group === 'watch'
@@ -830,6 +842,30 @@ function PositionRow({ row }: { row: PositionScreenerRow }) {
             >
               {unsettled ? 'not settled' : row.pnl_is_realized ? 'real' : 'unreal'}
             </span>
+            {/* Illustrative dollars, second line and visually subordinate: the
+                percentage keeps the emerald/red win-loss signal, this never
+                gets it. An unsettled row carries "≈" on top of the row's own
+                "~", because an assumed dollar amount over a mark that never
+                concluded is two qualifications deep, not one.
+
+                Note where this ISN'T rendered: the `pnlPending` branch above
+                returns "just entered" with no percentage at all, so a pending
+                row gets no dollar figure either. Printing "$0.00" there would
+                reassert in dollars precisely the false outcome that branch
+                exists to refuse. */}
+            {showDollars && (
+              <span
+                className={clsx(
+                  'block font-mono tabular-nums text-[10px] leading-tight mt-0.5',
+                  unsettled ? 'text-slate-500 italic' : 'text-amber-200/70',
+                )}
+                title={`${NOTIONAL_ASSUMPTION_LABEL} — ${fmtPct(row.pnl_pct, true)} × `
+                  + `$${ILLUSTRATIVE_NOTIONAL_USD.toLocaleString()}`
+                  + (unsettled ? '. The underlying mark never settled, so this amount is doubly hypothetical.' : '')}
+              >
+                {fmtDollars(dollarsFromPct(row.pnl_pct), { approx: unsettled })}
+              </span>
+            )}
           </span>
         )}
       </td>
