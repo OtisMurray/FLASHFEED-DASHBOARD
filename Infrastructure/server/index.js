@@ -22,6 +22,8 @@ import socialRouter      from './routes/social.js'
 import correlationRouter from './routes/correlation.js'
 import settingsRouter    from './routes/settings.js'
 import decisionMapRouter from './routes/decisionMap.js'
+import authRouter        from './routes/auth.js'
+import cookieParser      from 'cookie-parser'
 import { approvedNewsSourceMongoFilter } from './sourceFilter.js'
 import { dedupeWatcherSeries, loadWatcherFeatureMap, persistWatcherSnapshot } from './lib/watcherSnapshots.js'
 import Screener from './models/Screener.js'
@@ -149,6 +151,7 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://
   .filter(Boolean)
 app.use(cors({ origin: CORS_ORIGINS }))
 app.use(express.json({ limit: '2mb' }))
+app.use(cookieParser())   // reads the httpOnly session cookie for /api/auth/me
 
 // ── RAM speed layer: Redis hot cache + Kafka→Redis feed reads ─────────────────
 // Redis holds (a) a short-TTL cache of the expensive Mongo aggregations so the
@@ -7945,6 +7948,7 @@ app.use('/api/social',      socialRouter)
 app.use('/api/correlation', correlationRouter)
 app.use('/api/settings',    settingsRouter)
 app.use('/api/decision-map', decisionMapRouter)
+app.use('/api/auth',        authRouter)
 
 // ── chart-service passthrough ─────────────────────────────
 // The charts/screener pages call /api/sentchart/* directly. Those routes live in
