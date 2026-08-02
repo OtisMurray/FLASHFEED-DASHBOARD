@@ -716,6 +716,7 @@ export interface SqueezeScreenerRow {
   si_data_mode?:       string | null
   si_uncalibrated?:    boolean | null
   si_calibration_status?: string | null
+  si_k?:               number | null
   si_sanity_band_clamped?: boolean | null
   si_baseline_is_ticker_specific?: boolean | null
   si_observed_days?:   number | null
@@ -757,6 +758,7 @@ export interface SqueezeScreenerResponse {
   si_uncalibrated_rows?: number
   si_live_estimate_rows?: number
   si_all_uncalibrated?: boolean
+  si_calibration_statuses?: Record<string, number>
   gate_trace_out_of_sync_rows?: number
   gate_note?:          string
   si_note?:            string

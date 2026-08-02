@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { attachShortInterestEvidence } from '../routes/screener.js'
+import { shortInterestCalibrationNote, calibrationStatusCounts } from '../routes/squeezeScreener.js'
 
 // Documents shaped exactly as 2_Screener/pipeline/fetch_short_interest_estimates_to_mongo.py
 // writes them into short_interest_snapshots.
@@ -113,4 +114,77 @@ test('legacy snapshots without the new provenance fields still work', () => {
   assert.equal(row.short_interest_source, 'short_interest_snapshot')
   assert.equal(row.short_interest_data_mode, 'settlement_only')
   assert.equal(row.short_interest_official_pct, null)
+})
+
+// ---------------------------------------------------------------------------
+// The calibration disclosure must be DERIVED, not asserted. The previous version
+// hardcoded "no config/si_calibration.json exists ... k=0.25" into the response,
+// which would have kept describing live numbers as uncalibrated the moment any
+// calibration file was installed. These pin the note to what the rows carry.
+// ---------------------------------------------------------------------------
+
+const live = (over = {}) => ({
+  si_coverage: 'live_estimate',
+  si_uncalibrated: true,
+  si_calibration_status: 'uncalibrated_fallback',
+  si_k: 0.25,
+  ...over,
+})
+
+test('note reports the real fallback reason and constant when no file exists', () => {
+  const note = shortInterestCalibrationNote([live(), live()])
+  assert.match(note, /UNCALIBRATED/)
+  assert.match(note, /no calibration file exists/)
+  assert.match(note, /k=0\.25/)
+})
+
+test('note flips to CALIBRATED and stops claiming a fallback once rows are fitted', () => {
+  const note = shortInterestCalibrationNote([
+    live({ si_uncalibrated: false, si_calibration_status: 'calibrated', si_k: 0.4 }),
+    live({ si_uncalibrated: false, si_calibration_status: 'calibrated', si_k: 0.4 }),
+  ])
+  assert.match(note, /CALIBRATED/)
+  assert.doesNotMatch(note, /UNCALIBRATED/)
+  assert.doesNotMatch(note, /no calibration file exists/)
+  assert.doesNotMatch(note, /k=0\.25/)
+  assert.match(note, /k=0\.4/)
+})
+
+test('note reports the fitted range when buckets give rows different constants', () => {
+  const note = shortInterestCalibrationNote([
+    live({ si_uncalibrated: false, si_calibration_status: 'calibrated', si_k: 0.06 }),
+    live({ si_uncalibrated: false, si_calibration_status: 'calibrated', si_k: 0.4 }),
+  ])
+  assert.match(note, /k=0\.06–0\.4/)
+})
+
+test('note distinguishes a rejected calibration file from having none', () => {
+  const note = shortInterestCalibrationNote([live({ si_calibration_status: 'calibration_rejected' })])
+  assert.match(note, /a calibration file exists but nothing in it was usable/)
+  assert.doesNotMatch(note, /no calibration file exists/)
+})
+
+test('note quantifies a partially calibrated pool instead of over-claiming', () => {
+  const note = shortInterestCalibrationNote([
+    live(),
+    live({ si_uncalibrated: false, si_calibration_status: 'calibrated', si_k: 0.4 }),
+  ])
+  assert.match(note, /1 of 2/)
+})
+
+test('note falls back to passthrough wording when there are no live estimates', () => {
+  const note = shortInterestCalibrationNote([{ si_coverage: 'settlement_only' }])
+  assert.match(note, /settlement-only/)
+  assert.doesNotMatch(note, /UNCALIBRATED/)
+  assert.doesNotMatch(note, /CALIBRATED/)
+})
+
+test('calibration status counts cover only live estimates', () => {
+  const counts = calibrationStatusCounts([
+    live(),
+    live(),
+    live({ si_uncalibrated: false, si_calibration_status: 'calibrated' }),
+    { si_coverage: 'settlement_only', si_calibration_status: 'calibrated' },
+  ])
+  assert.deepEqual(counts, { uncalibrated_fallback: 2, calibrated: 1 })
 })

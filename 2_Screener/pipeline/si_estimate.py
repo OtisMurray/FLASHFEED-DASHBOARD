@@ -66,6 +66,11 @@ MIN_BASELINE_DAYS = 5
 
 CALIBRATION_STATUS_CALIBRATED = "calibrated"
 CALIBRATION_STATUS_UNCALIBRATED = "uncalibrated_fallback"
+# A calibration file was found and parsed, but nothing in it is usable (its pooled
+# k failed validation, so there is no fitted number left to fall back to). Distinct
+# from UNCALIBRATED -- which means no file at all -- because the two need different
+# operator responses, and both must read as "not fitted" downstream.
+CALIBRATION_STATUS_REJECTED = "calibration_rejected"
 
 DEFAULT_CALIBRATION_PATH = (
     Path(__file__).resolve().parents[2] / "config" / "si_calibration.json"
@@ -73,49 +78,128 @@ DEFAULT_CALIBRATION_PATH = (
 
 
 class CalibrationError(RuntimeError):
-    """A calibration file exists but cannot be trusted.
+    """A calibration file exists but cannot be PARSED into a shape we understand.
 
-    Raised rather than silently falling back: a corrupt calibration file is an
-    operational fault, and quietly reverting to UNCALIBRATED_K would hide a
-    fitted-looking deployment that is not actually fitted.
+    Reserved for structural faults with no defined interpretation -- unreadable
+    bytes, invalid JSON, a top level that is not an object, a buckets field that
+    is not a list. Those stay loud, because guessing at the author's intent would
+    hide a fitted-looking deployment that is not actually fitted.
+
+    Individual bad NUMBERS inside an otherwise well-formed file are NOT this: they
+    are rejected value by value and reported through Calibration.rejected, so one
+    unusable constant degrades one lookup instead of taking down the whole feed.
     """
+
+
+def coerce_adv(value):
+    """Average daily volume as a float, or None when there is no usable number.
+
+    The distinction that matters here is MISSING vs a real zero. An absent
+    avg_volume field must not be read as "this stock trades zero shares" -- that
+    silently files it under the least liquid bucket on the tape, which is a guess
+    dressed up as a measurement. A genuine zero (halted, or a name that truly did
+    not trade) is a real observation and does belong in the smallest bucket.
+
+    Returns None for: None, booleans, blank or non-numeric strings, NaN, infinities
+    and negatives -- none of which name a liquidity bucket. Numeric strings are
+    accepted, since the upstream quote row is not strictly typed.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            number = float(text)
+        except ValueError:
+            return None
+    elif isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        return None
+    if number != number or number in (float("inf"), float("-inf")) or number < 0:
+        return None
+    return number
 
 
 @dataclass(frozen=True)
 class Calibration:
-    k_pooled: float
-    buckets: tuple[tuple[float | None, float], ...]  # (max_adv, k), ascending
+    # None once the pooled fit itself failed validation: the file parsed but has no
+    # usable fitted constant left, so every lookup falls back to UNCALIBRATED_K.
+    k_pooled: float | None
+    # (max_adv, k) ascending. A bucket k of None means that bucket's own fitted
+    # value was rejected and lookups in its range fall back to the pooled fit.
+    buckets: tuple[tuple[float | None, float | None], ...] = ()
     fitted_at: str = ""
     n_obs: int = 0
+    # Human-readable reasons for anything dropped, so a partially-degraded
+    # calibration is loud in the logs instead of quietly changing the numbers.
+    rejected: tuple[str, ...] = ()
+
+    @property
+    def is_usable(self) -> bool:
+        """Whether any fitted constant survived validation."""
+        return self.k_pooled is not None
+
+    @property
+    def fallback_k(self) -> float:
+        """k when no bucket applies -- the pooled fit, or the documented constant
+        if the pooled fit was itself rejected."""
+        return UNCALIBRATED_K if self.k_pooled is None else self.k_pooled
 
     def k_for(self, avg_volume_shares) -> float:
-        try:
-            adv = float(avg_volume_shares or 0)
-        except (TypeError, ValueError):
-            return self.k_pooled
+        adv = coerce_adv(avg_volume_shares)
+        if adv is None:
+            # No usable ADV cannot select a liquidity bucket. The pooled fit spans
+            # every bucket and is the honest answer; picking the narrowest bucket
+            # would assert a liquidity class the data never supplied.
+            return self.fallback_k
         for max_adv, k in self.buckets:
             if max_adv is None or adv < max_adv:
-                return k
-        return self.k_pooled
+                # A rejected bucket falls back to pooled rather than leaking into
+                # the next bucket's range, which would misprice a different stock.
+                return self.fallback_k if k is None else k
+        return self.fallback_k
 
 
-def _positive_number(value, label: str) -> float:
+def _usable_positive(value):
+    """(number, None) when the value is a finite positive number, (None, reason)
+    when it is not.
+
+    Never raises -- the caller decides how far a single bad number propagates. A
+    fitted k of exactly 0 is a legitimate output of the upstream calibrator (it
+    means the daily short-volume signal added nothing over carrying the official
+    figure forward), but it is not a dampening constant we can multiply by, so it
+    is rejected as a VALUE without condemning the whole file.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise CalibrationError(f"{label} must be a number, got {value!r}")
+        return None, f"must be a number, got {value!r}"
     number = float(value)
-    if not (number > 0) or number != number or number in (float("inf"), float("-inf")):
-        raise CalibrationError(f"{label} must be a finite positive number, got {number!r}")
-    return number
+    if number != number or number in (float("inf"), float("-inf")):
+        return None, f"must be finite, got {number!r}"
+    if number <= 0:
+        return None, f"must be > 0, got {number!r}"
+    return number, None
 
 
 def load_calibration(path=None) -> tuple[Calibration | None, str]:
     """Load calibration data if present.
 
     Returns (calibration, status).
-      * File absent  -> (None, 'uncalibrated_fallback'). Expected today; the
-        caller must label every estimate accordingly.
-      * File present but unreadable, malformed, or semantically invalid ->
-        raises CalibrationError. Loud on purpose.
+      * File absent -> (None, 'uncalibrated_fallback'). The caller must label
+        every estimate accordingly.
+      * File present and structurally sound -> (Calibration, 'calibrated'), even
+        if individual fitted values had to be dropped. Anything dropped is listed
+        in Calibration.rejected for the caller to log.
+      * File present but its pooled fit is unusable too -> (Calibration,
+        'calibration_rejected'). Nothing fitted survives, so every lookup returns
+        UNCALIBRATED_K and rows are stamped not-calibrated. The estimator keeps
+        running: one bad constant must not take down the whole short-interest
+        feed, and silently emitting fitted-looking rows would be worse than both.
+      * File present but unreadable or not the right SHAPE (bad JSON, not an
+        object, buckets not a list) -> raises CalibrationError. That is a genuine
+        operational fault with no defined interpretation, so it stays loud.
 
     Swapping in real calibration data later is a data change only: drop a valid
     si_calibration.json in place and the same code path picks it up.
@@ -132,21 +216,58 @@ def load_calibration(path=None) -> tuple[Calibration | None, str]:
     if not isinstance(raw, dict):
         raise CalibrationError(f"calibration file {target} must contain a JSON object")
 
-    k_pooled = _positive_number(raw.get("k_pooled"), f"{target}: k_pooled")
+    rejected: list[str] = []
+
+    k_pooled, pooled_reason = _usable_positive(raw.get("k_pooled"))
+    if pooled_reason:
+        rejected.append(f"k_pooled {pooled_reason}; falling back to k={UNCALIBRATED_K}")
 
     buckets_raw = raw.get("buckets", [])
     if not isinstance(buckets_raw, list):
         raise CalibrationError(f"{target}: buckets must be a list")
 
-    buckets: list[tuple[float | None, float]] = []
+    buckets: list[tuple[float | None, float | None]] = []
+    ladder_broken = False
     for index, bucket in enumerate(buckets_raw):
         if not isinstance(bucket, dict):
             raise CalibrationError(f"{target}: buckets[{index}] must be an object")
+
         max_adv = bucket.get("max_adv")
         if max_adv is not None:
-            max_adv = _positive_number(max_adv, f"{target}: buckets[{index}].max_adv")
-        bucket_k = _positive_number(bucket.get("k"), f"{target}: buckets[{index}].k")
+            max_adv, edge_reason = _usable_positive(max_adv)
+            if edge_reason:
+                # An unusable edge leaves this bucket's ADV range undefined. Dropping
+                # just this bucket would hand its stocks to a NEIGHBOUR's k, which is
+                # a silent misprice, so the whole ladder goes and everything falls to
+                # the pooled fit -- one well-defined behaviour instead of a quiet one.
+                rejected.append(
+                    f"buckets[{index}].max_adv {edge_reason}; bucket ladder discarded, "
+                    "every ADV now uses the pooled fit"
+                )
+                ladder_broken = True
+                continue
+
+        bucket_k, k_reason = _usable_positive(bucket.get("k"))
+        if k_reason:
+            edge = "open-ended" if max_adv is None else f"max_adv={max_adv:g}"
+            rejected.append(f"buckets[{index}] ({edge}): k {k_reason}; using the pooled fit for that range")
         buckets.append((max_adv, bucket_k))
+
+    if ladder_broken:
+        buckets = []
+
+    if k_pooled is None:
+        # No pooled fit means no coherent fallback, and the buckets cannot stand on
+        # their own: rows with no usable ADV would silently take UNCALIBRATED_K while
+        # bucketed rows took fitted constants, under a single run-level status that
+        # would be wrong for one group either way. Reject uniformly instead, so every
+        # row in the run is computed the same way and labelled the same way.
+        if buckets:
+            rejected.append(
+                f"{len(buckets)} bucket(s) discarded with the pooled fit; a run cannot mix "
+                "fitted and fallback constants under one calibration status"
+            )
+        buckets = []
 
     # Ascending by max_adv so the first matching bucket is the narrowest one;
     # an open-ended bucket (max_adv=None) always sorts last.
@@ -157,8 +278,13 @@ def load_calibration(path=None) -> tuple[Calibration | None, str]:
         buckets=tuple(buckets),
         fitted_at=str(raw.get("fitted_at") or ""),
         n_obs=int(raw.get("n_obs") or 0),
+        rejected=tuple(rejected),
     )
-    return calibration, CALIBRATION_STATUS_CALIBRATED
+    status = (
+        CALIBRATION_STATUS_CALIBRATED if calibration.is_usable
+        else CALIBRATION_STATUS_REJECTED
+    )
+    return calibration, status
 
 
 def resolve_k(calibration: Calibration | None, avg_volume_shares) -> float:

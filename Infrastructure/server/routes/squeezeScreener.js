@@ -109,6 +109,62 @@ function shortInterestCoverage(row, shortRow) {
   return 'none'
 }
 
+// How many live estimates carry each calibration status the pipeline stamped.
+// 'uncalibrated_fallback' (no file), 'calibration_rejected' (file present, nothing
+// in it usable) and 'calibrated' are three different operational situations and
+// the page must be able to tell them apart.
+function calibrationStatusCounts(rows) {
+  return rows
+    .filter(r => r.si_coverage === 'live_estimate')
+    .reduce((acc, r) => {
+      const key = r.si_calibration_status || 'unknown'
+      acc[key] = (acc[key] || 0) + 1
+      return acc
+    }, {})
+}
+
+const SI_PASSTHROUGH_NOTE =
+  'Rows labelled settlement-only have no FINRA daily coverage since the last settlement and are ' +
+  'the official figure passed through unchanged; rows labelled Finviz-only have no snapshot at all.'
+
+// The calibration disclosure is DERIVED from what the rows actually carry, never
+// asserted as a constant. A hardcoded "no calibration file exists, k=0.25" line is
+// true only until the day one is installed, and after that the page keeps repeating
+// it over numbers it no longer describes — the exact failure this replaces.
+function shortInterestCalibrationNote(rows) {
+  const live = rows.filter(r => r.si_coverage === 'live_estimate')
+  if (!live.length) return SI_PASSTHROUGH_NOTE
+
+  const uncalibrated = live.filter(r => r.si_uncalibrated === true)
+  const ks = [...new Set(live.map(r => r.si_k).filter(k => k != null))].sort((a, b) => a - b)
+  const kPhrase = !ks.length
+    ? 'the dampening constant is not reported on these rows'
+    : ks.length === 1
+      ? `the dampening constant is k=${ks[0]}`
+      : `the dampening constant ranges k=${ks[0]}–${ks[ks.length - 1]} across liquidity buckets`
+
+  if (!uncalibrated.length) {
+    return `Short-interest estimates are CALIBRATED: ${kPhrase}, fitted against realised settlements ` +
+      `rather than the documented fallback. ${SI_PASSTHROUGH_NOTE}`
+  }
+
+  // Why they are uncalibrated is the actionable part, and the two reasons need
+  // different responses: install a calibration file, versus fix the one that exists.
+  const statuses = new Set(uncalibrated.map(r => r.si_calibration_status).filter(Boolean))
+  const reason = statuses.has('calibration_rejected')
+    ? statuses.size > 1
+      ? 'a calibration file exists but some of it was rejected as unusable, and some rows had no file to read'
+      : 'a calibration file exists but nothing in it was usable and it was rejected'
+    : 'no calibration file exists'
+
+  const scope = uncalibrated.length === live.length
+    ? 'Short-interest estimates are UNCALIBRATED'
+    : `${uncalibrated.length} of ${live.length} short-interest estimates are UNCALIBRATED`
+
+  return `${scope}: ${reason}, so ${kPhrase} and it has not been fitted against a realised ` +
+    `settlement. ${SI_PASSTHROUGH_NOTE}`
+}
+
 // Build the exact context object that GET /api/screener/audit/:ticker builds
 // before calling predictionEvidenceValidation. Kept in one place so the two
 // callers cannot drift in what they feed the gate.
@@ -334,6 +390,10 @@ router.get('/', async (req, res) => {
         si_data_mode: enriched.short_interest_data_mode || null,
         si_uncalibrated: enriched.short_interest_estimate_uncalibrated ?? null,
         si_calibration_status: shortRow?.si_calibration_status || null,
+        // The dampening constant actually used for this row. Exposed so the
+        // calibration disclosure can report the real value instead of restating a
+        // constant that stops being true the moment a calibration file lands.
+        si_k: num(shortRow?.si_k),
         si_sanity_band_clamped: shortRow?.si_sanity_band_clamped ?? null,
         si_baseline_is_ticker_specific: shortRow?.si_baseline_is_ticker_specific ?? null,
         si_observed_days: num(shortRow?.si_observed_days),
@@ -412,11 +472,8 @@ router.get('/', async (req, res) => {
         'gate the /api/screener prediction tabs use: squeeze score ≥ 70 AND verified short interest ' +
         '(≥ 10% of float or of shares out) AND ≥ 3 social messages in the rolling window AND no bearish ' +
         'catalyst text. This route only joins that verdict with the short-interest snapshot data.',
-      si_note:
-        'Short-interest estimates are UNCALIBRATED: no config/si_calibration.json exists, so the ' +
-        'dampening constant falls back to k=0.25 and has not been fitted against a realised settlement. ' +
-        'Rows labelled settlement-only have no FINRA daily coverage since the last settlement and are ' +
-        'the official figure passed through unchanged; rows labelled Finviz-only have no snapshot at all.',
+      si_note: shortInterestCalibrationNote(scored),
+      si_calibration_statuses: calibrationStatusCounts(scored),
       social_note:
         'The gate\'s social input is the adaptive rolling window (5-120 minutes by market-cap tier), not ' +
         'a session total, so a ticker can be heavily discussed today and still show 0 here. Each row ' +
@@ -436,6 +493,12 @@ router.get('/', async (req, res) => {
 // Exported for tests/squeezeGate.test.js. The passing branch of the gate cannot be
 // exercised from live rows on demand (it needs a real squeeze with live social
 // traffic in the same rolling window), so it is covered by constructed rows there.
-export { squeezeGateTrace, shortInterestCoverage, evidenceContextFor }
+export {
+  squeezeGateTrace,
+  shortInterestCoverage,
+  evidenceContextFor,
+  shortInterestCalibrationNote,
+  calibrationStatusCounts,
+}
 
 export default router

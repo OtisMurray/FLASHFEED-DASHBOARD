@@ -145,23 +145,146 @@ class CalibrationFallbackTests(unittest.TestCase):
             with self.assertRaises(si.CalibrationError):
                 si.load_calibration(path)
 
+    def _load(self, payload):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "si_calibration.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            return si.load_calibration(path)
+
+    # ---- structural faults stay loud: no defined interpretation to degrade to ----
+
     def test_corrupt_json_raises_rather_than_falling_back(self):
         self._expect_error("{not valid json")
 
     def test_non_object_payload_raises(self):
         self._expect_error("[1, 2, 3]")
 
-    def test_missing_k_pooled_raises(self):
-        self._expect_error(json.dumps({"buckets": []}))
+    def test_buckets_not_a_list_raises(self):
+        self._expect_error(json.dumps({"k_pooled": 0.3, "buckets": {"max_adv": 1e6}}))
 
-    def test_non_numeric_k_raises(self):
-        self._expect_error(json.dumps({"k_pooled": "0.25"}))
+    def test_bucket_not_an_object_raises(self):
+        self._expect_error(json.dumps({"k_pooled": 0.3, "buckets": [7]}))
 
-    def test_non_positive_k_raises(self):
-        self._expect_error(json.dumps({"k_pooled": 0}))
+    # ---- unusable NUMBERS degrade instead of killing the collector ----
 
-    def test_malformed_bucket_raises(self):
-        self._expect_error(json.dumps({"k_pooled": 0.3, "buckets": [{"max_adv": 1e6}]}))
+    def test_unusable_pooled_k_degrades_to_rejected_rather_than_raising(self):
+        """A fitted k=0 is a real upstream outcome; it must not take the feed down."""
+        for payload in ({"buckets": []}, {"k_pooled": "0.25"}, {"k_pooled": 0}, {"k_pooled": -1}):
+            with self.subTest(payload=payload):
+                calibration, status = self._load(payload)
+                self.assertEqual(status, si.CALIBRATION_STATUS_REJECTED)
+                self.assertFalse(calibration.is_usable)
+                # Every lookup falls back to the documented constant...
+                self.assertEqual(calibration.k_for(500_000), si.UNCALIBRATED_K)
+                self.assertEqual(si.resolve_k(calibration, 5_000_000), si.UNCALIBRATED_K)
+                # ...and the reason is reported rather than inferred.
+                self.assertTrue(calibration.rejected)
+
+    def test_rejected_pooled_fit_also_discards_otherwise_valid_buckets(self):
+        """A run must not mix fitted bucket constants with the fallback under one
+        status: rows with no usable ADV would be labelled identically to rows that
+        did get a fitted k."""
+        calibration, status = self._load({
+            "k_pooled": 0,
+            "buckets": [
+                {"max_adv": 1_000_000, "k": 0.07},
+                {"max_adv": None, "k": 0.06},
+            ],
+        })
+        self.assertEqual(status, si.CALIBRATION_STATUS_REJECTED)
+        self.assertEqual(calibration.buckets, ())
+        for adv in (None, 0, 500_000, 5_000_000, 50_000_000):
+            self.assertEqual(calibration.k_for(adv), si.UNCALIBRATED_K)
+
+    def test_rejected_status_still_stamps_rows_as_not_calibrated(self):
+        calibration, status = self._load({"k_pooled": 0})
+        self.assertNotEqual(status, si.CALIBRATION_STATUS_CALIBRATED)
+        estimate = si.estimate_si_pct(
+            official_pct=10.0,
+            float_shares=5_000_000,
+            since_settlement_rows=[("20260701", 600_000.0, 1_000_000.0)],
+            baseline_rows=[],
+            calibration=calibration,
+            calibration_status=status,
+        )
+        self.assertEqual(estimate.k, si.UNCALIBRATED_K)
+        # This is what build_snapshot_doc keys si_uncalibrated off.
+        self.assertNotEqual(estimate.calibration_status, si.CALIBRATION_STATUS_CALIBRATED)
+
+    def test_one_bad_bucket_k_falls_back_to_pooled_without_condemning_the_file(self):
+        calibration, status = self._load({
+            "k_pooled": 0.30,
+            "buckets": [
+                {"max_adv": 1_000_000, "k": 0.20},
+                {"max_adv": 10_000_000, "k": 0},        # upstream said "no signal here"
+                {"max_adv": None, "k": 0.50},
+            ],
+        })
+        self.assertEqual(status, si.CALIBRATION_STATUS_CALIBRATED)
+        self.assertEqual(calibration.k_for(500_000), 0.20)          # good bucket untouched
+        self.assertEqual(calibration.k_for(5_000_000), 0.30)        # rejected -> pooled
+        self.assertEqual(calibration.k_for(50_000_000), 0.50)       # good bucket untouched
+        self.assertEqual(len(calibration.rejected), 1)
+
+    def test_bucket_missing_k_falls_back_to_pooled(self):
+        calibration, status = self._load({"k_pooled": 0.3, "buckets": [{"max_adv": 1e6}]})
+        self.assertEqual(status, si.CALIBRATION_STATUS_CALIBRATED)
+        self.assertEqual(calibration.k_for(500_000), 0.3)
+        self.assertTrue(calibration.rejected)
+
+    def test_unusable_bucket_edge_discards_the_ladder_not_just_that_bucket(self):
+        """A bad edge leaves the range undefined; handing its stocks to a
+        neighbour's k would be a silent misprice, so everything goes to pooled."""
+        calibration, status = self._load({
+            "k_pooled": 0.30,
+            "buckets": [
+                {"max_adv": 1_000_000, "k": 0.20},
+                {"max_adv": -5, "k": 0.40},
+                {"max_adv": None, "k": 0.50},
+            ],
+        })
+        self.assertEqual(status, si.CALIBRATION_STATUS_CALIBRATED)
+        self.assertEqual(calibration.buckets, ())
+        for adv in (500_000, 5_000_000, 50_000_000):
+            self.assertEqual(calibration.k_for(adv), 0.30)
+        self.assertTrue(any("ladder discarded" in r for r in calibration.rejected))
+
+    # ---- missing ADV must not be read as "least liquid stock on the tape" ----
+
+    def _bucketed(self):
+        calibration, _ = self._load({
+            "k_pooled": 0.30,
+            "buckets": [
+                {"max_adv": 1_000_000, "k": 0.07},
+                {"max_adv": 10_000_000, "k": 0.40},
+                {"max_adv": None, "k": 0.06},
+            ],
+        })
+        return calibration
+
+    def test_missing_avg_volume_uses_pooled_not_the_narrowest_bucket(self):
+        calibration = self._bucketed()
+        narrowest = 0.07
+        for missing in (None, "", "   ", "n/a", float("nan"), float("inf"), -1, True, [], {}):
+            with self.subTest(avg_volume=missing):
+                k = calibration.k_for(missing)
+                self.assertEqual(k, calibration.k_pooled)
+                self.assertNotEqual(k, narrowest)
+
+    def test_a_real_zero_is_an_observation_and_keeps_the_smallest_bucket(self):
+        """Halted or untraded is a genuine measurement, unlike an absent field."""
+        calibration = self._bucketed()
+        self.assertEqual(calibration.k_for(0), 0.07)
+        self.assertEqual(calibration.k_for(0.0), 0.07)
+
+    def test_numeric_strings_still_select_a_bucket(self):
+        calibration = self._bucketed()
+        self.assertEqual(calibration.k_for("500000"), 0.07)
+        self.assertEqual(calibration.k_for(" 5000000 "), 0.40)
+
+    def test_missing_avg_volume_with_unusable_pooled_k_lands_on_the_constant(self):
+        calibration, _ = self._load({"k_pooled": 0, "buckets": [{"max_adv": 1e6, "k": 0.07}]})
+        self.assertEqual(calibration.k_for(None), si.UNCALIBRATED_K)
 
     def test_valid_file_loads_and_selects_bucket_by_liquidity(self):
         payload = {

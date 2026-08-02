@@ -17,11 +17,14 @@ import type {
 //
 // Two things this page must be honest about, per row and not merely in aggregate:
 //
-//   1. The short-interest number is UNCALIBRATED (k=0.25 fallback, never fitted
-//      against a realised settlement), and some tickers have no FINRA daily
-//      coverage at all and are showing a settlement figure passed through
-//      unchanged — a materially different claim. The COVERAGE column carries that
-//      distinction on every row.
+//   1. Whether the short-interest number is CALIBRATED — fitted against a realised
+//      settlement — or is running on the documented fallback constant, and some
+//      tickers have no FINRA daily coverage at all and are showing a settlement
+//      figure passed through unchanged, a materially different claim. The COVERAGE
+//      column carries that distinction on every row. Every calibration statement on
+//      this page is derived from what the rows actually carry: asserting it as a
+//      constant is what made an earlier version keep claiming "uncalibrated, k=0.25"
+//      over numbers that would no longer have been either.
 //   2. The gate's social leg is measured over the ADAPTIVE rolling window
 //      (5-120 minutes by market-cap tier), not a session total. That leg is what
 //      blocks essentially every candidate during quiet windows, so the GATE
@@ -41,9 +44,7 @@ const COVERAGE_LABEL: Record<SqueezeSiCoverage, string> = {
 }
 
 const COVERAGE_TITLE: Record<SqueezeSiCoverage, string> = {
-  live_estimate:
-    'FINRA daily short volume layered on the last settlement figure. UNCALIBRATED: the dampening ' +
-    'constant falls back to k=0.25 and has not been fitted against a realised settlement.',
+  live_estimate: 'FINRA daily short volume layered on the last settlement figure.',
   settlement_only:
     'No FINRA daily coverage for this ticker since the last settlement. This is the official ' +
     'settlement figure passed through unchanged — it is not an estimate and it is up to a month stale.',
@@ -51,6 +52,30 @@ const COVERAGE_TITLE: Record<SqueezeSiCoverage, string> = {
     'No short-interest snapshot exists for this ticker at all. This is Finviz float_short off the ' +
     'quote row — the stale behaviour that predated the estimator.',
   none: 'No short-interest figure from any source.',
+}
+
+// The calibration half of a live estimate's tooltip is a fact about the data, not a
+// constant: hardcoding "UNCALIBRATED, k=0.25" here made the tooltip a false statement
+// the moment any calibration file was installed. Derived per row where a row exists,
+// and from the page-level counts for the legend badge, which has no single row.
+function calibrationTitle(opts: { uncalibrated?: boolean | null; status?: string | null; k?: number | null }): string {
+  const { uncalibrated, status, k } = opts
+  if (uncalibrated == null) return ''
+  const kPhrase = k != null ? `k=${k}` : 'the dampening constant'
+  if (!uncalibrated) return ` CALIBRATED: ${kPhrase} is a fitted value.`
+  const reason = status === 'calibration_rejected'
+    ? 'a calibration file exists but nothing in it was usable'
+    : 'no calibration file exists'
+  return ` UNCALIBRATED: ${reason}, so ${kPhrase} is the documented fallback and has not been fitted against a realised settlement.`
+}
+
+function coverageTitle(
+  coverage: SqueezeSiCoverage,
+  calibration?: { uncalibrated?: boolean | null; status?: string | null; k?: number | null },
+): string {
+  const base = COVERAGE_TITLE[coverage]
+  if (coverage !== 'live_estimate' || !calibration) return base
+  return base + calibrationTitle(calibration)
 }
 
 const COVERAGE_TONE: Record<SqueezeSiCoverage, string> = {
@@ -123,7 +148,11 @@ function CoverageBadge({ row }: { row: SqueezeScreenerRow }) {
   return (
     <span className="inline-flex items-center gap-1">
       <span
-        title={COVERAGE_TITLE[coverage]}
+        title={coverageTitle(coverage, {
+          uncalibrated: coverage === 'live_estimate' ? row.si_uncalibrated : null,
+          status: row.si_calibration_status,
+          k: row.si_k,
+        })}
         className={clsx('rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wide border whitespace-nowrap', COVERAGE_TONE[coverage])}
       >
         {COVERAGE_LABEL[coverage]}
@@ -132,7 +161,8 @@ function CoverageBadge({ row }: { row: SqueezeScreenerRow }) {
         <span
           title={
             `Uncalibrated: ${row.si_calibration_status ?? 'no fitted constant'}. ` +
-            'k falls back to 0.25 and has never been checked against a realised settlement.' +
+            `${row.si_k != null ? `k=${row.si_k}` : 'k'} is the documented fallback and has never ` +
+            'been checked against a realised settlement.' +
             (row.si_note ? `\n\n${row.si_note}` : '')
           }
           className="rounded px-1 py-0.5 text-[9px] uppercase tracking-wide border border-amber-500/40 bg-amber-500/10 text-amber-300"
@@ -278,7 +308,13 @@ export function SqueezeScreenerPage() {
               .map(key => (
                 <span
                   key={key}
-                  title={COVERAGE_TITLE[key]}
+                  // The legend badge describes the whole pool, not one row, so its
+                  // calibration clause comes from the page-level counts.
+                  title={coverageTitle(key, {
+                    uncalibrated: (data?.si_uncalibrated_rows ?? 0) > 0,
+                    status: Object.keys(data?.si_calibration_statuses ?? {}).find(s => s !== 'calibrated') ?? null,
+                    k: null,
+                  })}
                   className={clsx('rounded px-1.5 py-0.5 border uppercase tracking-wide', COVERAGE_TONE[key])}
                 >
                   {coverageCounts[key]} {COVERAGE_LABEL[key]}

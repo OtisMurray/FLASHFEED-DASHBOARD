@@ -172,8 +172,10 @@ def main() -> None:
     client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=MONGO_TIMEOUT_MS)
     db = client[DB_NAME]
 
-    # A corrupt calibration file is an operational fault, not something to paper
-    # over: fail before writing anything rather than emit fitted-looking rows.
+    # An UNPARSEABLE calibration file is an operational fault, not something to
+    # paper over: fail before writing anything rather than emit fitted-looking rows.
+    # Individual unusable constants inside a well-formed file are handled below --
+    # those degrade the affected lookups and keep the feed alive.
     try:
         calibration, calibration_status = si.load_calibration()
     except si.CalibrationError as exc:
@@ -191,6 +193,20 @@ def main() -> None:
             f"k={si.UNCALIBRATED_K}. Every row is stamped si_uncalibrated=true.",
             file=sys.stderr,
         )
+    elif calibration_status == si.CALIBRATION_STATUS_REJECTED:
+        print(
+            "SI estimate WARNING — a calibration file was found but nothing in it is "
+            f"usable; falling back to k={si.UNCALIBRATED_K}. Every row is stamped "
+            "si_uncalibrated=true.",
+            file=sys.stderr,
+        )
+
+    # Partial degradation is the dangerous case: the run still reports "calibrated"
+    # while some lookups quietly use a different constant. Say exactly what was
+    # dropped, every run, rather than leaving it to be inferred from the numbers.
+    calibration_rejections = list(getattr(calibration, "rejected", ()) or ())
+    for reason in calibration_rejections:
+        print(f"SI estimate WARNING — calibration: {reason}", file=sys.stderr)
 
     candidates = load_screener_candidates(db)
     if not candidates:
@@ -271,6 +287,9 @@ def main() -> None:
         f"live_estimated={live_count}/{len(candidates)}",
         f"sanity_band_clamped={clamped_count}",
         "UNCALIBRATED (fallback k=%s)" % si.UNCALIBRATED_K if not calibrated else "calibrated",
+        # A partially-degraded calibration still reports "calibrated"; without this
+        # the status row would not show that some lookups used a different constant.
+        f"calibration_rejections={len(calibration_rejections)}" if calibration_rejections else "",
     ] if part)
 
     record_source_status(
@@ -285,6 +304,8 @@ def main() -> None:
             "sanity_band_clamped": clamped_count,
             "finra_days_loaded": len(since_files),
             "calibrated": calibrated,
+            "calibration_status": calibration_status,
+            "calibration_rejections": calibration_rejections,
         },
     )
 
