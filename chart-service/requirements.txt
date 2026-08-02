@@ -4,6 +4,7 @@ Flask==3.1.3
 Flask-Cors==6.0.0
 curl_cffi==0.15.0
 pymongo==4.17.0   # phase-2b: social_store resting store (in-memory fallback if Mongo is down)
+redis==5.2.1      # RAM cache for intraday bars (own dedicated Redis instance)
 # Overnight (20:00-04:00 ET) prices via TradingView / Blue Ocean (tv_overnight.py).
 # Unofficial websocket datafeed — OPTIONAL: the service runs without it and the
 # chart falls back to a dashed prior-close carry overnight. Needs TV_USERNAME /

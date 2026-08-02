@@ -43,6 +43,12 @@ from flask import Flask, jsonify, request
 from pymongo import MongoClient
 
 import social_store   # phase-2b: StockTwits walk + Mongo/in-memory resting store
+
+try:
+    import redis as redis_lib
+except ImportError:
+    redis_lib = None
+
 from cvd_engine import (
     DEFAULT_SIGNAL_POLICY,
     analyze_cvd_rows,
@@ -148,9 +154,51 @@ def num(val):
         return None
 
 
+# ── RAM speed layer: Redis hot cache for intraday bars ────────────────────────
+# Dedicated Redis instance (own Railway database, separate from the Node
+# backend's) so this service's short-term cache doesn't share capacity/evictions
+# with the backend's response cache + Kafka hot-feed. Lazily connected and every
+# call is wrapped so a down/unset REDIS_URL degrades silently to the existing
+# in-process _chart_cache dict below — identical behavior to before this change,
+# just per-instance instead of shared/durable across restarts.
+_redis_client = None
+_redis_checked = False
+
+
+def _get_redis():
+    global _redis_client, _redis_checked
+    if _redis_checked:
+        return _redis_client
+    _redis_checked = True
+    url = os.environ.get("REDIS_URL")
+    if not url or redis_lib is None:
+        return None
+    try:
+        client = redis_lib.Redis.from_url(
+            url, decode_responses=True, socket_connect_timeout=2, socket_timeout=2)
+        client.ping()
+        _redis_client = client
+    except Exception:
+        _redis_client = None
+    return _redis_client
+
+
+def _redis_bars_key(ticker: str, date_str: str) -> str:
+    return f"chartsvc:bars:{ticker}:{date_str}"
+
+
+def _bars_to_json(day_bars: list) -> str:
+    return json.dumps([{**b, "ts": b["ts"].isoformat()} for b in day_bars])
+
+
+def _bars_from_json(raw: str) -> list:
+    return [{**b, "ts": datetime.fromisoformat(b["ts"])} for b in json.loads(raw)]
+
+
 # ── Finviz 1-min OHLC fetch — verbatim from dashboard.py:_fetch_intraday_bars ─
 _chart_cache: dict = {}          # (ticker, date) -> {"ts": epoch, "bars": [...]}
 _CHART_CACHE_TTL = 60
+_REDIS_TTL_HISTORICAL = 21600    # 6h — closed sessions' bars never change
 
 
 def _fetch_intraday_bars(ticker: str, date_str: str):
@@ -160,6 +208,17 @@ def _fetch_intraday_bars(ticker: str, date_str: str):
     hit = _chart_cache.get(key)
     if hit and time.time() - hit["ts"] < _CHART_CACHE_TTL:
         return hit["bars"]
+
+    r = _get_redis()
+    if r is not None:
+        try:
+            raw = r.get(_redis_bars_key(ticker, date_str))
+            if raw is not None:
+                bars = _bars_from_json(raw)
+                _chart_cache[key] = {"ts": time.time(), "bars": bars}
+                return bars
+        except Exception:
+            pass
 
     try:
         dt_obj = datetime.strptime(date_str, "%Y-%m-%d")
@@ -236,9 +295,16 @@ def _fetch_intraday_bars(ticker: str, date_str: str):
                  "low": lo if lo is not None else close,
                  "close": close, "volume": int(vol or 0)})
         now = time.time()
+        today_str = datetime.now(EDT).strftime("%Y-%m-%d")
         for day, day_bars in by_day.items():
             day_bars.sort(key=lambda b: b["ts"])
             _chart_cache[(ticker, day)] = {"ts": now, "bars": day_bars}
+            if r is not None:
+                try:
+                    ttl = _CHART_CACHE_TTL if day == today_str else _REDIS_TTL_HISTORICAL
+                    r.setex(_redis_bars_key(ticker, day), ttl, _bars_to_json(day_bars))
+                except Exception:
+                    pass
         if date_str not in by_day:   # cache the miss so walk-back doesn't refetch
             _chart_cache[key] = {"ts": now, "bars": []}
         return _chart_cache[key]["bars"]
@@ -1040,7 +1106,8 @@ def api_health():
                     "finviz_auto_auth": _finviz_auth is not None and _finviz_auth.have_login(),
                     "social_snapshot_present": os.path.exists(SOCIAL_DB_PATH),
                     "social_mode": "live StockTwits walk + Mongo store, SQLite seed fallback (phase 2b)",
-                    "mongo_available": social_store.collection() is not None})
+                    "mongo_available": social_store.collection() is not None,
+                    "redis_available": _get_redis() is not None})
 
 
 # Legacy line-series endpoint (labels/prices/volumes). Same Finviz bars.
