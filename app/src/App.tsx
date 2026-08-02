@@ -2,6 +2,9 @@ import { lazy, Suspense } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AppShell }        from './components/shared/AppShell'
 import { ApiHealthGate }   from './components/shared/ApiHealthGate'
+import { AuthProvider }    from './lib/useAuth'
+
+const LoginPage = lazy(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })))
 
 const OverviewPage = lazy(() => import('./pages/OverviewPage').then(m => ({ default: m.OverviewPage })))
 const AIPage = lazy(() => import('./pages/AIPage').then(m => ({ default: m.AIPage })))
@@ -38,11 +41,13 @@ function RouteLoading() {
 
 export default function App() {
   return (
+    <AuthProvider>
     <ApiHealthGate>
       <AppShell>
         <Suspense fallback={<RouteLoading />}>
           <Routes>
             <Route path="/"            element={<Navigate to="/overview" replace />} />
+            <Route path="/login"       element={<LoginPage />} />
             <Route path="/overview"    element={<OverviewPage />} />
             <Route path="/ai"          element={<AIPage />} />
             <Route path="/news"        element={<NewsPage />} />
@@ -74,5 +79,6 @@ export default function App() {
         </Suspense>
       </AppShell>
     </ApiHealthGate>
+    </AuthProvider>
   )
 }

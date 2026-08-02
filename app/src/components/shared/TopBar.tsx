@@ -6,6 +6,7 @@ import { clsx } from 'clsx'
 import { StatusBadge } from './StatusBadge'
 import { useToast } from '@/components/shared/Toast'
 import { SentimentModal } from '@/components/shared/SentimentModal'
+import { useAuth } from '@/lib/useAuth'
 
 const fetcher = (url: string) => fetch(url).then(r => r.json())
 
@@ -179,6 +180,7 @@ export function TopBar() {
   const [showSentiment, setShowSentiment] = useState(false)
   const [showStorage, setShowStorage] = useState(false)
   const [showControls, setShowControls] = useState(false)
+  const { user, logout } = useAuth()
   const [showSettingsNav, setShowSettingsNav] = useState(false)
   const settingsNavButtonRef = useRef<HTMLButtonElement | null>(null)
   const [settingsNavPosition, setSettingsNavPosition] = useState<{ top: number; left: number } | null>(null)
@@ -678,6 +680,26 @@ export function TopBar() {
             >
               ⚙
             </button>
+
+            {user ? (
+              <button
+                type="button"
+                onClick={logout}
+                title={`Logged in as ${user.username} — click to log out`}
+                className="inline-flex h-[30px] items-center gap-1.5 rounded border border-border px-2 text-[11px] font-medium text-neutral hover:border-accent hover:text-white transition-colors 2xl:h-[34px] 2xl:px-2.5 2xl:text-xs"
+              >
+                <span className="max-w-[6rem] truncate">{user.username}</span>
+                <span className="text-slate-500">·</span>
+                <span>Log out</span>
+              </button>
+            ) : (
+              <NavLink
+                to="/login"
+                className="inline-flex h-[30px] items-center rounded border border-border px-2.5 text-[11px] font-medium text-neutral hover:border-accent hover:text-white transition-colors 2xl:h-[34px] 2xl:px-3 2xl:text-xs"
+              >
+                Log In
+              </NavLink>
+            )}
           </div>
 
           <div className="hidden min-w-0 items-center justify-end gap-2 2xl:flex">
