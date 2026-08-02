@@ -23,6 +23,11 @@ const TWO_FACTOR_TTL_MS = 10 * 60 * 1000               // code itself expires wi
 const MAX_TWO_FACTOR_ATTEMPTS = 5
 const RESEND_COOLDOWN_MS = 20 * 1000
 
+// Email 2FA is off by default until Gmail SMTP is actually configured and
+// working — set AUTH_REQUIRE_2FA=true once GMAIL_APP_PASSWORD is live to turn
+// the code-email step back on. Login still checks the password either way.
+const REQUIRE_2FA = String(process.env.AUTH_REQUIRE_2FA || 'false').toLowerCase() === 'true'
+
 const publicUser = (u) => ({ username: u.username, email: u.email, role: u.role })
 
 function makeEightDigitCode() {
@@ -78,6 +83,13 @@ router.post('/login', async (req, res) => {
     if (!user) return invalid()
     const passwordOk = await bcrypt.compare(password, user.passwordHash)
     if (!passwordOk) return invalid()
+
+    if (!REQUIRE_2FA) {
+      user.lastLoginAt = new Date()
+      await user.save()
+      setSessionCookie(res, user)
+      return res.json({ ok: true, user: publicUser(user) })
+    }
 
     const code = makeEightDigitCode()
     user.twoFactorCodeHash = await bcrypt.hash(code, 10)

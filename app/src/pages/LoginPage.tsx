@@ -45,6 +45,13 @@ export function LoginPage() {
       })
       const data = await res.json()
       if (!res.ok || !data.ok) throw new Error(data.error || 'Login failed.')
+      if (data.user) {
+        // 2FA is currently off (AUTH_REQUIRE_2FA unset) — password check alone logs you in.
+        setUser(data.user)
+        navigate('/overview')
+        return
+      }
+      // 2FA path — kept working in case AUTH_REQUIRE_2FA gets turned back on later.
       setPendingToken(data.pendingToken)
       setNotice(data.message || 'Check your email for a code.')
       setStep('code')
