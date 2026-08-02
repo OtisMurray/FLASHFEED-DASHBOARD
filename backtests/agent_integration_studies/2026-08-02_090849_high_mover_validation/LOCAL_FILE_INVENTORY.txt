@@ -1,0 +1,13 @@
+HIGH_MOVER_HYPOTHESES.md
+HIGH_MOVER_VALIDATION_REPORT.md
+bad_bar_audit.csv
+bootstrap_summary.csv
+candidate_outcomes.csv
+coverage_audit.csv
+evidence_timing_audit.csv
+frozen_weight_comparison.csv
+leave_one_promoted_out.csv
+ranking_change_attribution.csv
+ranking_metrics.csv
+run_high_mover_validation.mjs
+summary.json

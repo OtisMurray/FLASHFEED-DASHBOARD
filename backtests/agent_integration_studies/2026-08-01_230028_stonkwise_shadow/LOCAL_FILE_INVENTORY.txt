@@ -1,0 +1,34 @@
+Study directory: /Users/otismurray/Desktop/INTEGRATED STOCK PROJECT/Project/backtests/agent_integration_studies/2026-08-01_230028_stonkwise_shadow
+FlashFeed commit: 2593eb6a8747bd7caa6a4dd03afb5063b1984f26
+StonkWise audit commit: fe14c61ac7bd19a95dcec6c34e5cc4019f662dda
+Files:
+- AMAN_PROFESSOR_HANDOFF.md
+- FEATURE_REUSE_MATRIX.csv
+- FLASHFEED_AGENT_INTEGRATION_MAP.md
+- IMPLEMENTATION_PATCH_PLAN.md
+- INTEGRATION_OPTIONS.md
+- LOCAL_FILE_INVENTORY.txt
+- RECOMMENDED_ARCHITECTURE.md
+- RESEARCH_HYPOTHESES.md
+- SHA256SUMS.txt
+- STONKWISE_FEATURE_AUDIT.md
+- STONKWISE_INTEGRATION_REPORT.md
+- TEST_RESULTS.md
+- agent_output_schema.json
+- catalyst_schema.json
+- catalyst_taxonomy.json
+- data_audit.json
+- data_flow_diagram.md
+- duplicate_analysis.csv
+- forward_price_context.csv
+- frozen_entry_research_results.csv
+- historical_catalyst_evaluation.csv
+- labeled_review_sample.csv
+- package.json
+- prototype/catalyst_agent.mjs
+- prototype/metrics.mjs
+- run_agent_study.mjs
+- structured_catalyst_records.csv
+- summary.json
+- tests/catalyst_agent.test.mjs
+- ticker_mapping_analysis.csv

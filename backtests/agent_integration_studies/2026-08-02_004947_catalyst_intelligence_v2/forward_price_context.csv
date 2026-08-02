@@ -1,0 +1,175 @@
+event_id,ticker,detected_sec,missing_reason,category,direction,detection_date_et,base_sec,base_close,return_15m_pct,return_30m_pct,return_60m_pct,return_120m_pct,return_official_close_pct,return_next_session_close_pct,ohlc_sources,caveat
+cee6cac9be467e41bc9b15c9,CDXS,1784912139,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+cee6cac9be467e41bc9b15c9,MXL,1784912139,,earnings_guidance,bullish,2026-07-24,1784912160,72.98500061035156,-1.2468365479198273,-0.8152376731209277,-1.760640749966813,-2.7745447817283386,-2.7745447817283386,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+cee6cac9be467e41bc9b15c9,RBNE,1784912139,,earnings_guidance,bullish,2026-07-24,1784912160,3.3166,-0.6512693722486973,-0.73569317976242,-0.34975577398540514,,-0.5005125731170623,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+e9878b26ad74083511454ec3,RLI,1784912880,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+8dcf6b1667b32eab5e27650d,R,1784913660,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+6b96e76867178872cfd18b4b,KNX,1784913720,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+7ddac8658ce176349fc6442e,SRFM,1784913778,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+8840ff77a17ba0d08df94e12,BFH,1784914680,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+63dd9937540e9827ebd35bee,GNTX,1784916098,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+ab567dd7d616f49d6c8193a2,MNKD,1784916387,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+7f7b2880dfd4d22176dc1bd1,SLG,1784916420,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+a547340604e5e85c99bfa145,AXP,1784916470,,earnings_guidance,bullish,2026-07-24,1784916480,323.80999755859375,-0.05326745710848568,-0.24705469225791976,,,0.2100351290020619,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+12073814e4f30725d36bbf10,LSTA,1784916576,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+545dbef31a601c1fa348b38b,ASST,1784917200,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+62343e7059f8e4556173e39b,OTLK,1784918400,,fda_clinical,bullish,2026-07-24,1784919600,1.34,0,2.2462686567164214,10.074626865671643,0.007462686567172305,11.194029850746269,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+55ef5907160a6f797556f7c0,OTLK,1784918531,,fda_clinical,bullish,2026-07-24,1784919600,1.34,0,6.664179104477608,10.074626865671643,1.4925373134328401,11.194029850746269,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+d751ee73bce67c9726063f1a,OTLK,1784918622,,fda_clinical,bullish,2026-07-24,1784919600,1.34,0,8.955223880596996,8.208955223880587,0.7611940298507536,11.194029850746269,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+6b8466ffb2046510ae07a859,OTLK,1784920680,,fda_clinical,bullish,2026-07-24,1784920680,1.605,-6.853582554517123,-14.330218068535828,-14.641744548286596,-14.542056074766363,-7.165109034267914,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+0134b8e4c4be1171b5f49f8a,MCHP,1784924100,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+0e91f947aff1a298966138fd,KVUE,1784925776,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+1afc0b81ae0cfb63174020ff,SXTC,1784928600,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+00f0f6f66e2d34d1e2db2219,MBAI,1784929095,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+5894f70ba0b91f8e06eb3c9c,TGT,1784931304,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+11de35a645519a240a4e78e8,FUNC,1784931660,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+11de35a645519a240a4e78e8,KFRC,1784931660,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+417ed5ba2f308b003bc440b9,RIVN,1784932144,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+88369b6f089242c4cd65b482,NVDA,1784956200,,contract_partnership,bullish,2026-07-25,1785139200,209.09,0,0,0,0,,-6.012291357788513,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+d939e4819c65942b7611c753,MCHP,1784961089,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+673fa5f52302225e06d6d835,GOOG,1784963646,,geopolitical,uncertain,2026-07-25,1785139200,323.2173,0,0,0,0,,1.1795779495713754,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+45eea3a78a2f5a2890b4e1d5,MCHP,1784963646,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+96daba16d1e92055f3e12017,TGT,1785033943,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+680aad378b49c7c914c5144c,AMZN,1785056422,,geopolitical,uncertain,2026-07-26,1785139200,235,0,0,0,0,,-1.5063829787233973,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+680aad378b49c7c914c5144c,CMCSA,1785056422,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+680aad378b49c7c914c5144c,DIS,1785056422,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+7195bc21f873c057b12ffdf1,AMZN,1785060018,,geopolitical,uncertain,2026-07-26,1785139200,235,0,0,0,0,,-1.5063829787233973,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+7195bc21f873c057b12ffdf1,BNO,1785060018,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+7195bc21f873c057b12ffdf1,META,1785060018,,geopolitical,uncertain,2026-07-26,1785139200,602.33,0,0,0,0,,-1.3829628276858297,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+996b57b61b58a2f68fb38c5f,EDHL,1785074400,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+adb3cc39e4f6eb9c6d1d2657,GS,1785076543,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+adb3cc39e4f6eb9c6d1d2657,JPM,1785076543,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+adb3cc39e4f6eb9c6d1d2657,MS,1785076543,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+54ce877103a7a4a9120b893f,AAPL,1785095716,,macroeconomic,uncertain,2026-07-26,1785139200,334.24,0,0,0,0,,0.8287458113930057,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+54ce877103a7a4a9120b893f,AMZN,1785095716,,macroeconomic,uncertain,2026-07-26,1785139200,235,0,0,0,0,,-1.5063829787233973,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+54ce877103a7a4a9120b893f,CME,1785095716,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+02e5a3932e6e5a746cbbe5d3,BF.B,1785099780,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+5b9107d47bb779668c7ab4f2,BF.A,1785101940,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+b3210445c53c24cd7f711b76,NVDA,1785105856,,merger_acquisition,mixed,2026-07-26,1785139200,209.09,0,0,0,0,,-6.012291357788513,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+0dbea710f3181831881eca92,EVN,1785106320,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+085e1debc736f96ac4db7806,EDU,1785107284,,earnings_guidance,bullish,2026-07-26,1785312000,50.69,0,0,0,0,,15.56520023673309,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+1f3156754a1c57c1f9cd027b,EQT,1785108505,,merger_acquisition,mixed,2026-07-26,1785139200,52.1185,0,0,0,0,,1.691338008576615,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+1f3156754a1c57c1f9cd027b,PPT,1785108505,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+9810ce22eda55c99e89bf741,GS,1785109487,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+9810ce22eda55c99e89bf741,JPM,1785109487,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+9810ce22eda55c99e89bf741,MS,1785109487,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+ee910d33ace76a631de052fe,BSL,1785111593,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+5fa3c3b1e53fc61ef0ba94e2,NVDA,1785113100,,contract_partnership,bullish,2026-07-26,1785139200,209.09,0,0,0,0,,-6.012291357788513,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+7ae2e9a43df6a380df60987b,CLS,1785185983,,earnings_guidance,bullish,2026-07-27,1785186000,342.1456,0.3533875636571038,0.3958548641280091,0.3637048087130168,0.6555104025888436,,2.096885068812804,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+4cf3b0b06ec04a09c57704e2,CRML,1785203524,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+25b1d8e70e437b9821e439b7,INTC,1785331200,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+b41ba0844ce1660699c5a8a6,UNIT,1785346740,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+57c7136d120dba1b51a1e88d,TEVA,1785347820,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+da613ccd7f15fcf7fe92a396,ACCS,1785348600,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+0ec100626da324ead3b1bbb6,MAS,1785349260,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+16bebef073d64d9394cceadd,SPY,1785350676,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+6efb6f017123f9f8dbb4f4c6,VFC,1785352902,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+49205e86e8516d64f517e925,DFNS,1785354866,,capital_structure,mixed,2026-07-29,1785354900,52.75,-6.729857819905205,11.848341232227488,59.241706161137444,56.03791469194312,9.028436018957354,61.53554502369667,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+ec7a718826b338dc330f864f,INO,1785355260,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+9350734769d0ee9fad4503be,FORM,1785355260,,earnings_guidance,bullish,2026-07-29,1785355260,90.7896,5.738983319675395,6.84043106258867,6.089023412373229,3.3246098672094826,,16.070563148202012,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+9ec25d17a03d1941a46d3c55,BHC,1785355500,,earnings_guidance,bullish,2026-07-29,1785355500,4.77,2.7253668763102867,1.8867924528302105,0,-2.7253668763102756,,24.52830188679247,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+e8950e252781df957e4dde4c,PCOR,1785355500,,merger_acquisition,mixed,2026-07-29,1785355500,50.99,0.33339870562854035,0.33339870562854035,-1.6277701510100107,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+07cb72f95a78c8dba8a3984b,PSA,1785355500,,earnings_guidance,bullish,2026-07-29,1785355500,324.49,1.525470738697643,1.8521680175043853,2.3760362414866343,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+58207319a16a659031e45869,NDAQ,1785355500,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+c911e7308c90ffa0bd2153f2,FORM,1785355509,,earnings_guidance,bullish,2026-07-29,1785355560,91,5.505494505494513,7.175824175824186,7.14285714285714,3.0857142857142916,,15.802197802197803,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+13039a91cf7a0edc898c74ac,CHDN,1785355620,,merger_acquisition,mixed,2026-07-29,1785355620,93.15,-4.959742351046703,-4.3907675791733825,-0.633387010198605,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+2420f441193aef507b3e1ea5,MDXG,1785355620,,merger_acquisition,mixed,2026-07-29,1785355740,3.93,-1.0178117048346036,1.5012722646310372,5.544529262086506,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+2420f441193aef507b3e1ea5,OPRA,1785355620,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+2420f441193aef507b3e1ea5,SMTI,1785355620,,merger_acquisition,mixed,2026-07-29,1785357000,32.34,0,0.6530612244897815,1.1440940012368506,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+9d5cd5a8b7e4c38e9a4f2dfa,CVNA,1785355691,,earnings_guidance,bullish,2026-07-29,1785355740,55.84,1.0565902578796527,0.18212750716330994,2.4176217765042862,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+762855159188157012968841,WWD,1785355721,,earnings_guidance,bullish,2026-07-29,1785355800,385.42,-6.621348139691774,-6.59540241814125,-8.930517357687718,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+dc4620f1d715c92b652b212d,FORM,1785355737,,earnings_guidance,bullish,2026-07-29,1785355740,91,5.505494505494513,6.780219780219787,6.921428571428567,3.0857142857142916,,15.802197802197803,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+4eed0533df561b32f972fa12,HCTI,1785355800,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+c952ba039b686ef3f238ccb8,ARM,1785359478,,earnings_guidance,bullish,2026-07-29,1785359520,219,-0.6940639269406468,-5.739726027397252,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+e3facd2986cb9d7f57c2fdd7,TNK,1785359735,,earnings_guidance,bullish,2026-07-29,1785360360,76.98,,,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+1b26e5579c11cc898cd00af1,IGM,1785359750,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+5825876fc7d427606115718f,EXK,1785359840,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+4fd27e90133ea7e0179dd359,LRCX,1785359900,,earnings_guidance,bullish,2026-07-29,1785359940,264.592,-0.3106669891757896,-2.113442583298053,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+ac92a7edebb8fcb95296bdb4,SONO,1785360147,,geopolitical,uncertain,2026-07-29,1785360240,17.07,,,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+19ec817950b9e1e99ab81ea9,MOBX,1785360181,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+4cce4a23616db912870556f2,CLB,1785360410,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+ac7e4d978dbd5768c4f6c28e,TTEK,1785360501,,earnings_guidance,bullish,2026-07-29,1785361560,33.5,0,,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+645027ec461db5d2507c42bd,CMG,1785360600,,earnings_guidance,bullish,2026-07-29,1785360600,36.3423,-0.2514975661969676,,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+c2bd883fab7b672d2c3e5c29,JNJ,1785360660,,contract_partnership,bullish,2026-07-29,1785360720,265.5392,-1.3478989166194721,,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+e789f8967eceda760c52a774,ASTL,1785360960,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+ff9153061237c2d0a0fd8b58,NGVT,1785361129,,earnings_guidance,bullish,2026-07-29,1785361740,70.62,,,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+b89911f85274905c55b9bb70,NBHC,1785361140,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+906fc193309c5f8ab1ff8b41,NIC,1785361260,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+c8b22a9b665c61b7e5f4f2ee,DAC,1785361320,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+c8b22a9b665c61b7e5f4f2ee,JNJ,1785361320,,merger_acquisition,mixed,2026-07-29,1785361320,261.15,0.22975301550833827,,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+9d47da5c84ab93c0f4e77f8b,JNJ,1785361320,,merger_acquisition,mixed,2026-07-29,1785361320,261.15,0.22975301550833827,,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+f41f95842de5b8b338946809,ETD,1785361453,,geopolitical,uncertain,2026-07-29,1785361920,23.0212,,,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+399d41e96524b5691ecfac9b,ASTL,1785361481,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+efad6a1636612da5d63f7e12,PCOR,1785361680,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+4e5bc29f646675e266a132bf,FORM,1785362010,,earnings_guidance,bullish,2026-07-29,1785362040,91.5,2.5224043715847078,2.5224043715847078,2.5224043715847078,2.5224043715847078,,15.169398907103826,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+a81fead449be1e3be2010976,FFAI,1785363029,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+1e304db49afbe3b4b392f02b,BOOM,1785363044,,earnings_guidance,bullish,2026-07-29,1785363060,6.71,-0.5871833084947764,,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+db37ea974bd20a6273f13d1c,ASTL,1785363060,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+73ef77ab60948413562a6a25,SBFG,1785363071,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+defc65075904cb9b8f9d2f30,FORM,1785363248,,earnings_guidance,bullish,2026-07-29,1785398400,93.808,0,0,0,0,,12.335834896810493,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+5f9d7dfaa9424de52e9ee826,TENB,1785363412,,earnings_guidance,bullish,2026-07-29,1785363420,29.85,-0.176884422110557,,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+91803a37c2e30a6cf00fa58a,SIMO,1785363479,,earnings_guidance,bullish,2026-07-29,1785363540,226,-1.2089380530973526,,,,,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+c9726159e73d7016c290ec48,BHE,1785363762,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+36466a37815345b7d69b0425,REF,1785366000,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+68ed87aa66a69c443f6e67d6,ALLT,1785366600,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+68ed87aa66a69c443f6e67d6,JMKE,1785366600,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+9acec9d9c957b299a20a73de,LRCX,1785367754,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+5aecd5f56133d818982a4ec2,MSFT,1785368987,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+9321ee5de318cb90ad62bb97,CSL,1785369479,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+0d665a823976b0ce9b1b7aa7,HOOD,1785369718,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+99058cc50e37edc92eb9498c,HOOD,1785370680,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+316a2a8f4ff6b724aa14fe6c,GD,1785408420,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+22fbe645ab305d93c26e9be9,ALNY,1785427339,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+22fbe645ab305d93c26e9be9,BMY,1785427339,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+22fbe645ab305d93c26e9be9,CAPR,1785427339,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+2242e429cf08d6b88145b557,AAPL,1785427493,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+2242e429cf08d6b88145b557,QCOM,1785427493,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+90608ec08f0f2feb9757acf0,YUM,1785428587,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+d83ff8a4d9032648c46d2392,APD,1785429497,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+9254d7d82612e566efcd42b0,TK,1785429505,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+58ba0103e8d494f34b9e0d62,SAIA,1785429920,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+276a3bd06d606b8e482a5d1b,BX,1785430034,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+9f854b2fda7b6ae160c9fbf6,SEGG,1785430176,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+d8390c8ae377ef43231614a9,RACE,1785430214,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+c27c8409c2a90da447b8f151,LEXX,1785430461,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+03dd7d7761ce64ce7189a477,CRM,1785430980,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+349d15881eaf6d90d0e946c5,BX,1785431377,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+4d843f0f9177e6ff0922ed95,WULF,1785431904,,merger_acquisition,mixed,2026-07-30,1785431940,18.055,,,,,-0.4430905566324972,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+92e4f8d522dfd33fd3c592b6,MRK,1785432060,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+94f1ce45cf8ebf7c29a8c055,XRX,1785432300,,geopolitical,uncertain,2026-07-30,1785432300,3.455,-1.302460202604916,0,-4.341534008683068,1.0709117221418207,-1.013024602026058,-15.629522431259046,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+ae2ddad844d09fca535ad43b,MLM,1785432708,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+e83e2b62bfea0547c78640e5,HITI,1785433260,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+2a4958449712e51b57837e63,EME,1785434263,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+7f0a761d16118019b4492184,TE,1785434627,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+e6a95aa8eef5773c1784c722,SRXH,1785434640,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+9fe8eec95e47aec7d473759a,ACCS,1785435300,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+24fdc180372dcc53bfef44c5,BAC,1785443640,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+39feeda960b0a45fd609c25f,GDYN,1785454646,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+460671b6bee076cbbcb82f3d,COLM,1785455345,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+edf1e6dd186498d4ba50d530,FSLR,1785521640,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+ab4a178ef2d55f7608039b13,HUBG,1785521700,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+e0688003dd22454649a50017,PBF,1785521760,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+77226c73649110d9eee4b45b,RES,1785522060,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+30b8b51ab61d8b99f847c4cd,CL,1785522420,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+6b01dec613bfdd57c1c588f1,PRCT,1785522540,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+855acdf192c005615cb5eb1b,BRCB,1785522600,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+98f8ea7944216a10133155cc,PRIM,1785522600,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+73ab85e0e070af5db5e3c1f0,REGN,1785522720,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+04d43af1c9b27c10a2e114b6,WIX,1785522780,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+2380c973900433af485d650c,EMBC,1785523140,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+3ac2a9a66437750e14bc9214,ADMA,1785523260,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+982730779ec672b951bb0e30,ERAS,1785523260,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+f6bccb72ad6dd79290fea81b,VRRM,1785523440,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+55bcf3e60d70e20c27423a6d,PICS,1785523500,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+e311a3ea941ae427b4ef3136,META,1785524651,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+e311a3ea941ae427b4ef3136,MSFT,1785524651,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+03c01119c373cb278df87cca,IONQ,1785525780,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+03c01119c373cb278df87cca,SKYT,1785525780,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+46cc97f8c9f2345f2e956bd0,ITGR,1785526123,,merger_acquisition,mixed,2026-07-31,1785526140,121.05,0.3925650557620841,0.14869888475836923,0.48740190004130657,,-0.2040479140850926,,"[""yahoo_chart_ohlcv""]",Price context only; no causal claim.
+46cc97f8c9f2345f2e956bd0,KKR,1785526123,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+96a186069f2384640d7a0027,DLX,1785529800,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+e0e16eaed5ad558583eecd50,AFBI,1785529800,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+89f6a5341ad44f295e3fc622,VSEE,1785529981,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+a8dab307ff17e62ca5024397,NPK,1785531600,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+860380485b514a76047ec34e,PFSA,1785531781,no_real_bar_at_or_after_detection,,,,,,,,,,,,,
+5d2121094aa2eb02d66d4754,PFSA,1785532500,no_real_bar_at_or_after_detection,,,,,,,,,,,,,

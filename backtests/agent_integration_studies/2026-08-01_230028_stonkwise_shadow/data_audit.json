@@ -1,0 +1,275 @@
+{
+  "generated_at": "2026-08-02T05:43:48.506Z",
+  "flashfeed_commit": "2593eb6a8747bd7caa6a4dd03afb5063b1984f26",
+  "stonkwise_commit": "fe14c61ac7bd19a95dcec6c34e5cc4019f662dda",
+  "mongo_uri_redacted": "mongodb://127.0.0.1:27017/feedflash",
+  "database": "feedflash",
+  "collection_counts": {
+    "daily_prediction_snapshots": 79,
+    "rss_sources": 0,
+    "source_status": 29,
+    "short_interest_snapshots": 4240,
+    "events": 228052,
+    "prediction_postmortem_reports": 1,
+    "socials": 168513,
+    "prediction_models": 2,
+    "prediction_replay_reports": 1,
+    "articles_archive_bad_sources_20260627003254": 343,
+    "active_ticker_context": 123,
+    "articles_archive_bad_sources_20260627002543": 1019,
+    "articles_archive_bad_sources_20260628232716": 22,
+    "screeners": 11755,
+    "momentum_snapshots": 16,
+    "finra_short_volume_daily": 29,
+    "prediction_outcomes": 2595,
+    "finviz_momentum_snapshots": 5513,
+    "next_session_prediction_models": 1,
+    "correlations": 0,
+    "keywords": 25,
+    "prediction_signals": 532838,
+    "source_fetch_state": 510,
+    "screener_position_history": 558,
+    "decision_map_points": 6381,
+    "articles": 105091,
+    "ohlcv_bars": 4885407,
+    "stocktwits_watcher_snapshots": 23707,
+    "articles_archive_bad_sources_20260626230637": 14961
+  },
+  "article_range": {
+    "min_detected_sec": 1685964469,
+    "max_detected_sec": 1785532508,
+    "min_iso": "2023-06-05T11:27:49.000Z",
+    "max_iso": "2026-07-31T21:15:08.000Z"
+  },
+  "articles": {
+    "total": 108700,
+    "approved": 108700,
+    "unapproved": 0,
+    "missing_causal_timestamp": 0,
+    "sources": [
+      {
+        "source": "TradingView News Flow",
+        "count": 85012,
+        "approved": true
+      },
+      {
+        "source": "GlobeNewswire Public Companies",
+        "count": 7245,
+        "approved": true
+      },
+      {
+        "source": "PR Newswire",
+        "count": 5020,
+        "approved": true
+      },
+      {
+        "source": "Finviz News Flow",
+        "count": 3451,
+        "approved": true
+      },
+      {
+        "source": "Benzinga",
+        "count": 2194,
+        "approved": true
+      },
+      {
+        "source": "Business Wire",
+        "count": 1644,
+        "approved": true
+      },
+      {
+        "source": "ACCESS Newswire",
+        "count": 1327,
+        "approved": true
+      },
+      {
+        "source": "TradingView News",
+        "count": 1241,
+        "approved": true
+      },
+      {
+        "source": "SEC EDGAR",
+        "count": 1147,
+        "approved": true
+      },
+      {
+        "source": "Finviz News",
+        "count": 370,
+        "approved": true
+      },
+      {
+        "source": "GlobeNewswire Earnings",
+        "count": 20,
+        "approved": true
+      },
+      {
+        "source": "GlobeNewswire M&A",
+        "count": 20,
+        "approved": true
+      },
+      {
+        "source": "FDA MedWatch Safety Alerts",
+        "count": 4,
+        "approved": true
+      },
+      {
+        "source": "FDA Recalls",
+        "count": 4,
+        "approved": true
+      },
+      {
+        "source": "FDA Press Releases",
+        "count": 1,
+        "approved": true
+      }
+    ]
+  },
+  "catalyst_coverage": {
+    "existing_flashfeed_detected": 21970,
+    "improved_deterministic_raw": 7231,
+    "improved_deterministic_deduplicated": 6139,
+    "duplicate_syndications_collapsed": 1092
+  },
+  "social": {
+    "total": 168513,
+    "aggregate_or_trend_summary_rows": 0,
+    "aggregate_rows_excluded_from_individual_message_counts": true,
+    "sources": [
+      {
+        "source": "StockTwits",
+        "rows": 147883,
+        "min_sec": 1552592138,
+        "max_sec": 1785532671
+      },
+      {
+        "source": "stocktwits_public_symbol_stream",
+        "rows": 15616,
+        "min_sec": 1781156511,
+        "max_sec": 1785095666
+      },
+      {
+        "source": "Bluesky",
+        "rows": 3750,
+        "min_sec": 1757512283,
+        "max_sec": 1785529835
+      },
+      {
+        "source": "bluesky_public_search_api",
+        "rows": 3682,
+        "min_sec": 1781154570,
+        "max_sec": 1781275427
+      },
+      {
+        "source": "stocktwits_symbol_stream_api",
+        "rows": 2143,
+        "min_sec": 1778607680,
+        "max_sec": 1784137902
+      },
+      {
+        "source": "reddit_subreddit_new_rss",
+        "rows": 181,
+        "min_sec": 1781153898,
+        "max_sec": 1781761735
+      },
+      {
+        "source": "r/stocks",
+        "rows": 66,
+        "min_sec": 1516283879,
+        "max_sec": 1785361287
+      },
+      {
+        "source": "TradingView Unstructured",
+        "rows": 56,
+        "min_sec": 1781305015,
+        "max_sec": 1781390727
+      },
+      {
+        "source": "r/StockMarket",
+        "rows": 46,
+        "min_sec": 1516283656,
+        "max_sec": 1749126741
+      },
+      {
+        "source": "OilPrice Unstructured",
+        "rows": 19,
+        "min_sec": 1781307172,
+        "max_sec": 1781390728
+      },
+      {
+        "source": "CNBC Unstructured",
+        "rows": 13,
+        "min_sec": 1781305014,
+        "max_sec": 1781390726
+      },
+      {
+        "source": "Finviz Unstructured",
+        "rows": 12,
+        "min_sec": 1781306391,
+        "max_sec": 1781390727
+      },
+      {
+        "source": "BBC Business Unstructured",
+        "rows": 9,
+        "min_sec": 1781390727,
+        "max_sec": 1781390727
+      }
+    ]
+  },
+  "universe": {
+    "unique_screener_tickers": 11757,
+    "company_aliases": 11404
+  },
+  "ohlc_sources": [
+    {
+      "source": "yahoo_chart_ohlcv",
+      "interval": 300,
+      "rows": 3445920,
+      "ticker_count": 602,
+      "min_sec": 1776240000,
+      "max_sec": 1785360900
+    },
+    {
+      "source": "yahoo_chart_ohlcv",
+      "interval": 60,
+      "rows": 2599172,
+      "ticker_count": 1163,
+      "min_sec": 1783584000,
+      "max_sec": 1785532500
+    },
+    {
+      "source": "yahoo_chart_ohlcv",
+      "interval": 3600,
+      "rows": 591204,
+      "ticker_count": 597,
+      "min_sec": 1768208400,
+      "max_sec": 1783728000
+    }
+  ],
+  "frozen_positions": {
+    "stored_rows": 558,
+    "distinct_analyzable_rows": 558
+  },
+  "frozen_position_dates": [
+    {
+      "value": "2026-07-31",
+      "count": 355
+    },
+    {
+      "value": "2026-07-30",
+      "count": 150
+    },
+    {
+      "value": "2026-07-29",
+      "count": 53
+    }
+  ],
+  "causal_join_future_leakage_violations": 0,
+  "deterministic_registry_digest": "8ca1fa57a0f1d3d89e3a703c79d5c9fcd09d577f8aeb03f0e0f1aeb0dce505ea",
+  "deterministic_registry_rerun_digest": "8ca1fa57a0f1d3d89e3a703c79d5c9fcd09d577f8aeb03f0e0f1aeb0dce505ea",
+  "limitations": [
+    "No independent human-labeled catalyst truth set exists.",
+    "No local LLM provider was available.",
+    "Historical position outcomes are simulated and observational.",
+    "Forward returns are context, not evidence of causation."
+  ]
+}

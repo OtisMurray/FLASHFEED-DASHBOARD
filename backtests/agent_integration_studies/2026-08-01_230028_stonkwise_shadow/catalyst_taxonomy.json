@@ -1,0 +1,102 @@
+{
+  "taxonomy": {
+    "earnings_guidance": [
+      "earnings",
+      "guidance",
+      "revenue",
+      "eps"
+    ],
+    "fda_clinical": [
+      "fda",
+      "clinical_trial",
+      "drug_approval"
+    ],
+    "sec_filing": [
+      "sec_filing",
+      "8-k",
+      "10-k",
+      "10-q"
+    ],
+    "capital_structure": [
+      "offering",
+      "dilution",
+      "warrant",
+      "convertible",
+      "reverse_split"
+    ],
+    "merger_acquisition": [
+      "merger",
+      "acquisition",
+      "takeover"
+    ],
+    "contract_partnership": [
+      "contract",
+      "partnership",
+      "collaboration"
+    ],
+    "analyst_action": [
+      "upgrade",
+      "downgrade",
+      "price_target"
+    ],
+    "management_change": [
+      "ceo_change",
+      "cfo_change",
+      "board_change"
+    ],
+    "legal_regulatory": [
+      "lawsuit",
+      "investigation",
+      "regulatory_action"
+    ],
+    "product_launch": [
+      "launch",
+      "clearance",
+      "commercialization"
+    ],
+    "geopolitical": [
+      "sanctions",
+      "tariff",
+      "conflict",
+      "embargo",
+      "blockade"
+    ],
+    "commodity_shock": [
+      "oil",
+      "natural_gas",
+      "gold",
+      "copper",
+      "supply_disruption"
+    ],
+    "natural_disaster": [
+      "hurricane",
+      "earthquake",
+      "wildfire",
+      "flood"
+    ],
+    "macroeconomic": [
+      "interest_rate",
+      "inflation",
+      "jobs",
+      "gdp",
+      "central_bank"
+    ],
+    "sector_event": [
+      "sector_rotation",
+      "supply_chain"
+    ],
+    "unknown": []
+  },
+  "directions": [
+    "bullish",
+    "bearish",
+    "mixed",
+    "uncertain"
+  ],
+  "directness": [
+    "direct",
+    "indirect",
+    "market_wide"
+  ],
+  "note": "Severity, direction, asset, confidence, and horizon remain separate."
+}

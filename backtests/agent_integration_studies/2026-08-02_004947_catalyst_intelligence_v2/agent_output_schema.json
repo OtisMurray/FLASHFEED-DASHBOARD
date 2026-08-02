@@ -1,0 +1,48 @@
+{
+  "type": "object",
+  "required": [
+    "direction",
+    "confidence",
+    "tickers",
+    "evidence_refs",
+    "brief"
+  ],
+  "properties": {
+    "direction": {
+      "enum": [
+        "bullish",
+        "bearish",
+        "mixed",
+        "uncertain"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "tickers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "brief": {
+      "type": "string"
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

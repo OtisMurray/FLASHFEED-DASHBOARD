@@ -6,6 +6,7 @@ import useSWR from 'swr'
 import { clsx } from 'clsx'
 import * as THREE from 'three'
 import { useTickerDatalistOptions } from '@/lib/useTickerUniverse'
+import { CatalystIntelligencePanel } from '@/components/shared/CatalystIntelligencePanel'
 
 const fetcher = (url: string) => fetch(url).then(r => r.json())
 const JOURNEY_PLAYBACK_SPEED_MULTIPLIER = 0.28125 // 0.5x the prior selected-journey playback speed.
@@ -1954,6 +1955,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
                   <span className="text-slate-500">Data quality</span>
                   <div className="mt-0.5 text-slate-200">{missingDataLabels(selectedRow).slice(0, 3).join(' · ')}</div>
                 </div>
+                <CatalystIntelligencePanel ticker={selectedRow.ticker} className="lg:col-span-3" />
               </div>
             )}
           </div>
@@ -2120,6 +2122,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
                 <div className="mt-0.5 text-slate-200">{missingDataLabels(selectedRow).slice(0, 3).join(' · ')}</div>
               </div>
             </div>
+            <CatalystIntelligencePanel ticker={selectedRow.ticker} className="mt-2" />
           </div>
         )}
 

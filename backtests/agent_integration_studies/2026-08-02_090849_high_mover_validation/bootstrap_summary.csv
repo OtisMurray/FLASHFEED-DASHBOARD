@@ -1,0 +1,4 @@
+metric,mean,lower_95,upper_95
+top5_delta_mean_mfe_pct,8.656232,0,24.661664
+top5_delta_close_return_pct,7.634506,0,19.22508
+top5_delta_high10_precision_pct,6.750667,0,20

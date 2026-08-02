@@ -1,0 +1,24 @@
+subsystem,classification,rationale
+Agent triggers,adapt conceptually,FlashFeed ranked candidates should trigger briefs; fix cooldown elapsed-time semantics.
+Agent synthesizer,adapt conceptually,Reuse orchestration ideas but read only existing FlashFeed collections.
+Agent settings/provider abstraction,adapt conceptually,"Optional bounded provider with strict timeout, schema, and deterministic fallback."
+Prompt builder,unsafe or unreliable,Raw article and social text is inserted without a strong untrusted-data boundary.
+JSON extraction/validation,unsafe or unreliable,"Regex extraction and signal-only validation do not prove tickers, evidence, times, or claims."
+Agent report model/API,rewrite for FlashFeed,Use a separate versioned shadow Mongo collection and read-only routes.
+Macro classifier,rewrite for FlashFeed,Use bounded contextual rules with unknown states rather than broad substrings.
+MarketEvent expiration/storage,adapt conceptually,"Preserve expiration but add event identity, causal timestamps, evidence, and deduplication."
+Commodity and ETF tracking,requires additional evidence,"Relationships need approved data, asset-specific direction, and frozen validation."
+Energy Risk Score,requires additional evidence,Absolute movement and event density conflate severity with directional impact.
+Macro correlation/synthesis,adapt conceptually,Generalize to explicit direct and indirect sector effects with uncertainty.
+Pipeline normalization/schema,already duplicated by FlashFeed,Current article/social schemas and timestamps remain authoritative.
+Pipeline deduplication,rewrite for FlashFeed,"Collapse cross-feed event syndication using URL, title, entity, ticker, time, and bounded similarity."
+Pipeline ranking/storage/orchestration,already duplicated by FlashFeed,"Do not create a second ranking, scheduler, or database."
+RSS/StockTwits/Bluesky ingestion,already duplicated by FlashFeed,Do not port StonkWise collectors or source configuration.
+Finviz ingestion/fundamentals,already duplicated by FlashFeed,Read current screener/Mongo data and preserve existing auth/rate controls.
+Ticker extraction,rewrite for FlashFeed,"Use stored tickers, company aliases, and the current listed-US universe; validate every symbol."
+Sentiment NLP,already duplicated by FlashFeed,Keep current weighted article/social sentiment and source audit fields.
+Analytics/screener/indicators,already duplicated by FlashFeed,"Do not create parallel correlation, momentum, OHLC, or screener calculations."
+SEC/congressional/insider intelligence,requires additional evidence,Potential future research only; source compliance and duplication need separate audit.
+FastAPI/SQLite/Jinja application,not useful,Conflicts with the current Node/Mongo/React/Redis ownership model.
+Local Ollama deployment,requires additional evidence,"Model memory, cold start, latency, and Railway feasibility are unmeasured."
+README licensing claim,requires additional evidence,README says MIT but the inspected clone has no standalone LICENSE file.

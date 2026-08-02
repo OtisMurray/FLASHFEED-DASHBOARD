@@ -1,0 +1,168 @@
+{
+  "analysis_data_cutoff": "2026-07-31T20:00:00.000Z",
+  "source_commit": "2593eb6a8747bd7caa6a4dd03afb5063b1984f26",
+  "purpose": "incremental catalyst validation layered on existing AI ranking for high-mover capture",
+  "methodology": {
+    "frozen_dates": [
+      "2026-07-29",
+      "2026-07-30",
+      "2026-07-31"
+    ],
+    "original_rows": 558,
+    "unique_ticker_dates": 67,
+    "analyzable_unique_ticker_dates": 62,
+    "source": "yahoo_chart_ohlcv",
+    "interval_seconds": 60,
+    "causal_articles_reviewed": 4206,
+    "classified_direct_events": 17,
+    "deduplicated_direct_events": 13,
+    "high_mover_thresholds_pct": [
+      10,
+      20
+    ],
+    "weights": [
+      0,
+      0.1,
+      0.2,
+      0.3,
+      0.4
+    ],
+    "top_k": [
+      3,
+      5,
+      10
+    ],
+    "classifier_version": "2.1.0",
+    "scorer_is_signed": true
+  },
+  "selection": {
+    "development_nominees": [
+      0.1,
+      0.2
+    ],
+    "frozen_weight": 0.2
+  },
+  "retrospective_july30_top5": {
+    "date": "2026-07-30",
+    "split": "retrospective_review_1",
+    "k": 5,
+    "frozen_weight": 0.2,
+    "baseline_mean_mfe_pct": 10.932238147896822,
+    "assisted_mean_mfe_pct": 35.593901819107934,
+    "delta_mean_mfe_pct": 24.661663671211112,
+    "baseline_high10_precision_pct": 60,
+    "assisted_high10_precision_pct": 80,
+    "delta_high10_precision_pct": 20,
+    "baseline_high10_recall_pct": 18.75,
+    "assisted_high10_recall_pct": 25,
+    "delta_high10_recall_pct": 6.25,
+    "baseline_top_quintile_recall_pct": 16.666666666666664,
+    "assisted_top_quintile_recall_pct": 33.33333333333333,
+    "delta_top_quintile_recall_pct": 16.666666666666664,
+    "baseline_close_return_pct": 4.711226629596708,
+    "assisted_close_return_pct": 23.936306420566883,
+    "delta_close_return_pct": 19.225079790970174,
+    "baseline_tickers": "CMCO|NBIS|LUNG|BE|KSCP",
+    "assisted_tickers": "GCTK|BHC|CMCO|AXTI|NBIS"
+  },
+  "retrospective_july31_top5": {
+    "date": "2026-07-31",
+    "split": "retrospective_review_2",
+    "k": 5,
+    "frozen_weight": 0.2,
+    "baseline_mean_mfe_pct": 5.776424417682391,
+    "assisted_mean_mfe_pct": 6.785637126290243,
+    "delta_mean_mfe_pct": 1.0092127086078513,
+    "baseline_high10_precision_pct": 40,
+    "assisted_high10_precision_pct": 40,
+    "delta_high10_precision_pct": 0,
+    "baseline_high10_recall_pct": 25,
+    "assisted_high10_recall_pct": 25,
+    "delta_high10_recall_pct": 0,
+    "baseline_top_quintile_recall_pct": 0,
+    "assisted_top_quintile_recall_pct": 0,
+    "delta_top_quintile_recall_pct": 0,
+    "baseline_close_return_pct": -10.40344381995961,
+    "assisted_close_return_pct": -6.922687573503232,
+    "delta_close_return_pct": 3.4807562464563784,
+    "baseline_tickers": "XRX|CMCO|BHC|SNDK|DFNS",
+    "assisted_tickers": "XRX|CMCO|BHC|GCTK|AXTI"
+  },
+  "bootstrap_top5": [
+    {
+      "metric": "top5_delta_mean_mfe_pct",
+      "mean": 8.656231806468167,
+      "lower_95": 0,
+      "upper_95": 24.661663671211112
+    },
+    {
+      "metric": "top5_delta_close_return_pct",
+      "mean": 7.634506120945902,
+      "lower_95": 0,
+      "upper_95": 19.225079790970174
+    },
+    {
+      "metric": "top5_delta_high10_precision_pct",
+      "mean": 6.750666666666746,
+      "lower_95": 0,
+      "upper_95": 20
+    }
+  ],
+  "leave_one_promoted_out": [
+    {
+      "date": "2026-07-30",
+      "omitted_promoted_ticker": "GCTK",
+      "delta_mean_mfe_pct": 2.627997843251677,
+      "delta_high10_precision_pct": 20,
+      "delta_close_return_pct": 3.328718903813159,
+      "baseline_tickers": "CMCO|NBIS|LUNG|BE|KSCP",
+      "assisted_tickers": "BHC|CMCO|AXTI|NBIS|LUNG"
+    },
+    {
+      "date": "2026-07-30",
+      "omitted_promoted_ticker": "BHC",
+      "delta_mean_mfe_pct": 22.328395771127685,
+      "delta_high10_precision_pct": 20,
+      "delta_close_return_pct": 14.955805609294757,
+      "baseline_tickers": "CMCO|NBIS|LUNG|BE|KSCP",
+      "assisted_tickers": "GCTK|CMCO|AXTI|NBIS|LUNG"
+    },
+    {
+      "date": "2026-07-30",
+      "omitted_promoted_ticker": "AXTI",
+      "delta_mean_mfe_pct": 23.128674587227874,
+      "delta_high10_precision_pct": 20,
+      "delta_close_return_pct": 16.01940559163087,
+      "baseline_tickers": "CMCO|NBIS|LUNG|BE|KSCP",
+      "assisted_tickers": "GCTK|BHC|CMCO|NBIS|LUNG"
+    },
+    {
+      "date": "2026-07-31",
+      "omitted_promoted_ticker": "GCTK",
+      "delta_mean_mfe_pct": 0.33726523264747854,
+      "delta_high10_precision_pct": 0,
+      "delta_close_return_pct": 0.7318178440625847,
+      "baseline_tickers": "XRX|CMCO|BHC|SNDK|DFNS",
+      "assisted_tickers": "XRX|CMCO|BHC|AXTI|DFNS"
+    },
+    {
+      "date": "2026-07-31",
+      "omitted_promoted_ticker": "AXTI",
+      "delta_mean_mfe_pct": 2.507286721455867,
+      "delta_high10_precision_pct": 20,
+      "delta_close_return_pct": 0.6056775477891936,
+      "baseline_tickers": "XRX|CMCO|BHC|SNDK|DFNS",
+      "assisted_tickers": "XRX|CMCO|BHC|GCTK|DFNS"
+    }
+  ],
+  "verdict": "exploratory_incremental_signal_promising_requires_frozen_forward_validation",
+  "production_change_supported": false,
+  "limitations": [
+    "Only three market dates are available.",
+    "The target is observed regular-session MFE, not realized execution return.",
+    "Catalyst labels are deterministic and do not yet have independent human precision labels.",
+    "Stored OHLC coverage limits the analyzable candidate universe.",
+    "Results are observational and do not prove catalysts caused movement.",
+    "Classifier coverage rules were expanded after reviewing missed movers, so every date in this rerun is retrospective and none is an untouched forward test."
+  ]
+}

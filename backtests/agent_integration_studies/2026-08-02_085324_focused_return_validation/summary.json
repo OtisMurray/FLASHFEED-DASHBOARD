@@ -1,0 +1,24 @@
+{
+  "generated_at": "2026-08-02T14:59:16.947Z",
+  "source_study": "backtests/agent_integration_studies/2026-08-02_004947_catalyst_intelligence_v2",
+  "positions": {
+    "total": 558,
+    "finalized": 41,
+    "unresolved_marks": 517,
+    "dates": [
+      "2026-07-29",
+      "2026-07-30",
+      "2026-07-31"
+    ]
+  },
+  "policies_tested": 7,
+  "evidence_rule_passes": [],
+  "verdict": "no_demonstrated_return_improvement_keep_explanatory_only",
+  "limitations": [
+    "Only three stored market dates are available.",
+    "Only finalized simulated positions are treated as settled outcomes.",
+    "No independently labeled catalyst truth set exists.",
+    "Filtering changes trade selection, not the exit return of a selected trade.",
+    "Results are simulated and do not include real fills or position sizing."
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "prior_study": "backtests/agent_integration_studies/2026-08-01_230028_stonkwise_shadow",
+  "current_study": "backtests/agent_integration_studies/2026-08-02_004947_catalyst_intelligence_v2",
+  "flashfeed_commit": "2593eb6a8747bd7caa6a4dd03afb5063b1984f26",
+  "stonkwise_commit": "fe14c61ac7bd19a95dcec6c34e5cc4019f662dda",
+  "matches": {
+    "articles": true,
+    "raw_classifications": true,
+    "deduplicated_events": true,
+    "duplicates_collapsed": true,
+    "frozen_positions": true,
+    "strategy_variants": true,
+    "forward_context_rows": true,
+    "deterministic_digest": true,
+    "future_leakage_violations": true,
+    "verdict": true
+  },
+  "metrics": {
+    "articles": 108700,
+    "raw_classifications": 7231,
+    "deduplicated_events": 6139,
+    "duplicates_collapsed": 1092,
+    "frozen_positions": 558,
+    "strategy_variants": 7,
+    "forward_context_rows": 174,
+    "future_leakage_violations": 0,
+    "deterministic_registry_digest": "8ca1fa57a0f1d3d89e3a703c79d5c9fcd09d577f8aeb03f0e0f1aeb0dce505ea"
+  },
+  "performance_only_difference": {
+    "prior_ms_per_article": 0.0333,
+    "current_ms_per_article": 0.0307,
+    "explanation": "The production-shaped module reproduced the prior classifications and evidence exactly while completing the deterministic pass slightly faster. Runtime is informational and was not used for policy selection."
+  },
+  "verdict": "reproduced_no_trading_policy_change"
+}

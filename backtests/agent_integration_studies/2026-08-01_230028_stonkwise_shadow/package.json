@@ -1,0 +1,9 @@
+{
+  "name": "flashfeed-stonkwise-shadow-study",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "study": "node run_agent_study.mjs --enable-research"
+  }
+}

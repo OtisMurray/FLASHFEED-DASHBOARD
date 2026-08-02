@@ -1,0 +1,9 @@
+{
+  "name": "flashfeed-catalyst-intelligence-v2-study",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "study": "node run_agent_study.mjs --enable-research",
+    "test": "node --test ../../../Infrastructure/server/tests/catalystIntelligence.test.js"
+  }
+}

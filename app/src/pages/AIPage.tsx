@@ -15,6 +15,11 @@ type AiRankingRow = {
   rel_volume?: number
   volume?: number
   ai_rank_score: number
+  base_ai_rank_score?: number
+  catalyst_validation_score?: number
+  catalyst_rank_adjustment?: number
+  catalyst_event_count?: number
+  catalyst_direction?: string
   direction: 'bullish' | 'bearish' | 'watch'
   confidence?: number
   trade_watch_score?: number
@@ -52,6 +57,13 @@ type AiRankingRow = {
     validation_accuracy_5m?: number | null
     validation_samples?: number | null
     validation_avg_return_5m?: number | null
+    catalyst_validation_score?: number
+    catalyst_rank_adjustment?: number
+    catalyst_event_count?: number
+    catalyst_direction?: string
+    catalyst_confidence?: number
+    catalyst_latest_category?: string | null
+    catalyst_latest_severity?: string | null
   }
   reasons?: string[]
   risks?: string[]
@@ -556,6 +568,11 @@ function AiRow({
         </td>
         <td className="px-3 py-3">
           <div className={clsx('font-mono text-lg font-bold', scoreTone(row.ai_rank_score))}>{row.ai_rank_score.toFixed(1)}</div>
+          {Number(row.catalyst_rank_adjustment || 0) !== 0 && (
+            <div className="mt-0.5 font-mono text-[10px] text-sky-300">
+              base {Number(row.base_ai_rank_score || 0).toFixed(1)} · catalyst {Number(row.catalyst_rank_adjustment) > 0 ? '+' : ''}{Number(row.catalyst_rank_adjustment).toFixed(1)}
+            </div>
+          )}
           <div className="mt-1 h-1.5 w-24 overflow-hidden rounded-full bg-slate-700">
             <div className={clsx('h-full rounded-full', row.ai_rank_score >= 70 ? 'bg-emerald-500' : row.ai_rank_score <= 38 ? 'bg-red-500' : 'bg-sky-500')} style={{ width: `${Math.min(100, Math.max(0, row.ai_rank_score))}%` }} />
           </div>
@@ -591,6 +608,11 @@ function AiRow({
             ))}
             {row.evidence.quote_age_minutes != null && (
               <span className="rounded border border-border bg-bg px-1.5 py-0.5 text-[10px] text-neutral">quote {ageLabel(row.evidence.quote_age_minutes)}</span>
+            )}
+            {Number(row.evidence.catalyst_event_count || 0) > 0 && (
+              <span className="rounded border border-sky-500/40 bg-sky-500/10 px-1.5 py-0.5 text-[10px] text-sky-200">
+                catalyst {row.evidence.catalyst_direction} · {Number(row.evidence.catalyst_rank_adjustment || 0) > 0 ? '+' : ''}{Number(row.evidence.catalyst_rank_adjustment || 0).toFixed(1)}
+              </span>
             )}
             <button
               type="button"

@@ -1,0 +1,45 @@
+{
+  "verdict": "local_demo_ready_explanatory_shadow_not_prediction_ready",
+  "recommendation": "Build a read-only Catalyst Intelligence shadow enrichment; do not change prediction or position policy.",
+  "flashfeed_commit": "2593eb6a8747bd7caa6a4dd03afb5063b1984f26",
+  "stonkwise_commit": "fe14c61ac7bd19a95dcec6c34e5cc4019f662dda",
+  "counts": {
+    "total_articles": 108700,
+    "approved_articles": 108700,
+    "raw_classifications": 7231,
+    "deduplicated_events": 6139,
+    "duplicates_collapsed": 1092,
+    "frozen_positions": 558,
+    "strategy_variants": 7,
+    "forward_context_rows": 174
+  },
+  "processing": {
+    "deterministic_ms_total": 3336.0951,
+    "deterministic_ms_per_article": 0.0307,
+    "llm_attempted": 1,
+    "llm_failures": 1
+  },
+  "evidence": {
+    "independent_human_label_count": 0,
+    "precision_metrics_available": false,
+    "strategy_test_positive_candidates_after_minimum_count": [],
+    "causal_claim": false
+  },
+  "validation": {
+    "deterministic_same_input": true,
+    "future_data_leakage_violations": 0,
+    "distinct_position_dates": 3,
+    "temporal_test_independence_sufficient": false
+  },
+  "promotion": {
+    "explanatory_local_demo": true,
+    "prediction_shadow": false,
+    "production": false
+  },
+  "key_limitations": [
+    "Review sample is prepared but not independently labeled.",
+    "Optional AI classifier could not be evaluated without a local provider.",
+    "Recorded positions are simulated and observational.",
+    "Strategy variants are exploratory and not deployment evidence."
+  ]
+}

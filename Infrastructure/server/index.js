@@ -22,7 +22,8 @@ import socialRouter      from './routes/social.js'
 import correlationRouter from './routes/correlation.js'
 import settingsRouter    from './routes/settings.js'
 import decisionMapRouter from './routes/decisionMap.js'
-import { approvedNewsSourceMongoFilter } from './sourceFilter.js'
+import catalystIntelligenceRouter from './routes/catalystIntelligence.js'
+import { allowedSource, approvedNewsSourceMongoFilter } from './sourceFilter.js'
 import { dedupeWatcherSeries, loadWatcherFeatureMap, persistWatcherSnapshot } from './lib/watcherSnapshots.js'
 import Screener from './models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './routes/screener.js'
@@ -50,6 +51,15 @@ import { normalizeRollingWindowMinutes, recordIsInsideRollingWindow, sliceCandle
 import * as predictionThresholdPolicy from './lib/predictionThresholdPolicy.js'
 import { loadAiPositionCandidates } from './lib/aiPositionCandidates.js'
 import { aiArticleSentiment, scoreAiRankingEvidence } from './lib/aiRankingScore.js'
+import {
+  applyCatalystRankAdjustment,
+  buildCatalystValidationIndex,
+  buildCompanyAliases,
+  catalystRankingConfig,
+  isCatalystIntelligenceEnabled,
+  scoreCatalystRankValidation,
+  summarizeTickerCatalysts,
+} from './lib/catalystIntelligence.js'
 import {
   INTRADAY_LABEL_VERSION,
   INTRADAY_MODEL_ID,
@@ -341,19 +351,24 @@ function aiTickerTaggedArticleMatch() {
     $or: [
       { ticker: { $exists: true, $nin: ["", null] } },
       { tickers: { $exists: true, $nin: [[], "", null] } },
+      { tickers_mentioned: { $exists: true, $nin: [[], "", null] } },
+      { matched_mover_tickers: { $exists: true, $nin: [[], "", null] } },
       { symbol: { $exists: true, $nin: ["", null] } },
       { symbols: { $exists: true, $nin: [[], "", null] } },
     ],
   }
 }
 
-async function aiRecentArticles(db, days) {
+async function aiRecentArticles(db, days, { requireSentiment = true, allowFallback = true } = {}) {
   const cutoffMs = Date.now() - Math.max(1, days) * 86_400_000
   const projection = {
     ticker: 1, tickers: 1, symbol: 1, symbols: 1,
     sentiment: 1, sentiment_score: 1, finbert_score: 1, vader_score: 1, gemini_sentiment: 1,
-    ml_confidence: 1, title: 1, source: 1,
-    publish_date: 1, published_at: 1, fetched_date: 1, detected_at: 1, createdAt: 1, updatedAt: 1,
+    ml_confidence: 1, title: 1, headline: 1, summary: 1, content: 1, bodyText: 1, source: 1,
+    url: 1, link: 1, category: 1, article_kind: 1, collector: 1, event_type: 1,
+    publish_date: 1, published_at: 1, publish_time_trusted: 1, first_seen_at: 1,
+    fetched_date: 1, detected_at: 1, createdAt: 1, updatedAt: 1,
+    tickers_mentioned: 1, matched_mover_tickers: 1,
   }
   const tickerTagged = aiTickerTaggedArticleMatch()
   const recentDocs = await db.collection(AI_ARTICLES_COLLECTION)
@@ -362,12 +377,12 @@ async function aiRecentArticles(db, days) {
     .limit(8000)
     .toArray()
 
-  const usable = recentDocs.filter(a => aiTickers(a).length && aiSentiment(a) !== null)
+  const usable = recentDocs.filter(a => aiTickers(a).length && (!requireSentiment || aiSentiment(a) !== null))
   const recent = usable.filter(a => {
     const ts = aiArticleTimeMs(a)
     return ts > 0 && ts >= cutoffMs
   })
-  if (recent.length) return recent.slice(0, 8000)
+  if (recent.length || !allowFallback) return recent.slice(0, 8000)
 
   // If the stored timestamps are older/malformed, still show the latest real
   // ticker-tagged rows instead of a dead 0-count AI panel.
@@ -376,7 +391,7 @@ async function aiRecentArticles(db, days) {
     .sort({ _id: -1 })
     .limit(5000)
     .toArray()
-  return fallbackDocs.filter(a => aiTickers(a).length && aiSentiment(a) !== null).slice(0, 5000)
+  return fallbackDocs.filter(a => aiTickers(a).length && (!requireSentiment || aiSentiment(a) !== null)).slice(0, 5000)
 }
 function aiSentiment(a) {
   return aiArticleSentiment(a)
@@ -390,6 +405,10 @@ function aiTickers(a) {
   })
   if (Array.isArray(a.tickers)) a.tickers.forEach(push)
   else if (a.tickers) push(a.tickers)
+  if (Array.isArray(a.tickers_mentioned)) a.tickers_mentioned.forEach(push)
+  else if (a.tickers_mentioned) push(a.tickers_mentioned)
+  if (Array.isArray(a.matched_mover_tickers)) a.matched_mover_tickers.forEach(push)
+  else if (a.matched_mover_tickers) push(a.matched_mover_tickers)
   if (a.ticker) push(a.ticker)
   if (a.symbol) push(a.symbol)
   if (Array.isArray(a.symbols)) a.symbols.forEach(push)
@@ -475,8 +494,14 @@ app.get('/api/ai/rankings', async (req, res) => {
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50))
     const socialWindow = Math.min(4320, Math.max(5, Number(req.query.window_minutes) || 1440))
     const minScore = Math.max(0, Math.min(100, Number(req.query.min_score) || 0))
-    const [arts, tradeRows, model, signalRows] = await Promise.all([
+    const catalystEnabled = isCatalystIntelligenceEnabled()
+    const catalystConfig = catalystRankingConfig()
+    const generatedSec = Math.floor(Date.now() / 1000)
+    const [arts, catalystArticles, tradeRows, model, signalRows] = await Promise.all([
       aiRecentArticles(db, days),
+      catalystEnabled
+        ? aiRecentArticles(db, days, { requireSentiment: false, allowFallback: false })
+        : Promise.resolve([]),
       loadEnrichedTradeWatchRows(db, { limit: Math.max(limit, 30), days, socialWindow }),
       loadLatestPredictionModel(db),
       db.collection('prediction_signals').find({}, {
@@ -485,6 +510,32 @@ app.get('/api/ai/rankings', async (req, res) => {
     ])
     const validationMap = await loadPredictionValidationForTickers(db, tradeRows.map(row => row.ticker))
     const newsMap = aiScoreTickers(arts)
+    const catalystUniverse = new Set(tradeRows.map(row => String(row.ticker || '').toUpperCase()).filter(Boolean))
+    let catalystIndex = {
+      byTicker: new Map(), events: [], duplicate_groups: [], rejection_counts: {},
+      processed_articles: catalystArticles.length, status: catalystEnabled ? 'active' : 'disabled', error: null,
+    }
+    if (catalystEnabled) {
+      try {
+        catalystIndex = {
+          ...buildCatalystValidationIndex(catalystArticles, {
+            universe: catalystUniverse,
+            sourceAllowed: allowedSource,
+            companyAliases: buildCompanyAliases(tradeRows),
+            signalSec: generatedSec,
+          }),
+          status: 'active',
+          error: null,
+        }
+      } catch (error) {
+        catalystIndex = {
+          ...catalystIndex,
+          status: 'fallback_base_ranking',
+          error: String(error?.message || error),
+        }
+        console.error('Catalyst ranking validation fell back to the base ranking:', error)
+      }
+    }
     const latestSignalByTicker = new Map()
     for (const row of signalRows) {
       const ticker = String(row.ticker || '').toUpperCase()
@@ -560,8 +611,16 @@ app.get('/api/ai/rankings', async (req, res) => {
         isNewsCatalyst: features.is_news_catalyst,
       })
       const blended = score.blended
-      const aiRankScore = score.aiRankScore
+      const baseAiRankScore = score.aiRankScore
       const direction = score.direction
+      const catalystEvents = catalystIndex.byTicker.get(ticker) || []
+      const catalystSummary = summarizeTickerCatalysts(catalystEvents, ticker)
+      const catalystValidationScore = catalystEnabled && catalystIndex.status === 'active'
+        ? scoreCatalystRankValidation(catalystEvents, { aiDirection: direction, signalSec: generatedSec })
+        : 0
+      const catalystAdjusted = applyCatalystRankAdjustment(baseAiRankScore, catalystValidationScore, catalystConfig)
+      const catalystRankAdjustment = catalystAdjusted.adjustment
+      const aiRankScore = catalystAdjusted.adjusted_score
       return {
         rank_seed: index + 1,
         ticker,
@@ -571,6 +630,11 @@ app.get('/api/ai/rankings', async (req, res) => {
         rel_volume: Number(scoredRow.rel_volume || 0),
         volume: Number(scoredRow.volume || 0),
         ai_rank_score: aiRankScore,
+        base_ai_rank_score: baseAiRankScore,
+        catalyst_validation_score: Number(catalystValidationScore.toFixed(2)),
+        catalyst_rank_adjustment: catalystRankAdjustment,
+        catalyst_event_count: catalystSummary.event_count,
+        catalyst_direction: catalystSummary.direction,
         direction,
         confidence: score.confidence,
         trade_watch_score: Number(tradeScore.toFixed(3)),
@@ -614,8 +678,20 @@ app.get('/api/ai/rankings', async (req, res) => {
           bullish_evidence: score.bullishEvidence,
           bearish_evidence: score.bearishEvidence,
           bearish_pressure: score.bearishPressure,
+          catalyst_validation_score: Number(catalystValidationScore.toFixed(2)),
+          catalyst_rank_adjustment: catalystRankAdjustment,
+          catalyst_event_count: catalystSummary.event_count,
+          catalyst_direction: catalystSummary.direction,
+          catalyst_confidence: catalystSummary.confidence,
+          catalyst_latest_category: catalystSummary.latest_category,
+          catalyst_latest_severity: catalystSummary.latest_severity,
         },
-        reasons: scoredRow.trade_watch?.reasons || [],
+        reasons: [
+          ...(scoredRow.trade_watch?.reasons || []),
+          ...(catalystSummary.event_count
+            ? [`catalyst ${catalystSummary.direction} ${catalystRankAdjustment >= 0 ? '+' : ''}${catalystRankAdjustment.toFixed(1)}`]
+            : []),
+        ],
         risks: scoredRow.trade_watch?.risks || [],
       }
     })
@@ -639,13 +715,18 @@ app.get('/api/ai/rankings', async (req, res) => {
         live_classifier_reason: modelValidation.reason,
         threshold_rule_live_enabled: true,
         threshold_rule_live_reason: `${PREDICTION_THRESHOLD_POLICY_VERSION}_live_when_entry_ready`,
+        catalyst_validation_enabled: catalystEnabled,
+        catalyst_validation_status: catalystIndex.status,
+        catalyst_ranking_weight: catalystConfig.weight,
+        catalyst_max_adjustment: catalystConfig.maxAdjustment,
         production_mode: modelValidation.allow_live_classifier ? 'validated_classifier_plus_rules' : 'validated_rules_only',
         fallback: 'baseline_trade_watch_v1',
       },
       methodology: {
-        ranking: 'blended Trade Watch, rolling news sentiment, social density, quote freshness, correlation, gated technical confirmation, and validated prediction signal',
+        ranking: 'blended Trade Watch, rolling news sentiment, social density, quote freshness, correlation, gated technical confirmation, validated prediction signal, and bounded source-grounded catalyst validation',
         scaling: 'server-side capped and cached; no browser-side scan of Mongo collections',
         provider_dependency: 'none on read path; uses a classifier only after strict chronological promotion, otherwise runs validated threshold rules with transparent evidence scoring',
+        catalyst_safety: 'causal approved-source direct evidence only; original AI score retained; adjustment capped; failures fall back to the base ranking; no threshold or order side effects',
       },
       summary: {
         rows: rows.length,
@@ -657,6 +738,10 @@ app.get('/api/ai/rankings', async (req, res) => {
         watch: rows.filter(r => r.direction === 'watch').length,
         model_status: model?.status || 'baseline',
         model_samples: Number(model?.samples || 0),
+        catalyst_status: catalystIndex.status,
+        catalyst_articles_examined: catalystIndex.processed_articles,
+        catalyst_events: catalystIndex.events.length,
+        catalyst_duplicate_groups: catalystIndex.duplicate_groups.length,
       },
       rows,
     })
@@ -7945,6 +8030,7 @@ app.use('/api/social',      socialRouter)
 app.use('/api/correlation', correlationRouter)
 app.use('/api/settings',    settingsRouter)
 app.use('/api/decision-map', decisionMapRouter)
+app.use('/api/catalyst-intelligence', catalystIntelligenceRouter)
 
 // ── chart-service passthrough ─────────────────────────────
 // The charts/screener pages call /api/sentchart/* directly. Those routes live in

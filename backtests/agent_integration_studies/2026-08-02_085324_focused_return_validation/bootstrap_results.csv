@@ -1,0 +1,15 @@
+cohort,policy,iterations,mean_return_pct,lower_95_pct,upper_95_pct
+all_observations,baseline_all,5000,0.133256,-0.056733,0.843585
+all_observations,any_verified_catalyst,5000,0.129147,-0.056733,0.843585
+all_observations,direct_catalyst,5000,0.13569,-0.0695,2.9
+all_observations,aligned_high_confidence,5000,0.191282,0.027273,2.9
+all_observations,reject_capital_structure,5000,0.140184,-0.038284,0.843585
+all_observations,reject_contradiction,5000,0.1384,-0.056733,0.843585
+all_observations,direct_aligned_no_capital_structure,5000,0.197199,0.027273,2.9
+finalized_only,baseline_all,5000,1.135041,-0.510667,2.819231
+finalized_only,any_verified_catalyst,5000,1.11612,-0.510667,2.819231
+finalized_only,direct_catalyst,4799,-0.811208,-3.38,1.125
+finalized_only,aligned_high_confidence,0,,,
+finalized_only,reject_capital_structure,5000,1.099571,-0.305714,2.819231
+finalized_only,reject_contradiction,5000,1.108424,-0.510667,2.819231
+finalized_only,direct_aligned_no_capital_structure,0,,,
