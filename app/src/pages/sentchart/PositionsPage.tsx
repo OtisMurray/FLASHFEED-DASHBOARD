@@ -16,6 +16,16 @@ import {
   dollarsFromPct,
   fmtDollars,
 } from '@/lib/notional'
+import {
+  SLOT_COUNT,
+  SLOT_STARTING_CAPITAL_USD,
+  CAPITAL_PER_SLOT_USD,
+  type SlotDaySummary,
+  simulateSlotDay,
+  slotSimDates,
+  fmtSlotUsd,
+  fmtSlotDelta,
+} from '@/lib/slotSim'
 
 // Positions — the professor's unified view: the exact entry the strategy took,
 // the exact exit it took (or the stop it is currently working), and the profit
@@ -196,6 +206,29 @@ export function PositionsPage() {
   // there for why the dedupe is load-bearing and what the units mean.
   const pnl = useMemo(() => computePnlSummary(data?.rows ?? []), [data])
 
+  // Fixed-slot capital simulation, one session at a time. Deliberately NOT
+  // aggregated across sessions: the pool resets each day, so a multi-day figure
+  // would need a decision about whether yesterday's closing value carries into
+  // today, and neither answer is supported by the data (history is written only
+  // at the canonical parameters, and there are gaps). One day is a claim the
+  // rows can back; a streak is not.
+  const slotDates = useMemo(() => slotSimDates(data?.rows ?? []), [data])
+  const [slotDate, setSlotDate] = useState<string | null>(null)
+  // Follow the newest session as it arrives, but stop overriding once the
+  // reader has deliberately picked a past day to look at.
+  const activeSlotDate = slotDate && slotDates.includes(slotDate) ? slotDate : (slotDates[0] ?? null)
+  const slotSim = useMemo(
+    () => (activeSlotDate ? simulateSlotDay(data?.rows ?? [], activeSlotDate) : null),
+    [data, activeSlotDate],
+  )
+  // Whether the selected session is still running. Drives "current value" vs
+  // "end-of-day value" — calling a mid-session number final would assert a
+  // settlement that has not happened.
+  const slotSessionOpen = useMemo(
+    () => (data?.rows ?? []).some(r => r.date === activeSlotDate && r.group === 'open'),
+    [data, activeSlotDate],
+  )
+
   const COLUMNS: Array<{ key: string; label: string; title?: string }> = [
     { key: 'ticker', label: 'TICKER' },
     { key: 'ai_rank_score', label: 'AI SUGGESTION', title: 'The AI ranking snapshot that admitted this ticker to the Positions candidate set' },
@@ -360,6 +393,21 @@ export function PositionsPage() {
             )}
           </div>
         </div>
+      )}
+
+      {/* Fixed-slot capital simulation. Sits directly below the percentage
+          totals because it answers the question those totals cannot: what a
+          FINITE amount of money would have done. Its assumption is different
+          from and stronger than the flat-per-trade notional above, so it is
+          stated on the panel rather than inherited from that toggle. */}
+      {slotSim && (
+        <SlotSimPanel
+          sim={slotSim}
+          dates={slotDates}
+          onSelectDate={setSlotDate}
+          sessionOpen={slotSessionOpen}
+          offCanonical={offCanonical}
+        />
       )}
 
       {/* Simulated, never executed. The first thing to say on a page whose
@@ -593,6 +641,170 @@ export function PositionsPage() {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+// The fixed-slot portfolio figure for ONE session.
+//
+// Every number here is qualified where it appears, not in a footnote: the slot
+// count and starting capital ride along with the headline, unresolved holds and
+// skipped signals get their own counts rather than being folded into "trades",
+// and the skipped impact is stated in percentage points because a signal that
+// was never funded has no capital to express in dollars.
+function SlotSimPanel({
+  sim, dates, onSelectDate, sessionOpen, offCanonical,
+}: {
+  sim: SlotDaySummary
+  dates: string[]
+  onSelectDate: (d: string) => void
+  sessionOpen: boolean
+  offCanonical: boolean
+}) {
+  const up = sim.pnlUsd > 0
+  const flat = Math.abs(sim.pnlUsd) < 0.005
+  const tone = flat ? 'text-slate-300' : up ? 'text-emerald-400' : 'text-red-400'
+  const valueLabel = sessionOpen ? 'Current value' : 'End-of-day value'
+  const fundedN = sim.takenN + sim.unresolvedN
+
+  return (
+    <div className="bg-surface border border-border rounded-lg px-4 py-3 mb-3">
+      <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
+        <div>
+          <div className="text-slate-200 text-xs font-semibold">
+            ${SLOT_STARTING_CAPITAL_USD.toLocaleString()} across {SLOT_COUNT} position slots — simulated
+          </div>
+          {/* The assumption in full, in the position where the reader meets the
+              number. Naming the mechanic is what stops this reading as a
+              statement of account value. */}
+          <div className="text-[11px] text-slate-300/80 leading-relaxed mt-1 max-w-3xl">
+            If ${SLOT_STARTING_CAPITAL_USD.toLocaleString()} had been split evenly across {SLOT_COUNT} simultaneous
+            position slots (${CAPITAL_PER_SLOT_USD.toLocaleString()} each) at the start of {sim.date} and traded
+            through that session&apos;s signals — each slot funding one position at a time, compounding its own wins and
+            losses, and a signal arriving with every slot occupied being skipped rather than sized down.
+          </div>
+        </div>
+        {/* Any session in the payload, not just the newest. Past days are read
+            from the same recorded trades, so the figure is reproducible. */}
+        {dates.length > 1 && (
+          <label className="flex items-center gap-2 whitespace-nowrap">
+            <span className="text-[10px] text-neutral uppercase tracking-wide font-medium">Session</span>
+            <select
+              value={sim.date ?? ''}
+              onChange={e => onSelectDate(e.target.value)}
+              className="bg-bg border border-border rounded px-2 py-1 text-xs text-white font-mono"
+            >
+              {dates.map((d, i) => (
+                <option key={d} value={d}>{d}{i === 0 ? ' (latest)' : ''}</option>
+              ))}
+            </select>
+          </label>
+        )}
+      </div>
+
+      <div className="flex flex-wrap items-stretch gap-x-8 gap-y-3">
+        <div>
+          <div className="text-[10px] text-neutral uppercase tracking-wide font-medium">Starting capital</div>
+          <div className="font-mono tabular-nums text-xl text-slate-300 leading-tight">
+            {fmtSlotUsd(sim.startingCapital)}
+          </div>
+          <div className="text-[10px] text-slate-500 mt-0.5">
+            {SLOT_COUNT} slots × {fmtSlotUsd(sim.capitalPerSlot)}
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] text-neutral uppercase tracking-wide font-medium">{valueLabel}</div>
+          <div className="font-mono tabular-nums text-xl text-white leading-tight">{fmtSlotUsd(sim.endingValue)}</div>
+          <div className="text-[10px] text-slate-500 mt-0.5">across all {SLOT_COUNT} slots</div>
+        </div>
+        <div className="border-l border-border pl-8">
+          <div className="text-[10px] text-neutral uppercase tracking-wide font-medium">
+            {sessionOpen ? 'Gain / loss so far' : 'Gain / loss'}
+          </div>
+          <div className={clsx('font-mono tabular-nums text-2xl leading-tight', tone)}>
+            {fmtSlotDelta(sim.pnlUsd)}
+          </div>
+          <div className={clsx('font-mono tabular-nums text-[11px] leading-tight mt-0.5', tone)}>
+            {sim.pnlPct >= 0 ? '+' : ''}{sim.pnlPct.toFixed(2)}%
+          </div>
+        </div>
+        {/* Three counts, never merged. A signal that held capital without
+            settling and a signal that was turned away are different failures,
+            and both are different from a trade that worked. */}
+        <div className="border-l border-border pl-8">
+          <div className="text-[10px] text-neutral uppercase tracking-wide font-medium">Signals</div>
+          <div className="font-mono tabular-nums text-sm text-slate-300 leading-tight mt-0.5 space-y-0.5">
+            <div title="Funded a slot and settled to a real percentage. These are the only trades that moved money.">
+              {sim.takenN} taken
+            </div>
+            <div
+              className={sim.unresolvedN > 0 ? 'text-fuchsia-200' : 'text-slate-500'}
+              title="Occupied a slot — real capital was committed and unavailable — but never reached a settled figure, so the slot's value carried forward unchanged. Not counted as a trade and not counted as a skip."
+            >
+              {sim.unresolvedN} unresolved{sim.unresolvedN > 0 ? ' (stale data)' : ''}
+            </div>
+            <div
+              className={sim.skippedN > 0 ? 'text-amber-200' : 'text-slate-500'}
+              title={`Arrived when all ${SLOT_COUNT} slots were occupied, so no capital was available. Not sized down and not silently dropped.`}
+            >
+              {sim.skippedN} skipped — no capital
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Qualifiers, each shown only when it actually applies. */}
+      <div className="text-[10px] text-slate-500 mt-3 leading-relaxed border-t border-border pt-2 space-y-1">
+        {sim.unresolvedN > 0 && (
+          <div className="text-fuchsia-200/90">
+            {sim.unresolvedN} of {fundedN} slot-funded position{fundedN === 1 ? '' : 's'} unresolved
+            {sim.unresolvedStaleN > 0 && sim.unresolvedNoPnlN > 0
+              ? ` (${sim.unresolvedStaleN} stale data, ${sim.unresolvedNoPnlN} P&L withheld)`
+              : sim.unresolvedNoPnlN > 0 ? ' (P&L withheld — price basis broken)' : ' due to stale data'}.
+            {' '}Those positions held their slot for the rest of the session but never produced a settled result, so the
+            slot&apos;s balance carried forward unchanged rather than being compounded or zeroed. The{' '}
+            {fmtSlotDelta(sim.pnlUsd)} above is therefore a PARTIAL settlement of this session, not a full one — the
+            true figure could be higher or lower, and this simulation does not know which.
+          </div>
+        )}
+        {sim.skippedN > 0 && (
+          <div className="text-amber-200/90">
+            {sim.skippedN} signal{sim.skippedN === 1 ? '' : 's'} skipped for want of a free slot
+            {sim.skippedResolvedN > 0 && (
+              <> — {sim.skippedResolvedN === 1 ? 'that trade went' : `those ${sim.skippedResolvedN} trades went`}{' '}
+                {fmtPct(sim.skippedPctSum, true)} in total (percentage points, not dollars:{' '}
+                {sim.skippedResolvedN === 1 ? 'it was' : 'they were'} never funded, so there is no position size to
+                convert). </>
+            )}
+            {sim.skippedResolvedN === 0 && '. '}
+            The {fmtSlotDelta(sim.pnlUsd)} above reflects the {sim.takenN + sim.unresolvedN} position
+            {fundedN === 1 ? '' : 's'} that got capital, not every signal the strategy produced.
+          </div>
+        )}
+        <div>
+          A simulation with a FIXED slot count, not a live capital allocation. No order was placed, no capital was
+          committed, and nothing here was sized by a risk model. The slot count is part of the result: the same real
+          trades return materially different totals at 4, 5 or 7 slots, so this figure is only meaningful stated as{' '}
+          {SLOT_COUNT} slots.
+        </div>
+        <div>
+          {SLOT_COUNT} slots was chosen from the recorded history rather than picked: concurrent positions run a median
+          of 3 and reach 7 at peak across the sessions on record, and {SLOT_COUNT} slots holds skipped signals to
+          roughly one in ten without slicing ${SLOT_STARTING_CAPITAL_USD.toLocaleString()} so thin that each trade is a
+          rounding error.
+        </div>
+        <div>
+          Gross, and one session only — no commission, spread, slippage, borrow or fill modelling, no fractional-share
+          constraint, and no carry between days: each session restarts at{' '}
+          ${SLOT_STARTING_CAPITAL_USD.toLocaleString()}. Inherits every caveat the underlying trades carry.
+        </div>
+        {offCanonical && (
+          <div className="text-amber-200/80">
+            Sliders are off canonical, so if this session is today it was re-simulated at the current settings while
+            recorded sessions were not. Compare days at the canonical parameters only.
+          </div>
+        )}
+      </div>
     </div>
   )
 }
