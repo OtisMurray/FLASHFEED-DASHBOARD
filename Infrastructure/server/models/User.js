@@ -10,10 +10,26 @@ const UserSchema = new mongoose.Schema({
   passwordHash: { type: String, required: true },
   role:         { type: String, enum: ['admin', 'user'], default: 'user' },
 
-  // Pending email 2FA challenge for the current login attempt.
+  // Pending 2FA challenge for the current login attempt — same code, delivered
+  // over whichever channel the account prefers (see routes/auth.js REQUIRE_2FA).
   twoFactorCodeHash:  { type: String, default: null },
   twoFactorExpiresAt: { type: Date, default: null },
   twoFactorAttempts:  { type: Number, default: 0 },
+  twoFactorMethod:    { type: String, enum: ['email', 'sms'], default: 'email' },
+
+  // Phone number (E.164, e.g. +15551234567) — needed for SMS 2FA and/or SMS
+  // stock alerts. Optional; both features no-op without it.
+  phone: { type: String, default: null },
+  smsAlertsOptIn:  { type: Boolean, default: false },
+  smsAlertTickers: { type: [String], default: [] },
+
+  // StockTwits OAuth (see routes/stocktwits.js) — access token only, never the
+  // account password (StockTwits uses OAuth2, so FlashFeed never sees it).
+  stocktwits: {
+    accessToken: { type: String, default: null },
+    username:    { type: String, default: null },
+    connectedAt: { type: Date, default: null },
+  },
 
   // Reserved for future personalization (saved filters, layout, etc.) — logging
   // in doesn't gate the site today, it just gives a place to persist prefs later.

@@ -24,7 +24,10 @@ import settingsRouter    from './routes/settings.js'
 import decisionMapRouter from './routes/decisionMap.js'
 import catalystIntelligenceRouter from './routes/catalystIntelligence.js'
 import authRouter        from './routes/auth.js'
+import apiV1Router       from './routes/apiV1.js'
+import stocktwitsRouter  from './routes/stocktwits.js'
 import cookieParser      from 'cookie-parser'
+import { runSmsAlertCheck } from './smsAlerts.js'
 import { allowedSource, approvedNewsSourceMongoFilter } from './sourceFilter.js'
 import { dedupeWatcherSeries, loadWatcherFeatureMap, persistWatcherSnapshot } from './lib/watcherSnapshots.js'
 import Screener from './models/Screener.js'
@@ -5338,6 +5341,25 @@ async function runWatcherSnapshotCycle(reason = 'scheduled') {
   return watcherSnapshotStatus
 }
 
+// ── SMS stock alerts ────────────────────────────────────────────────────────
+// Self-contained: reads the articles the existing pipeline already wrote, does
+// not hook into or modify any fetch/pipeline code. No-ops (skips silently)
+// until TWILIO_* env vars are set — see smsAlerts.js / smsSender.js.
+const SMS_ALERT_INTERVAL_MS = Number(process.env.SMS_ALERT_INTERVAL_MS || 5 * 60 * 1000)
+function startSmsAlertScheduler() {
+  const tick = () => {
+    const db = mongoose.connection.db
+    if (!db) return
+    runSmsAlertCheck(db)
+      .then(result => { if (result.sent) console.log(`  SMS     →  sent ${result.sent} stock alert(s)`) })
+      .catch(err => console.error('SMS alert check failed:', err.message))
+  }
+  setTimeout(tick, 30_000).unref?.()
+  const timer = setInterval(tick, SMS_ALERT_INTERVAL_MS)
+  if (timer.unref) timer.unref()
+  console.log(`  SMS     →  alert scheduler enabled (every ${Math.round(SMS_ALERT_INTERVAL_MS / 60000)} min; inert until Twilio is configured)`)
+}
+
 function startWatcherSnapshotScheduler() {
   if (!WATCHER_SNAPSHOT_ENABLED) {
     console.log('  Watchers → snapshot scheduler disabled')
@@ -8035,6 +8057,8 @@ app.use('/api/settings',    settingsRouter)
 app.use('/api/decision-map', decisionMapRouter)
 app.use('/api/catalyst-intelligence', catalystIntelligenceRouter)
 app.use('/api/auth',        authRouter)
+app.use('/api/auth/stocktwits', stocktwitsRouter)
+app.use('/api/v1',          apiV1Router)
 
 // ── chart-service passthrough ─────────────────────────────
 // The charts/screener pages call /api/sentchart/* directly. Those routes live in
@@ -8243,6 +8267,7 @@ async function start() {
   startWatcherSnapshotScheduler()
   startPositionHistoryScheduler()
   startPriceBasisAuditScheduler()
+  startSmsAlertScheduler()
 
   // Shared guard so the heavy data-refresh cycle never runs twice at once
   // (double Run Now clicks, or Run Now firing while the auto-grabber is mid-cycle).

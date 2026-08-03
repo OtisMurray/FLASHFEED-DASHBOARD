@@ -43,7 +43,13 @@ MARKET_WINDOW_CLOSE_HOUR = int(os.environ.get("MARKET_WINDOW_CLOSE_HOUR_ET", "17
 PRUNE_OLD_ARTICLES = os.environ.get("MARKET_WINDOW_PRUNE", "false").lower() in ("1", "true", "yes")
 FILTER_TO_MARKET_WINDOW = os.environ.get("MARKET_WINDOW_FILTER", "true").lower() in ("1", "true", "yes")  # Enabled by default to reduce noise
 ARTICLE_CACHE_DAYS = max(1, int(os.environ.get("ARTICLE_CACHE_DAYS", "3")))
-INCLUDE_CUSTOM_RSS = False
+
+# The Settings page already lets you add/remove RSS feeds (rss_sources
+# collection, each with its own `enabled` flag) — this was just never turned
+# on, so saved feeds were stored but never actually fetched. On by default;
+# INCLUDE_CUSTOM_RSS=false stays available as a kill switch for the whole
+# custom-sources feature without touching individual rows.
+INCLUDE_CUSTOM_RSS = os.environ.get("INCLUDE_CUSTOM_RSS", "true").lower() in ("1", "true", "yes")
 ENABLE_DEDUP_HASH = os.environ.get("ENABLE_DEDUP_HASH", "true").lower() in ("1", "true", "yes")
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 RSS_FAST_MODE = os.environ.get("RSS_FAST_MODE", "false").lower() in ("1", "true", "yes")

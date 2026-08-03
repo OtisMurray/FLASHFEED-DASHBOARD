@@ -3,7 +3,9 @@ import crypto from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 import User from '../models/User.js'
+import ApiKey from '../models/ApiKey.js'
 import { sendTwoFactorCodeEmail, mailerReady } from '../mailer.js'
+import { sendTwoFactorCodeSms, smsReady } from '../smsSender.js'
 
 const router = Router()
 
@@ -97,15 +99,16 @@ router.post('/login', async (req, res) => {
     user.twoFactorAttempts = 0
     await user.save()
 
+    let deliveryMessage
     try {
-      await sendTwoFactorCodeEmail(user.email, code)
-    } catch (mailErr) {
-      console.error('2FA email send failed:', mailErr.message)
-      return res.status(503).json({ ok: false, error: 'Could not send the verification email. Try again shortly, or contact an admin.' })
+      deliveryMessage = await deliverTwoFactorCode(user, code)
+    } catch (sendErr) {
+      console.error('2FA code send failed:', sendErr.message)
+      return res.status(503).json({ ok: false, error: `Could not send the verification code: ${sendErr.message}` })
     }
 
     const pendingToken = jwt.sign({ sub: String(user._id), purpose: '2fa' }, JWT_SECRET, { expiresIn: PENDING_TTL_MS / 1000 })
-    res.json({ ok: true, pendingToken, message: `We emailed an 8-digit code to ${maskEmail(user.email)}.` })
+    res.json({ ok: true, pendingToken, message: deliveryMessage })
   } catch (err) {
     console.error('POST /api/auth/login failed:', err)
     res.status(500).json({ ok: false, error: 'Login failed.' })
@@ -117,6 +120,25 @@ function maskEmail(email) {
   if (!domain) return email
   const visible = name.slice(0, Math.min(2, name.length))
   return `${visible}${'*'.repeat(Math.max(1, name.length - visible.length))}@${domain}`
+}
+
+function maskPhone(phone) {
+  const digits = String(phone || '')
+  return digits.length > 4 ? `${'*'.repeat(digits.length - 4)}${digits.slice(-4)}` : digits
+}
+
+// Delivers the code over whichever channel the account prefers. Throws with a
+// clear, user-facing reason if that channel isn't actually configured yet
+// (e.g. twoFactorMethod is 'sms' but Twilio credentials aren't set) rather
+// than silently falling back to a channel the user didn't choose.
+async function deliverTwoFactorCode(user, code) {
+  if (user.twoFactorMethod === 'sms') {
+    if (!user.phone) throw new Error('No phone number on file for SMS codes — add one or switch to email.')
+    await sendTwoFactorCodeSms(user.phone, code)
+    return `We texted an 8-digit code to ${maskPhone(user.phone)}.`
+  }
+  await sendTwoFactorCodeEmail(user.email, code)
+  return `We emailed an 8-digit code to ${maskEmail(user.email)}.`
 }
 
 async function userFromPendingToken(pendingToken) {
@@ -192,8 +214,8 @@ router.post('/resend-2fa', async (req, res) => {
     user.twoFactorAttempts = 0
     await user.save()
 
-    await sendTwoFactorCodeEmail(user.email, code)
-    res.json({ ok: true, message: `New code sent to ${maskEmail(user.email)}.` })
+    const deliveryMessage = await deliverTwoFactorCode(user, code)
+    res.json({ ok: true, message: deliveryMessage })
   } catch (err) {
     console.error('POST /api/auth/resend-2fa failed:', err)
     res.status(500).json({ ok: false, error: 'Could not resend the code.' })
@@ -206,25 +228,134 @@ router.post('/logout', (req, res) => {
   res.json({ ok: true })
 })
 
-// GET /api/auth/me — reads the session cookie, used by the frontend on load
-router.get('/me', async (req, res) => {
+// Shared session check — reads the ff_session cookie, attaches req.user (the
+// Mongoose doc) on success. Used by /me below and by any other route (this
+// file or elsewhere) that needs to know who's logged in.
+export async function requireAuth(req, res, next) {
   try {
     const token = req.cookies?.[SESSION_COOKIE]
-    if (!token) return res.status(401).json({ ok: false })
+    if (!token) return res.status(401).json({ ok: false, error: 'Not logged in.' })
     const payload = jwt.verify(token, JWT_SECRET)
-    if (payload.purpose !== 'session') return res.status(401).json({ ok: false })
+    if (payload.purpose !== 'session') return res.status(401).json({ ok: false, error: 'Not logged in.' })
     const user = await User.findById(payload.sub)
-    if (!user) return res.status(401).json({ ok: false })
-    res.json({ ok: true, user: publicUser(user) })
+    if (!user) return res.status(401).json({ ok: false, error: 'Not logged in.' })
+    req.user = user
+    next()
   } catch (_) {
-    res.status(401).json({ ok: false })
+    res.status(401).json({ ok: false, error: 'Not logged in.' })
+  }
+}
+
+// GET /api/auth/me — reads the session cookie, used by the frontend on load
+router.get('/me', requireAuth, (req, res) => {
+  res.json({ ok: true, user: publicUser(req.user) })
+})
+
+// GET /api/auth/status — which delivery channels are configured, for the login/settings UI
+router.get('/status', (_req, res) => {
+  res.json({ ok: true, mailerConfigured: mailerReady(), smsConfigured: smsReady() })
+})
+
+// PUT /api/auth/profile — phone number, 2FA channel choice, SMS stock-alert
+// opt-in + ticker list. All optional/independent: setting a phone doesn't
+// turn on SMS 2FA or alerts by itself, each is its own explicit choice.
+router.put('/profile', requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {}
+    if (body.phone !== undefined) {
+      const phone = String(body.phone || '').trim()
+      if (phone && !/^\+[1-9]\d{6,14}$/.test(phone)) {
+        return res.status(400).json({ ok: false, error: 'Phone must be E.164 format, e.g. +15551234567.' })
+      }
+      req.user.phone = phone || null
+    }
+    if (body.twoFactorMethod !== undefined) {
+      if (!['email', 'sms'].includes(body.twoFactorMethod)) {
+        return res.status(400).json({ ok: false, error: 'twoFactorMethod must be "email" or "sms".' })
+      }
+      if (body.twoFactorMethod === 'sms' && !(req.user.phone || body.phone)) {
+        return res.status(400).json({ ok: false, error: 'Add a phone number before switching 2FA to SMS.' })
+      }
+      req.user.twoFactorMethod = body.twoFactorMethod
+    }
+    if (body.smsAlertsOptIn !== undefined) req.user.smsAlertsOptIn = !!body.smsAlertsOptIn
+    if (body.smsAlertTickers !== undefined) {
+      req.user.smsAlertTickers = Array.isArray(body.smsAlertTickers)
+        ? body.smsAlertTickers.map(t => String(t).toUpperCase().trim()).filter(Boolean).slice(0, 50)
+        : []
+    }
+    await req.user.save()
+    res.json({ ok: true, profile: {
+      phone: req.user.phone,
+      twoFactorMethod: req.user.twoFactorMethod,
+      smsAlertsOptIn: req.user.smsAlertsOptIn,
+      smsAlertTickers: req.user.smsAlertTickers,
+    } })
+  } catch (err) {
+    console.error('PUT /api/auth/profile failed:', err)
+    res.status(500).json({ ok: false, error: 'Could not save profile.' })
   }
 })
 
-// GET /api/auth/status — whether email delivery is configured, for the login UI
-router.get('/status', (_req, res) => {
-  res.json({ ok: true, mailerConfigured: mailerReady() })
+// GET/PUT /api/auth/preferences — the "account that caches" piece. A free-form
+// object (watchlist, saved screener filters, UI layout, whatever the frontend
+// wants) tied to the logged-in account instead of just localStorage, so it
+// follows you across devices/browsers.
+router.get('/preferences', requireAuth, (req, res) => {
+  res.json({ ok: true, preferences: req.user.preferences || {} })
 })
 
+router.put('/preferences', requireAuth, async (req, res) => {
+  try {
+    const incoming = req.body?.preferences
+    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+      return res.status(400).json({ ok: false, error: 'preferences must be an object.' })
+    }
+    // Merge rather than replace, so one screen's PUT can't wipe out another
+    // screen's saved prefs (e.g. saving screener filters doesn't erase the watchlist).
+    req.user.preferences = { ...(req.user.preferences || {}), ...incoming }
+    req.user.markModified('preferences')
+    await req.user.save()
+    res.json({ ok: true, preferences: req.user.preferences })
+  } catch (err) {
+    console.error('PUT /api/auth/preferences failed:', err)
+    res.status(500).json({ ok: false, error: 'Could not save preferences.' })
+  }
+})
+
+// ── Public API keys (for /api/v1/*, see routes/apiV1.js) ───────────────────
+const API_KEY_PREFIX = 'ff_live_'
+const hashApiKey = (raw) => crypto.createHash('sha256').update(raw).digest('hex')
+
+router.get('/api-keys', requireAuth, async (req, res) => {
+  const keys = await ApiKey.find({ user: req.user._id, revoked: false }).sort({ createdAt: -1 })
+  res.json({ ok: true, keys: keys.map(k => ({
+    id: String(k._id), label: k.label, keyPrefix: k.keyPrefix,
+    createdAt: k.createdAt, lastUsedAt: k.lastUsedAt,
+  })) })
+})
+
+// Returns the full key exactly once — only the hash is kept after this response.
+router.post('/api-keys', requireAuth, async (req, res) => {
+  try {
+    const label = String(req.body?.label || 'API key').slice(0, 80)
+    const raw = API_KEY_PREFIX + crypto.randomBytes(24).toString('hex')
+    await ApiKey.create({
+      user: req.user._id,
+      label,
+      keyHash: hashApiKey(raw),
+      keyPrefix: raw.slice(0, API_KEY_PREFIX.length + 6),
+    })
+    res.status(201).json({ ok: true, key: raw, note: 'Copy this now — it will not be shown again.' })
+  } catch (err) {
+    console.error('POST /api/auth/api-keys failed:', err)
+    res.status(500).json({ ok: false, error: 'Could not create the key.' })
+  }
+})
+
+router.delete('/api-keys/:id', requireAuth, async (req, res) => {
+  const result = await ApiKey.updateOne({ _id: req.params.id, user: req.user._id }, { $set: { revoked: true } })
+  res.json({ ok: true, revoked: result.matchedCount > 0 })
+})
 
 export default router
