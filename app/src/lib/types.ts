@@ -564,6 +564,7 @@ export interface ExitScreenerRow {
   date?:                string | null
   entry_price?:         number | null
   entry_time?:          string | null
+  /** Chart-axis coordinate, not a timestamp — see PositionScreenerRow.entry_epoch. */
   entry_epoch?:         number | null
   entry_corr?:          number | null
   current_price?:       number | null
@@ -821,7 +822,14 @@ export interface PositionScreenerRow {
   date?:                 string | null
   entry_price?:          number | null
   entry_time?:           string | null
+  // CHART-AXIS COORDINATE, NOT A TIMESTAMP. ET wall-clock encoded as a UTC
+  // second, matching the convention every chart series uses so markers align
+  // with candles. Safe for identity, ordering and chart placement; four hours
+  // early (five in winter) if read as a real instant. Use entry_epoch_utc for
+  // anything compared against real-world time.
   entry_epoch?:          number | null
+  /** The same entry as a true UTC unix second. Derived from date + entry_time. */
+  entry_epoch_utc?:      number | null
   entry_corr?:           number | null
   exit_price?:           number | null
   exit_time?:            string | null

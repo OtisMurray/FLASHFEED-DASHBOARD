@@ -24,6 +24,23 @@ const startedAt = new Date().toISOString()
 
 function n(value) { const x = Number(value); return Number.isFinite(x) ? x : null }
 function pct(a, b) { return b ? a / b * 100 : null }
+// ET session date + ET clock time -> true UTC second. DST-aware via Intl rather
+// than a fixed -4h, so a session either side of a transition converts correctly.
+function utcEpochFromEt(dateStr, hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm ?? '').trim())
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateStr ?? '')) || !m) return null
+  const [y, mo, d] = String(dateStr).split('-').map(Number)
+  const guess = Date.UTC(y, mo - 1, d, Number(m[1]), Number(m[2]))
+  const off = (ms) => {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour12: false,
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      .formatToParts(new Date(ms))
+    const p = Object.fromEntries(parts.filter(x => x.type !== 'literal').map(x => [x.type, x.value]))
+    return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second) - ms
+  }
+  const first = guess - off(guess)
+  return Math.floor((guess - off(first)) / 1000)
+}
 function dateKey(sec) { return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(sec * 1000)) }
 function hourMinute(sec) { return new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour12: false, hour: '2-digit', minute: '2-digit' }).format(new Date(sec * 1000)) }
 function asJson(value) { return JSON.stringify(roundObject(value), null, 2) + '\n' }
@@ -217,7 +234,15 @@ async function main() {
   const frozenBase = uniqueBy(recorded, x => `${x.ticker}|${x.date}|${x.entry_epoch}`).filter(x => n(x.pnl_pct) != null && n(x.entry_epoch) != null)
   const frozen = frozenBase.map(row => {
     const ticker = String(row.ticker || '').toUpperCase()
-    const signalSec = n(row.entry_epoch)
+    // entry_epoch is the chart-service's CHART-AXIS coordinate (ET wall-clock
+    // encoded as a UTC second), not a real instant — reading it as one puts the
+    // signal four hours early in summer, which silently corrupted both the
+    // catalyst matching below and the future-leakage check that follows.
+    // Not n(): Number(null) is 0, so a row with an explicitly null
+    // entry_epoch_utc would resolve to epoch 0 and pass every leakage
+    // check by being older than all of recorded history.
+    const storedUtc = Number.isFinite(row.entry_epoch_utc) ? row.entry_epoch_utc : null
+    const signalSec = storedUtc ?? utcEpochFromEt(row.date, row.entry_time)
     const matched = causalEventsForEntry({ ticker, signal_sec: signalSec }, lookup, macroEvents)
     const screen = screenerByTicker.get(ticker) || {}
     return {

@@ -64,6 +64,87 @@ export function isFillExitReason(reason) {
 
 export const POSITION_HISTORY_COLLECTION = 'screener_position_history'
 
+// ── entry_epoch IS NOT A WALL-CLOCK TIMESTAMP ────────────────────────────────
+//
+// `entry_epoch` carries the chart-service's CHART-AXIS coordinate, not a unix
+// second. chart_service.py's _epoch_utc encodes naive ET wall-clock as a UTC
+// second on purpose, so that markers land on lightweight-charts' UTC time axis
+// at the ET time the trade actually happened — the same convention the candle,
+// MACD, RSI, Bollinger and social-density series all use. Reading it back in
+// UTC yields the ET clock; reading it as a real instant puts the trade four
+// hours early in summer and five in winter.
+//
+// This is deliberate and load-bearing for the charts, so the value STAYS. What
+// was missing is a field that means what a reader assumes `entry_epoch` means.
+// Hence `entry_epoch_utc`: the same entry as a true UTC second.
+//
+// WHY IT IS DERIVED RATHER THAN RE-EMITTED. `date` and `entry_time` are both
+// stored, both correct ET, and together pin the instant exactly — verified
+// against all 75 rows on record, where date+entry_time read as UTC reproduces
+// the stored entry_epoch byte for byte. So the true instant was always
+// recoverable; nothing had to be re-simulated to obtain it, and no stored value
+// had to change. In particular the _id, which contains entry_epoch, is
+// untouched: re-keying history would orphan every stored row and re-insert
+// today's open positions as duplicates, for no gain.
+//
+// USE THIS, NOT entry_epoch, for anything that compares a trade to a real-world
+// time — news/catalyst matching, look-ahead-leakage checks, cross-source joins.
+// Use entry_epoch for identity, ordering and chart alignment, which is all it
+// was ever fit for.
+
+const MARKET_TZ = process.env.MARKET_WINDOW_TIMEZONE || 'America/New_York'
+const HHMM_RE = /^(\d{1,2}):(\d{2})$/
+
+// Offset of the market timezone at a given instant, in ms (negative west of
+// UTC). Derived from Intl rather than a fixed -4/-5 so the conversion is
+// correct across the DST boundary instead of only in summer.
+function marketOffsetMs(utcMs) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: MARKET_TZ,
+    hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(new Date(utcMs))
+  const p = Object.fromEntries(parts.filter(x => x.type !== 'literal').map(x => [x.type, x.value]))
+  // The local wall clock, read as if it were UTC. Its distance from the true
+  // instant IS the offset.
+  const asUtc = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day),
+    Number(p.hour) % 24, Number(p.minute), Number(p.second))
+  return asUtc - utcMs
+}
+
+/**
+ * ET session date + ET clock time -> true UTC unix second.
+ *
+ * Two passes: guess by treating the wall clock as UTC, correct by the offset in
+ * force at that guess, then re-check the offset at the corrected instant. The
+ * second pass only matters within an hour of a DST transition, where the first
+ * guess can land on the wrong side of the change — which is precisely when a
+ * one-pass conversion would be silently off by an hour.
+ *
+ * Returns null for anything unparseable, so a row that cannot be converted gets
+ * no timestamp rather than a plausible wrong one.
+ */
+export function utcEpochFromMarketTime(dateKey, hhmm) {
+  const date = String(dateKey || '').trim()
+  const m = HHMM_RE.exec(String(hhmm ?? '').trim())
+  if (!DATE_RE.test(date) || !m) return null
+  const hour = Number(m[1])
+  const minute = Number(m[2])
+  if (hour > 23 || minute > 59) return null
+  const [y, mo, d] = date.split('-').map(Number)
+
+  const guess = Date.UTC(y, mo - 1, d, hour, minute)
+  const firstPass = guess - marketOffsetMs(guess)
+  const settled = guess - marketOffsetMs(firstPass)
+  return Math.floor(settled / 1000)
+}
+
+/** The true UTC second a stored/normalized row entered. null when underivable. */
+export function entryEpochUtcFor(row = {}) {
+  return utcEpochFromMarketTime(row.date, row.entry_time)
+}
+
 // Deliberately stricter than Number(): Number(null) and Number('') are both 0,
 // which would turn a DISABLED corr-exit threshold into "corr exit enabled at
 // 0" and a missing exit price into a $0 fill. Absent must stay absent.
@@ -207,7 +288,13 @@ export function normalizeTrade(trade = {}, context = {}) {
     rth_applied: trade.rth_applied ?? context.rthApplied ?? null,
 
     // Entry: immutable once observed.
+    //
+    // entry_epoch is the chart-axis coordinate (ET wall-clock encoded as UTC);
+    // entry_epoch_utc is the same moment as a real instant. Both are stored
+    // because they answer different questions — see the commentary above
+    // utcEpochFromMarketTime. Only entry_epoch is in the _id.
     entry_epoch: Math.floor(entryEpoch),
+    entry_epoch_utc: utcEpochFromMarketTime(date, trade.entry_time),
     entry_price: round(entryPrice, 4),
     entry_time: trade.entry_time ?? null,
     entry_corr: round(trade.entry_corr, 4),
@@ -311,6 +398,14 @@ export function mergeTradeSnapshot(existing, incoming, { today } = {}) {
     entry_price: existing.entry_price,
     entry_time: existing.entry_time ?? incoming.entry_time,
     entry_corr: existing.entry_corr ?? incoming.entry_corr,
+    // Derived from whichever entry_time survived, NOT carried from `incoming`,
+    // so it can never describe a different minute than the row's own
+    // entry_time. Recomputing also backfills rows written before the field
+    // existed, the next time one of them is updated.
+    entry_epoch_utc: utcEpochFromMarketTime(
+      existing.date ?? incoming.date,
+      existing.entry_time ?? incoming.entry_time,
+    ),
     first_seen_at: existing.first_seen_at ?? existing.observed_at ?? incoming.observed_at,
     peak_price: round(peakPrice, 4),
     stop_price: round(stopPrice, 4),

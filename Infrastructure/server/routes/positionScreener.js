@@ -3,7 +3,13 @@ import mongoose from 'mongoose'
 import Screener from '../models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './screener.js'
 import { CLEAN_UNIVERSE_MONGO_FILTER } from '../lib/cleanUniverse.js'
-import { classifyRow, isFillExitReason, POSITION_HISTORY_COLLECTION } from '../lib/positionHistory.js'
+import {
+  classifyRow,
+  entryEpochUtcFor,
+  isFillExitReason,
+  POSITION_HISTORY_COLLECTION,
+  utcEpochFromMarketTime,
+} from '../lib/positionHistory.js'
 import { loadAiPositionCandidates } from '../lib/aiPositionCandidates.js'
 import {
   POSITION_PARAM_LIMITS,
@@ -135,6 +141,11 @@ export function recordedPositionRow(doc = {}, { today, companyByTicker } = {}) {
     entry_price: doc.entry_price,
     entry_time: doc.entry_time,
     entry_epoch: doc.entry_epoch,
+    // The real instant, alongside the chart-axis coordinate. Derived on read
+    // for rows written before the field existed, so a consumer never has to
+    // know which vintage it is holding. See lib/positionHistory.js for why the
+    // two differ and which one to use.
+    entry_epoch_utc: doc.entry_epoch_utc ?? entryEpochUtcFor(doc),
     entry_corr: doc.entry_corr,
     exit_price: doc.exit_price ?? doc.session_end_price ?? null,
     exit_time: doc.exit_time,
@@ -437,6 +448,10 @@ router.get('/', async (req, res) => {
           entry_price: trade.entry_price,
           entry_time: trade.entry_time,
           entry_epoch: trade.entry_epoch,
+          // Derived the same way as on a recorded row, so live and recorded
+          // rows for the same trade agree on the instant as well as on the
+          // chart coordinate.
+          entry_epoch_utc: utcEpochFromMarketTime(result.date, trade.entry_time),
           entry_corr: trade.entry_corr,
           exit_price: riskExit ? trade.exit_price : null,
           exit_time: riskExit ? trade.exit_time : null,
