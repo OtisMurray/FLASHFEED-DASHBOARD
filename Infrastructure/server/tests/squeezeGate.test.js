@@ -140,6 +140,41 @@ test('coverage labels keep a live estimate, a settlement passthrough, and Finviz
   assert.equal(shortInterestCoverage({ ticker: 'D' }, null), 'none')
 })
 
+test('an unscored row reports a null squeeze score, not a measured 0', () => {
+  // evidenceContextFor collapses an absent short_squeeze_score to 0 before the
+  // gate sees it. The check's `observed` therefore has to be read off the row,
+  // or a row nothing ever scored gets reported as a measured 0.0 — a
+  // measurement that never happened. Mirrors what the short-interest check
+  // beside it already does with its own missing case.
+  const unscored = { ...SQUEEZED }
+  delete unscored.short_squeeze_score
+  const { gate } = evaluate(unscored)
+  const check = gate.checks.find(c => c.key === 'squeeze_score')
+
+  assert.equal(check.observed, null)
+  assert.equal(check.ok, false)
+})
+
+test('a genuinely-zero squeeze score stays distinguishable from an unscored one', () => {
+  // The point of the change: these two rows used to be byte-identical in the
+  // trace. A real 0 is evidence; an absent score is not.
+  const { gate: measured } = evaluate({ ...SQUEEZED, short_squeeze_score: 0 })
+  const unscored = { ...SQUEEZED }
+  delete unscored.short_squeeze_score
+  const { gate: absent } = evaluate(unscored)
+
+  assert.equal(measured.checks.find(c => c.key === 'squeeze_score').observed, 0)
+  assert.equal(absent.checks.find(c => c.key === 'squeeze_score').observed, null)
+
+  // Reporting only — both still fail the check, and both still fail the gate.
+  assert.equal(measured.checks.find(c => c.key === 'squeeze_score').ok, false)
+  assert.equal(absent.checks.find(c => c.key === 'squeeze_score').ok, false)
+  assert.equal(measured.passed, false)
+  assert.equal(absent.passed, false)
+  assert.equal(measured.trace_in_sync, true)
+  assert.equal(absent.trace_in_sync, true)
+})
+
 test('a settlement-only row is never labelled as an uncalibrated live estimate', () => {
   // si_uncalibrated is null (not false) on a passthrough — the calibration
   // question does not apply, because nothing was estimated.

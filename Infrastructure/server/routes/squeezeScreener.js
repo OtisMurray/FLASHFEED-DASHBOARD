@@ -190,6 +190,14 @@ function evidenceContextFor(enriched, setupStatus) {
 function squeezeGateTrace(validation, context, enriched, windowMinutes) {
   const squeezeScore = Number(context.squeezeScore || 0)
   const social = Number(context.social || 0)
+  // What the check REPORTS, as opposed to what it compares. evidenceContextFor
+  // collapses an absent score to 0 before the gate ever sees it, so `observed`
+  // has to come off the row instead: a row that was never scored would
+  // otherwise be reported as a measured 0.0, asserting a measurement that never
+  // happened. Same treatment the short-interest check below already gives its
+  // own missing case. Reporting only — squeezeScore above still drives `ok`, so
+  // no verdict moves.
+  const observedSqueezeScore = num(enriched.short_squeeze_score)
   const shortInterestPct = num(
     enriched.short_interest_pct ?? enriched.short_interest_pct_shares_out ?? enriched.short_interest_pct_float
   )
@@ -203,7 +211,7 @@ function squeezeGateTrace(validation, context, enriched, windowMinutes) {
       key: 'squeeze_score',
       label: `Squeeze score ≥ ${GATE_MIN_SQUEEZE_SCORE}`,
       ok: squeezeScore >= GATE_MIN_SQUEEZE_SCORE,
-      observed: Number(squeezeScore.toFixed(1)),
+      observed: observedSqueezeScore == null ? null : Number(observedSqueezeScore.toFixed(1)),
       required: GATE_MIN_SQUEEZE_SCORE,
     },
     {
