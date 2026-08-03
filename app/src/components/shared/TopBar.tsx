@@ -42,6 +42,8 @@ const NAV = [
 ]
 const SETTINGS_NAV = [
   { href: '/settings', label: 'Settings' },
+  { href: '/watchlist', label: 'Watchlist' },
+  { href: '/account', label: 'Account' },
   { href: '/v11-screener', label: 'v11 Profile (test)' },
   { href: '/prediction-audit', label: 'Prediction Audit' },
   { href: '/system-health', label: 'System Health' },
