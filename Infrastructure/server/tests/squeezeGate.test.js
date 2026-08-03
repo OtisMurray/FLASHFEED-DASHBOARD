@@ -175,6 +175,80 @@ test('a genuinely-zero squeeze score stays distinguishable from an unscored one'
   assert.equal(absent.trace_in_sync, true)
 })
 
+// ── squeezeEvidenceState ──────────────────────────────────────────────────
+// The gate is a conjunction, so a failing leg returns the same `false` whether
+// it was measured or never ingested. These pin the states that undo that
+// collapse. The field is reporting only: no boolean beside it may move.
+
+test('squeezeEvidenceState separates a measured failure from an unmeasured one', () => {
+  // Both rows are blocked and both were byte-identical before this field
+  // existed: same passed, same status, same failed[].
+  const measuredLow = { ...SQUEEZED, short_interest_pct: 4, float_short: 3.9 }
+  const neverIngested = { ...SQUEEZED }
+  delete neverIngested.short_interest_pct
+  delete neverIngested.float_short
+
+  const low = evaluate(measuredLow)
+  const absent = evaluate(neverIngested)
+
+  assert.equal(low.gate.passed, false)
+  assert.equal(absent.gate.passed, false)
+  assert.deepEqual(low.gate.failed, absent.gate.failed)   // still indistinguishable here
+
+  assert.equal(low.validation.squeezeEvidenceState, 'FAIL')
+  assert.equal(absent.validation.squeezeEvidenceState, 'INSUFFICIENT_DATA')
+  assert.deepEqual(absent.validation.squeezeEvidenceUnmeasuredLegs, ['verified_short_interest'])
+  assert.deepEqual(low.validation.squeezeEvidenceUnmeasuredLegs, [])
+})
+
+test('an unfitted live estimate blocks a row as UNKNOWN, a settlement figure as FAIL', () => {
+  // Identical measured value (4%). The only difference is whether the number
+  // was fitted against a realised settlement — which is the difference between
+  // a verdict and a guess.
+  const estimate = evaluate({
+    ...SQUEEZED, short_interest_pct: 4, float_short: 3.9,
+    short_interest_data_mode: 'live_estimated', short_interest_estimate_uncalibrated: true,
+  })
+  const settlement = evaluate({
+    ...SQUEEZED, short_interest_pct: 4, float_short: 3.9,
+    short_interest_data_mode: 'settlement_only', short_interest_estimate_uncalibrated: null,
+  })
+
+  assert.equal(estimate.validation.squeezeEvidenceState, 'UNKNOWN')
+  assert.equal(settlement.validation.squeezeEvidenceState, 'FAIL')
+  // Reporting only — both are still blocked.
+  assert.equal(estimate.gate.passed, false)
+  assert.equal(settlement.gate.passed, false)
+})
+
+test('a genuine measured failure outranks an unfitted estimate', () => {
+  // Social is measured at 0, which is real evidence and enough to block on its
+  // own. The short-interest estimate being unfitted no longer buys UNKNOWN —
+  // this is the production case, where 195 of 198 blocked rows fail on social.
+  const row = {
+    ...SQUEEZED, message_count: 0, short_interest_pct: 4, float_short: 3.9,
+    short_interest_data_mode: 'live_estimated', short_interest_estimate_uncalibrated: true,
+  }
+  assert.equal(evaluate(row).validation.squeezeEvidenceState, 'FAIL')
+})
+
+test('squeezeEvidenceState PASS is exactly the authoritative gate, never broader', () => {
+  // Drift guard, in the spirit of trace_in_sync: if the legs ever stop
+  // reproducing recognizedSqueezeCatalyst, this field is describing a gate that
+  // no longer exists.
+  for (const row of [
+    SQUEEZED,
+    { ...SQUEEZED, message_count: 0 },
+    { ...SQUEEZED, short_squeeze_score: 12 },
+    { ...SQUEEZED, catalyst_summary: 'bankruptcy risk dilution offering' },
+    { ...SQUEEZED, short_interest_pct: 2, float_short: 1 },
+  ]) {
+    const { validation } = evaluate(row)
+    const authoritative = Boolean(validation.recognizedSqueezeCatalyst && validation.verifiedShortInterest)
+    assert.equal(validation.squeezeEvidenceState === 'PASS', authoritative)
+  }
+})
+
 test('a settlement-only row is never labelled as an uncalibrated live estimate', () => {
   // si_uncalibrated is null (not false) on a passthrough — the calibration
   // question does not apply, because nothing was estimated.

@@ -2496,9 +2496,52 @@ function predictionEvidenceValidation(row = {}, context = {}) {
     !recognizedNewsCatalyst && !recognizedSqueezeCatalyst && !recognizedPeopleAttention ? 'NO_VALIDATED_PRIMARY_CATALYST' : '',
   ].filter(Boolean)
 
+  // Why the squeeze verdict is what it is — reporting only, and strictly a
+  // sibling of the booleans above, none of which it can change.
+  //
+  // The gate is a conjunction, so every leg that fails returns the same `false`
+  // whether we measured it or never ingested it. That collapse is the thing
+  // this field undoes: a leg nothing ever measured is not evidence of absence,
+  // and a row blocked only by an unfitted estimate has not really been judged.
+  //
+  //   PASS              the gate passed
+  //   FAIL              something we actually measured genuinely failed
+  //   INSUFFICIENT_DATA every failing leg was never measured — the row is
+  //                     unjudged, not rejected
+  //   UNKNOWN           the only measured failure rests on a live short-interest
+  //                     estimate that has never been fitted against a realised
+  //                     settlement, so the number that blocked it is a guess
+  //
+  // Every input below is already on the row; nothing new is fetched or scored.
+  const squeezeEvidenceLegs = [
+    { key: 'squeeze_score', ok: squeezeScore >= 70, measured: nullableNumber(row.short_squeeze_score) != null },
+    { key: 'verified_short_interest', ok: verifiedShortInterest, measured: shortInterestPct != null || floatShort != null },
+    { key: 'social', ok: social >= 3, measured: nullableNumber(row.message_count) != null },
+    // Bearishness is read off catalyst text: no text is a real determination
+    // ("nothing bearish here"), not a gap in the data.
+    { key: 'not_bearish_catalyst', ok: !bearishCatalyst, measured: true },
+  ]
+  const squeezeFailingLegs = squeezeEvidenceLegs.filter(leg => !leg.ok)
+  const squeezeMeasuredFailures = squeezeFailingLegs.filter(leg => leg.measured)
+  // An unfitted estimate is not a measurement we can reject a row on. Only the
+  // live estimator carries this; a settlement passthrough is the official figure.
+  const squeezeShortInterestUnfitted = row.short_interest_data_mode === 'live_estimated' &&
+    row.short_interest_estimate_uncalibrated === true
+  const squeezeEvidenceState = (recognizedSqueezeCatalyst && verifiedShortInterest)
+    ? 'PASS'
+    : squeezeMeasuredFailures.length === 0
+      ? 'INSUFFICIENT_DATA'
+      : (squeezeShortInterestUnfitted &&
+         squeezeMeasuredFailures.every(leg => leg.key === 'verified_short_interest'))
+        ? 'UNKNOWN'
+        : 'FAIL'
+
   return {
     valid: Boolean(recognizedNewsCatalyst || recognizedSqueezeCatalyst || recognizedDensitySetup || recognizedPeopleAttention || recognizedSocialCatalyst),
     primary: recognizedSqueezeCatalyst ? 'squeeze' : recognizedNewsCatalyst ? 'news' : recognizedPeopleAttention ? 'people' : recognizedDensitySetup ? 'density' : recognizedSocialCatalyst ? 'social' : 'none',
+    squeezeEvidenceState,
+    // Which legs the verdict could not actually see. Empty on a fully measured row.
+    squeezeEvidenceUnmeasuredLegs: squeezeEvidenceLegs.filter(leg => !leg.measured).map(leg => leg.key),
     labels,
     reason: labels.join(' + '),
     weakCatalyst,

@@ -424,6 +424,11 @@ router.get('/', async (req, res) => {
         gate,
         evidence_primary: validation.primary,
         evidence_labels: validation.labels,
+        // Why the verdict is what it is, as opposed to just what it is. A gate
+        // leg nothing ever measured returns the same `false` as one that was
+        // measured and genuinely failed; these two say which happened.
+        evidence_state: validation.squeezeEvidenceState,
+        evidence_unmeasured_legs: validation.squeezeEvidenceUnmeasuredLegs || [],
         risk_flags: validation.riskFlags || [],
       }
     })
