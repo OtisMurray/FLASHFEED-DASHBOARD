@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import { useAuth } from '@/lib/useAuth'
 
 type Mode = 'login' | 'register'
@@ -9,7 +9,18 @@ const inputCls = 'w-full bg-bg border border-border rounded px-3 py-2 text-sm te
 
 export function LoginPage() {
   const navigate = useNavigate()
+  const location = useLocation()
   const { setUser } = useAuth()
+
+  // Where to land after signing in. A guard that turned someone away stores the
+  // location it blocked in history state, so they resume where they were headed
+  // instead of being dropped on the overview and having to navigate back.
+  // Only in-app paths are honoured — an absolute URL in history state would be
+  // an open redirect.
+  const from = (location.state as { from?: { pathname?: string; search?: string; hash?: string } } | null)?.from
+  const returnTo = from?.pathname && from.pathname.startsWith('/') && !from.pathname.startsWith('//')
+    ? `${from.pathname}${from.search || ''}${from.hash || ''}`
+    : '/overview'
 
   const [mode, setMode] = useState<Mode>('login')
   const [step, setStep] = useState<Step>('form')
@@ -48,7 +59,7 @@ export function LoginPage() {
       if (data.user) {
         // 2FA is currently off (AUTH_REQUIRE_2FA unset) — password check alone logs you in.
         setUser(data.user)
-        navigate('/overview')
+        navigate(returnTo, { replace: true })
         return
       }
       // 2FA path — kept working in case AUTH_REQUIRE_2FA gets turned back on later.
@@ -100,7 +111,7 @@ export function LoginPage() {
       const data = await res.json()
       if (!res.ok || !data.ok) throw new Error(data.error || 'Verification failed.')
       setUser(data.user)
-      navigate('/overview')
+      navigate(returnTo, { replace: true })
     } catch (err: any) {
       setError(err.message || 'Verification failed.')
     } finally {

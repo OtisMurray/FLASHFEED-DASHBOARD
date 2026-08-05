@@ -1,9 +1,11 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import type { ReactNode } from 'react'
 
-// Session state only — logging in doesn't gate any page or API route today.
-// It's an available feature (and a place to hang saved preferences later),
-// not a requirement to use the site.
+// Session state. Most of the site is still open to anyone; what changed is that
+// the settings and maintenance API routes now require an admin session, so the
+// UI needs to know who is signed in to avoid offering controls that will come
+// back 401. The API guards are the security boundary — everything here is about
+// not showing someone a door they cannot open.
 export interface AuthUser {
   username: string
   email: string
@@ -13,6 +15,8 @@ export interface AuthUser {
 interface AuthContextValue {
   user: AuthUser | null
   loading: boolean
+  /** Signed in AND role === 'admin'. False while the session is still loading. */
+  isAdmin: boolean
   setUser: (u: AuthUser | null) => void
   logout: () => Promise<void>
 }
@@ -39,7 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   return (
-    <AuthContext.Provider value={{ user, loading, setUser, logout }}>
+    <AuthContext.Provider value={{ user, loading, isAdmin: user?.role === 'admin', setUser, logout }}>
       {children}
     </AuthContext.Provider>
   )

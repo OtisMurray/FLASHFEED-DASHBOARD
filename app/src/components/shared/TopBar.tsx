@@ -7,6 +7,7 @@ import { StatusBadge } from './StatusBadge'
 import { useToast } from '@/components/shared/Toast'
 import { SentimentModal } from '@/components/shared/SentimentModal'
 import { useAuth } from '@/lib/useAuth'
+import { AdminOnly } from './RouteGuards'
 
 const fetcher = (url: string) => fetch(url).then(r => r.json())
 
@@ -40,8 +41,10 @@ const NAV = [
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
 ]
+// `adminOnly` entries are filtered out for everyone else — the page behind them
+// is gated by RequireAdmin, so linking there would only lead to a refusal.
 const SETTINGS_NAV = [
-  { href: '/settings', label: 'Settings' },
+  { href: '/settings', label: 'Settings', adminOnly: true },
   { href: '/watchlist', label: 'Watchlist' },
   { href: '/account', label: 'Account' },
   { href: '/v11-screener', label: 'v11 Profile (test)' },
@@ -182,7 +185,7 @@ export function TopBar() {
   const [showSentiment, setShowSentiment] = useState(false)
   const [showStorage, setShowStorage] = useState(false)
   const [showControls, setShowControls] = useState(false)
-  const { user, logout } = useAuth()
+  const { user, isAdmin, logout } = useAuth()
   const [showSettingsNav, setShowSettingsNav] = useState(false)
   const settingsNavButtonRef = useRef<HTMLButtonElement | null>(null)
   const [settingsNavPosition, setSettingsNavPosition] = useState<{ top: number; left: number } | null>(null)
@@ -478,7 +481,7 @@ export function TopBar() {
           maxHeight: `calc(100vh - ${(settingsNavPosition?.top ?? 56) + 8}px)`,
         }}
       >
-        {SETTINGS_NAV.map(({ href, label }) => (
+        {SETTINGS_NAV.filter(item => !item.adminOnly || isAdmin).map(({ href, label }) => (
           <NavLink
             key={href}
             to={href}
@@ -532,14 +535,20 @@ export function TopBar() {
                 +{fetchResult.new_articles ?? 0} new{fetchResult.updated_articles !== undefined ? `, ${fetchResult.updated_articles} refreshed` : fetchResult.refreshed_articles !== undefined ? `, ${fetchResult.refreshed_articles} refreshed` : ''} ({((fetchResult.ms ?? 0) / 1000).toFixed(1)}s)
               </span>
             )}
-            <button
-              onClick={doFetch}
-              disabled={fetching || cooldownRemaining > 0}
-              title={cooldownRemaining > 0 ? `Fetch available in ${cooldownRemaining}s` : `${fetchMode === 'fast' ? 'Fast trader refresh' : 'Full source refresh'}`}
-              className="min-w-[5.75rem] px-2.5 py-1.5 bg-sky-700 text-white text-[11px] font-medium rounded hover:bg-sky-800 disabled:opacity-50 transition-colors whitespace-nowrap 2xl:min-w-[6.75rem] 2xl:px-3 2xl:text-xs"
-            >
-              {fetching ? `Fetching ${fetchElapsed}s...` : cooldownRemaining > 0 ? `Fetch ${cooldownRemaining}s` : 'Run Now'}
-            </button>
+            {/* POST /api/fetch requires an admin session (or the shared token the
+                collectors use), so for anyone else this button could only ever
+                return 401. Hidden rather than disabled: a greyed-out control
+                invites a click and explains nothing. */}
+            <AdminOnly>
+              <button
+                onClick={doFetch}
+                disabled={fetching || cooldownRemaining > 0}
+                title={cooldownRemaining > 0 ? `Fetch available in ${cooldownRemaining}s` : `${fetchMode === 'fast' ? 'Fast trader refresh' : 'Full source refresh'}`}
+                className="min-w-[5.75rem] px-2.5 py-1.5 bg-sky-700 text-white text-[11px] font-medium rounded hover:bg-sky-800 disabled:opacity-50 transition-colors whitespace-nowrap 2xl:min-w-[6.75rem] 2xl:px-3 2xl:text-xs"
+              >
+                {fetching ? `Fetching ${fetchElapsed}s...` : cooldownRemaining > 0 ? `Fetch ${cooldownRemaining}s` : 'Run Now'}
+              </button>
+            </AdminOnly>
 
             <div className="relative">
               <button

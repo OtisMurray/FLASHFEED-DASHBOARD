@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { AppShell }        from './components/shared/AppShell'
 import { ApiHealthGate }   from './components/shared/ApiHealthGate'
 import { AuthProvider }    from './lib/useAuth'
+import { RequireAuth, RequireAdmin } from './components/shared/RouteGuards'
 
 const LoginPage = lazy(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })))
 const WatchlistPage = lazy(() => import('./pages/WatchlistPage').then(m => ({ default: m.WatchlistPage })))
@@ -51,7 +52,7 @@ export default function App() {
             <Route path="/"            element={<Navigate to="/overview" replace />} />
             <Route path="/login"       element={<LoginPage />} />
             <Route path="/watchlist"   element={<WatchlistPage />} />
-            <Route path="/account"     element={<AccountPage />} />
+            <Route path="/account"     element={<RequireAuth><AccountPage /></RequireAuth>} />
             <Route path="/overview"    element={<OverviewPage />} />
             <Route path="/ai"          element={<AIPage />} />
             <Route path="/news"        element={<NewsPage />} />
@@ -78,7 +79,10 @@ export default function App() {
             <Route path="/correlation" element={<CorrelationPage />} />
             <Route path="/prediction-audit" element={<PredictionAuditPage />} />
             <Route path="/system-health" element={<SystemHealthPage />} />
-            <Route path="/settings"    element={<SettingsPage />} />
+            {/* Settings mutates keywords, sources and platform credentials, all of
+                which the API now restricts to admins. Gate the page so a non-admin
+                sees one clear message instead of a form that 401s on save. */}
+            <Route path="/settings"    element={<RequireAdmin><SettingsPage /></RequireAdmin>} />
           </Routes>
         </Suspense>
       </AppShell>
