@@ -5,6 +5,8 @@ import { ApiHealthGate }   from './components/shared/ApiHealthGate'
 import { AuthProvider }    from './lib/useAuth'
 
 const LoginPage = lazy(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })))
+const WatchlistPage = lazy(() => import('./pages/WatchlistPage').then(m => ({ default: m.WatchlistPage })))
+const AccountPage = lazy(() => import('./pages/AccountPage').then(m => ({ default: m.AccountPage })))
 
 const OverviewPage = lazy(() => import('./pages/OverviewPage').then(m => ({ default: m.OverviewPage })))
 const AIPage = lazy(() => import('./pages/AIPage').then(m => ({ default: m.AIPage })))
@@ -48,6 +50,8 @@ export default function App() {
           <Routes>
             <Route path="/"            element={<Navigate to="/overview" replace />} />
             <Route path="/login"       element={<LoginPage />} />
+            <Route path="/watchlist"   element={<WatchlistPage />} />
+            <Route path="/account"     element={<AccountPage />} />
             <Route path="/overview"    element={<OverviewPage />} />
             <Route path="/ai"          element={<AIPage />} />
             <Route path="/news"        element={<NewsPage />} />
