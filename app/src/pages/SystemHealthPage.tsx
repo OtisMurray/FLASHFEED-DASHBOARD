@@ -29,6 +29,9 @@ type SystemHealth = {
     rows?: Array<Record<string, unknown>>
   }
   prediction_pipeline?: Record<string, unknown>
+  positions_history?: Record<string, any>
+  short_interest_estimator?: Record<string, any>
+  rth_gate?: Record<string, any>
   warnings?: string[]
   error?: string
 }
@@ -99,6 +102,10 @@ export function SystemHealthPage() {
   const auto = data?.auto_refresh || {}
   const sourceSummary = data?.sources?.summary || {}
   const sourceRows = data?.sources?.rows || []
+  const posHistory = data?.positions_history || {}
+  const priceBasis = posHistory.price_basis_audit || {}
+  const si = data?.short_interest_estimator || {}
+  const rth = data?.rth_gate || {}
 
   return (
     <div className="space-y-5">
@@ -132,6 +139,70 @@ export function SystemHealthPage() {
         <Metric label="Auto Refresh" value={`${auto.onsite_interval_seconds ?? '—'}s`} status={auto.cadence_ok ? 'healthy' : 'degraded'} detail={`check ${auto.onsite_check_seconds ?? '—'}s · floor ${auto.cadence_floor_seconds ?? 60}s`} />
         <Metric label="Prediction Rows" value={compact(pipeline.final_rows)} status={Number(pipeline.final_rows || 0) || Number(pipeline.developing_candidate_rows || 0) ? 'healthy' : 'warning'} detail={`${compact(pipeline.developing_candidate_rows)} developing · ${compact(pipeline.strict_rows)} strict`} />
       </div>
+
+      {/* Jobs that write the recorded trades, and the two gates that qualify
+          them. These already answer on their own endpoints; the point of
+          repeating them here is that a reader checking "is the system well"
+          should not have to know which endpoint owns which job. */}
+      <section className="rounded-lg border border-border bg-surface p-4">
+        <h2 className="font-semibold text-white">Recorder &amp; gates</h2>
+        <div className="mt-3 grid gap-3 md:grid-cols-3">
+          <Metric
+            label="Position history recorder"
+            value={posHistory.running ? 'running' : posHistory.enabled ? 'idle' : 'disabled'}
+            status={posHistory.last_error ? 'degraded' : posHistory.enabled ? 'healthy' : 'warning'}
+            detail={`every ${posHistory.interval_seconds ?? '—'}s · last finished ${ageLabel(posHistory.age_seconds)}${posHistory.last_error ? ` · ${posHistory.last_error}` : ''}`}
+          />
+          <Metric
+            label="Price basis audit"
+            value={priceBasis.healthy ? 'healthy' : priceBasis.enabled ? 'degraded' : 'disabled'}
+            status={priceBasis.enabled ? (priceBasis.healthy ? 'healthy' : 'degraded') : 'warning'}
+            detail={`checked ${priceBasis.lastChecked ?? '—'} · flagged ${priceBasis.lastFlagged ?? '—'} · skipped ${priceBasis.lastSkipped ?? '—'} · ${ageLabel(priceBasis.age_seconds)}`}
+          />
+          <Metric
+            label="Short interest estimator"
+            value={String(si.status || 'unknown').replace(/_/g, ' ')}
+            status={si.status === 'healthy' ? 'healthy' : si.status === 'error' ? 'degraded' : 'warning'}
+            detail={`hourly (${si.interval_seconds ?? '—'}s) · last run ${ageLabel(si.age_seconds)} · ${si.runCount ?? 0} runs since boot`}
+          />
+        </div>
+        {/* Stated rather than implied: the estimate ships with an uncalibrated
+            constant, and a health page that showed it green without saying so
+            would be reporting the job's liveness as the number's quality. */}
+        {si.calibration_note && (
+          <p className="mt-2 text-[11px] text-amber-200/70">Short interest: {String(si.calibration_note)}</p>
+        )}
+
+        <div className="mt-4 rounded border border-border bg-bg/40 p-3">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h3 className="text-sm font-medium text-white">RTH gate</h3>
+            <span className="text-[10px] uppercase tracking-wide text-neutral">
+              observed over {rth.window_days ?? 7}d · {rth.rows_seen ?? 0} rows
+            </span>
+          </div>
+          {/* The distinction is the whole point of this block: these tickers are
+              the ones the recorded rows show the gate did not bind, not the
+              configured allowlist. */}
+          <p className="mt-1 text-[11px] leading-relaxed text-neutral">
+            Read from recorded positions, not from configuration. The binding list is{' '}
+            <code className="text-slate-300">RTH_EXEMPT_TICKERS</code> on the chart-service, which enforces the gate;
+            this service does not read it, so what is shown is what the gate actually did.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-4 text-xs">
+            <span className="text-slate-300">bound <span className="font-mono text-white">{rth.gate_bound_rows ?? 0}</span></span>
+            <span className="text-slate-300">exempt <span className="font-mono text-white">{rth.exempt_rows ?? 0}</span></span>
+            <span className="text-slate-300">pre-gate/unknown <span className="font-mono text-white">{rth.pre_gate_or_unknown_rows ?? 0}</span></span>
+            <span className="text-slate-300">rule <span className="font-mono text-white">{(rth.rule_versions_seen || []).join(', ') || '—'}</span></span>
+          </div>
+          <div className="mt-2 text-xs text-slate-300">
+            Observed exempt tickers:{' '}
+            {(rth.observed_exempt_tickers || []).length
+              ? <span className="font-mono text-white">{(rth.observed_exempt_tickers || []).join(', ')}</span>
+              : <span className="text-neutral">none in this window — no exempt ticker traded, which is not the same as an empty list</span>}
+          </div>
+          {rth.error && <div className="mt-2 text-xs text-red-300">{String(rth.error)}</div>}
+        </div>
+      </section>
 
       {!!data?.warnings?.length && (
         <section className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">

@@ -32,6 +32,7 @@ import { allowedSource, approvedNewsSourceMongoFilter } from './sourceFilter.js'
 import { dedupeWatcherSeries, loadWatcherFeatureMap, persistWatcherSnapshot } from './lib/watcherSnapshots.js'
 import { socialTickerEvidenceStages } from './lib/socialTickerEvidence.js'
 import { predictionModelStatus } from './lib/predictionModelStatus.js'
+import { priceBasisAuditHealthy, shortInterestStatus, summariseRthRows } from './lib/healthDerivations.js'
 import Screener from './models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './routes/screener.js'
 import {
@@ -5662,6 +5663,19 @@ const priceBasisStatus = {
   totalFlagged: 0,
 }
 
+// The short-interest estimator runs inside the refresh cycle, whose state lives
+// in start()'s scope and is therefore invisible to the health route defined
+// later. Module scope so /api/system/health can report it without reaching into
+// a closure — same reason priceBasisStatus above is here.
+const shortInterestEstimatorStatus = {
+  lastRunAt: null,
+  lastSkippedAt: null,
+  lastDurationMs: null,
+  lastError: null,
+  lastOutputTail: '',
+  runCount: 0,
+}
+
 async function fetchSessionBars(ticker, date) {
   const url = `${POSITION_HISTORY_CHART_SERVICE_URL}/api/sentchart/charts/${encodeURIComponent(ticker)}?date=${encodeURIComponent(date)}`
   const controller = new AbortController()
@@ -8972,12 +8986,27 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
   // so running it in parallel would price off the previous cycle's universe.
   const shortInterestEstimateDue =
     (Date.now() - lastShortInterestEstimateAt) >= SHORT_INTEREST_ESTIMATE_INTERVAL_MS
+  const shortInterestStartedAt = Date.now()
   const shortInterestEstimates = shortInterestEstimateDue
     ? await runPythonScript("2_Screener/pipeline/fetch_short_interest_estimates_to_mongo.py", {
         timeout: Number(process.env.SHORT_INTEREST_ESTIMATE_TIMEOUT_MS || 120000),
       })
     : skippedPythonResult("Short interest estimates", "FINRA data is daily; next estimate not due yet")
-  if (shortInterestEstimateDue) lastShortInterestEstimateAt = Date.now()
+  if (shortInterestEstimateDue) {
+    lastShortInterestEstimateAt = Date.now()
+    shortInterestEstimatorStatus.lastRunAt = new Date().toISOString()
+    shortInterestEstimatorStatus.lastDurationMs = Date.now() - shortInterestStartedAt
+    shortInterestEstimatorStatus.runCount += 1
+    // The script reports failure through its exit status and stderr rather than
+    // by throwing, so a run that produced nothing still lands here — record what
+    // it said instead of only that it ran.
+    shortInterestEstimatorStatus.lastError = shortInterestEstimates?.ok === false
+      ? String(shortInterestEstimates.stderr || shortInterestEstimates.error || 'estimator reported failure').trim().slice(-300)
+      : null
+    shortInterestEstimatorStatus.lastOutputTail = String(shortInterestEstimates?.stdout || shortInterestEstimates?.stderr || '').trim().slice(-300)
+  } else {
+    shortInterestEstimatorStatus.lastSkippedAt = new Date().toISOString()
+  }
 
   const afterStructuredArticles = await db.collection("articles").countDocuments()
   const structuredCounts = parseStructuredFetch(structured.stdout || "", beforeArticles, afterStructuredArticles)
@@ -10463,6 +10492,90 @@ app.delete('/api/settings/keywords/:keyword', requireAdmin, async (req, res) => 
           : 'not_configured_in_backend',
       }
 
+      // ── Position-history recorder and its price-basis audit ──────────────
+      // Both already answer on /api/positions/history/status. Repeated here so
+      // one page shows whether the thing that writes the recorded trades is
+      // alive, rather than making a reader know which endpoint owns which job.
+      //
+      // healthy reads lastSkipped, not lastError: every per-session failure
+      // inside the audit is caught locally and counted as skipped, so a cycle
+      // that checked nothing while skipping work is the shape of trouble and
+      // still reports lastError: null.
+      const priceBasisHealthy = priceBasisAuditHealthy(priceBasisStatus)
+      const positionsHistory = {
+        enabled: Boolean(positionHistoryStatus.enabled),
+        running: Boolean(positionHistoryStatus.running),
+        last_started_at: positionHistoryStatus.lastStartedAt ?? null,
+        last_finished_at: positionHistoryStatus.lastFinishedAt ?? null,
+        last_error: positionHistoryStatus.lastError ?? null,
+        last_summary: positionHistoryStatus.lastSummary ?? null,
+        last_coverage: positionHistoryStatus.lastCoverage ?? null,
+        interval_seconds: Math.round(POSITION_HISTORY_INTERVAL_MS / 1000),
+        age_seconds: ageSeconds(positionHistoryStatus.lastFinishedAt),
+        price_basis_audit: {
+          ...priceBasisStatus,
+          interval_seconds: Math.round(PRICE_BASIS_AUDIT_INTERVAL_MS / 1000),
+          age_seconds: ageSeconds(priceBasisStatus.lastFinishedAt),
+          healthy: priceBasisHealthy,
+        },
+      }
+      if (positionHistoryStatus.enabled && positionHistoryStatus.lastError) warnings.push('position_history_error')
+      if (PRICE_BASIS_AUDIT_ENABLED && !priceBasisHealthy) warnings.push('price_basis_audit_degraded')
+
+      // ── Short-interest estimator ─────────────────────────────────────────
+      // Hourly by design: FINRA publishes one short-volume file per trading
+      // day, so the cycle exists to keep the intraday volume term moving, not
+      // to fetch new source data. "Never run" is therefore normal for the first
+      // hour after a deploy and is reported as such rather than as a fault.
+      const siIntervalSeconds = Math.round(SHORT_INTEREST_ESTIMATE_INTERVAL_MS / 1000)
+      const siAge = ageSeconds(shortInterestEstimatorStatus.lastRunAt)
+      const shortInterestHealth = {
+        ...shortInterestEstimatorStatus,
+        interval_seconds: siIntervalSeconds,
+        age_seconds: siAge,
+        // Two intervals of slack: the estimator only runs as part of a refresh
+        // cycle, so a quiet dashboard legitimately delays it past one.
+        status: shortInterestStatus({
+          lastRunAt: shortInterestEstimatorStatus.lastRunAt,
+          lastError: shortInterestEstimatorStatus.lastError,
+          ageSeconds: siAge,
+          intervalSeconds: siIntervalSeconds,
+        }),
+        calibration_note: 'k is uncalibrated in production; estimates carry si_uncalibrated',
+      }
+      if (shortInterestHealth.status === 'error') warnings.push('short_interest_estimator_error')
+      if (shortInterestHealth.status === 'stale') warnings.push('short_interest_estimator_stale')
+
+      // ── RTH gate ─────────────────────────────────────────────────────────
+      // OBSERVED, not configured. The exemption list is RTH_EXEMPT_TICKERS on
+      // the chart-service, which is where the gate is enforced; this service
+      // never reads it and must not mirror it, because a second copy of a
+      // trading gate's config is a copy that can silently disagree with the one
+      // actually binding. What can be shown honestly is what the recorded rows
+      // say the gate did, so that is what this reports.
+      const rthGate = await (async () => {
+        try {
+          const coll = db.collection(POSITION_HISTORY_COLLECTION)
+          // updated_at is a BSON date here, not the epoch-seconds this file uses
+          // almost everywhere else. Comparing it against a number matches
+          // nothing and reports a silent, plausible-looking zero — verified
+          // against production, where all 1,037 rows are date-typed.
+          const since = new Date((nowSec - 7 * 86400) * 1000)
+          const rows = await coll.find(
+            { updated_at: { $gte: since } },
+            { projection: { _id: 0, ticker: 1, rth_applied: 1, rth_rule_version: 1 } },
+          ).limit(5000).toArray()
+          return {
+            source: 'observed_from_recorded_positions',
+            authoritative_config: 'RTH_EXEMPT_TICKERS on the chart-service; not readable from this service',
+            window_days: 7,
+            ...summariseRthRows(rows),
+          }
+        } catch (err) {
+          return { source: 'observed_from_recorded_positions', error: String(err?.message || err) }
+        }
+      })()
+
       const hardFailures = warnings.filter(w => w.includes('_error') || w.includes('mongodb') || w === 'auto_refresh_faster_than_one_minute')
       const staleFailures = warnings.filter(w => w.includes('_stale') || w.startsWith('stale_') || w.includes('_empty'))
       const status = hardFailures.length ? 'degraded' : staleFailures.length || warnings.length ? 'warning' : 'healthy'
@@ -10485,6 +10598,9 @@ app.delete('/api/settings/keywords/:keyword', requireAdmin, async (req, res) => 
           })),
         },
         prediction_pipeline: predictionPipeline,
+        positions_history: positionsHistory,
+        short_interest_estimator: shortInterestHealth,
+        rth_gate: rthGate,
         warnings: Array.from(new Set(warnings)),
       })
     } catch (err) {
