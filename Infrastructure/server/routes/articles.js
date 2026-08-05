@@ -974,7 +974,14 @@ router.get('/', async (req, res) => {
     // Matched-only resolves its extra rows before the query rather than after
     // it, so it keeps the fast paginated path and does not join verification.
     const requirePostTickerVerification = Boolean(requestedTicker) || mover_only === '1' || mover_only === 'true'
-    const needsTickerAliasRows = requirePostTickerVerification || !tickerOnlyRequested
+    // Always needed now. This used to skip loading the alias table under
+    // matched-only, which was harmless while that filter demanded a raw symbol
+    // — but matched-only now admits rows whose ticker is only recognisable by
+    // company name, and without the table mapArticle resolves them to nothing.
+    // The rows would surface with an empty ticker, which is the inconsistency
+    // this whole change exists to remove. loadTickerAliasRows is cached, and
+    // the matched-only pass has already warmed it.
+    const needsTickerAliasRows = true
 
     const [rawTotal, sourceRowsRaw, categoryRowsRaw, filingFacetCount, tickerAliasRows] = await Promise.all([
       lightweightList ? Promise.resolve(null) : Article.collection.countDocuments(filter),
