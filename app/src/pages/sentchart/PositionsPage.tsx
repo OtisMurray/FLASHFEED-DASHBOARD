@@ -17,9 +17,10 @@ import {
   fmtDollars,
 } from '@/lib/notional'
 import {
-  SLOT_COUNT,
-  SLOT_STARTING_CAPITAL_USD,
-  CAPITAL_PER_SLOT_USD,
+  SLOT_DEFAULT_CAPITAL_USD,
+  SLOT_MIN_CAPITAL_USD,
+  SLOT_MAX_CAPITAL_USD,
+  clampSlotCapital,
   type SlotDaySummary,
   simulateSlotDay,
   slotSimDates,
@@ -217,9 +218,17 @@ export function PositionsPage() {
   // Follow the newest session as it arrives, but stop overriding once the
   // reader has deliberately picked a past day to look at.
   const activeSlotDate = slotDate && slotDates.includes(slotDate) ? slotDate : (slotDates[0] ?? null)
+  // Starting amount is the reader's. Held as the raw string so the field can be
+  // cleared and retyped without the value snapping back mid-edit; the number
+  // driving the simulation is always the clamped one, so an empty or nonsense
+  // field falls back to the default rather than producing NaN dollars.
+  const [slotCapitalInput, setSlotCapitalInput] = useState(String(SLOT_DEFAULT_CAPITAL_USD))
+  const slotCapital = clampSlotCapital(slotCapitalInput)
   const slotSim = useMemo(
-    () => (activeSlotDate ? simulateSlotDay(data?.rows ?? [], activeSlotDate) : null),
-    [data, activeSlotDate],
+    () => (activeSlotDate
+      ? simulateSlotDay(data?.rows ?? [], activeSlotDate, { startingCapital: slotCapital })
+      : null),
+    [data, activeSlotDate, slotCapital],
   )
   // Whether the selected session is still running. Drives "current value" vs
   // "end-of-day value" — calling a mid-session number final would assert a
@@ -403,6 +412,8 @@ export function PositionsPage() {
       {slotSim && (
         <SlotSimPanel
           sim={slotSim}
+          capitalInput={slotCapitalInput}
+          onCapitalInput={setSlotCapitalInput}
           dates={slotDates}
           onSelectDate={setSlotDate}
           sessionOpen={slotSessionOpen}
@@ -653,9 +664,11 @@ export function PositionsPage() {
 // and the skipped impact is stated in percentage points because a signal that
 // was never funded has no capital to express in dollars.
 function SlotSimPanel({
-  sim, dates, onSelectDate, sessionOpen, offCanonical,
+  sim, capitalInput, onCapitalInput, dates, onSelectDate, sessionOpen, offCanonical,
 }: {
   sim: SlotDaySummary
+  capitalInput: string
+  onCapitalInput: (v: string) => void
   dates: string[]
   onSelectDate: (d: string) => void
   sessionOpen: boolean
@@ -671,15 +684,44 @@ function SlotSimPanel({
     <div className="bg-surface border border-border rounded-lg px-4 py-3 mb-3">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
         <div>
-          <div className="text-slate-200 text-xs font-semibold">
-            ${SLOT_STARTING_CAPITAL_USD.toLocaleString()} across {SLOT_COUNT} position slots — simulated
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="text-slate-200 text-xs font-semibold">
+              ${sim.startingCapital.toLocaleString()} across {sim.slotCount} position slots — simulated
+            </div>
+            {/* The amount is the only thing the reader can change. The slot
+                mechanic, the signals and the skip rule are all fixed, so this
+                rescales the same session rather than re-running a different
+                strategy. */}
+            <label className="flex items-center gap-1.5">
+              <span className="text-[10px] uppercase tracking-wide text-neutral font-medium">Starting amount</span>
+              <span className="relative inline-flex items-center">
+                <span className="absolute left-2 text-[11px] text-neutral">$</span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min={SLOT_MIN_CAPITAL_USD}
+                  max={SLOT_MAX_CAPITAL_USD}
+                  step={100}
+                  value={capitalInput}
+                  onChange={e => onCapitalInput(e.target.value)}
+                  onBlur={e => onCapitalInput(String(clampSlotCapital(e.target.value)))}
+                  aria-label="Starting amount for the illustrative slot simulation, in dollars"
+                  className="w-28 rounded border border-border bg-bg py-1 pl-5 pr-2 text-xs font-mono text-white"
+                />
+              </span>
+              {clampSlotCapital(capitalInput) !== Number(capitalInput) && capitalInput.trim() !== '' && (
+                <span className="text-[10px] text-amber-400" role="status">
+                  using ${clampSlotCapital(capitalInput).toLocaleString()}
+                </span>
+              )}
+            </label>
           </div>
           {/* The assumption in full, in the position where the reader meets the
               number. Naming the mechanic is what stops this reading as a
               statement of account value. */}
           <div className="text-[11px] text-slate-300/80 leading-relaxed mt-1 max-w-3xl">
-            If ${SLOT_STARTING_CAPITAL_USD.toLocaleString()} had been split evenly across {SLOT_COUNT} simultaneous
-            position slots (${CAPITAL_PER_SLOT_USD.toLocaleString()} each) at the start of {sim.date} and traded
+            If ${sim.startingCapital.toLocaleString()} had been split evenly across {sim.slotCount} simultaneous
+            position slots (${sim.capitalPerSlot.toLocaleString()} each) at the start of {sim.date} and traded
             through that session&apos;s signals — each slot funding one position at a time, compounding its own wins and
             losses, and a signal arriving with every slot occupied being skipped rather than sized down.
           </div>
@@ -709,13 +751,13 @@ function SlotSimPanel({
             {fmtSlotUsd(sim.startingCapital)}
           </div>
           <div className="text-[10px] text-slate-500 mt-0.5">
-            {SLOT_COUNT} slots × {fmtSlotUsd(sim.capitalPerSlot)}
+            {sim.slotCount} slots × {fmtSlotUsd(sim.capitalPerSlot)}
           </div>
         </div>
         <div>
           <div className="text-[10px] text-neutral uppercase tracking-wide font-medium">{valueLabel}</div>
           <div className="font-mono tabular-nums text-xl text-white leading-tight">{fmtSlotUsd(sim.endingValue)}</div>
-          <div className="text-[10px] text-slate-500 mt-0.5">across all {SLOT_COUNT} slots</div>
+          <div className="text-[10px] text-slate-500 mt-0.5">across all {sim.slotCount} slots</div>
         </div>
         <div className="border-l border-border pl-8">
           <div className="text-[10px] text-neutral uppercase tracking-wide font-medium">
@@ -745,7 +787,7 @@ function SlotSimPanel({
             </div>
             <div
               className={sim.skippedN > 0 ? 'text-amber-200' : 'text-slate-500'}
-              title={`Arrived when all ${SLOT_COUNT} slots were occupied, so no capital was available. Not sized down and not silently dropped.`}
+              title={`Arrived when all ${sim.slotCount} slots were occupied, so no capital was available. Not sized down and not silently dropped.`}
             >
               {sim.skippedN} skipped — no capital
             </div>
@@ -785,18 +827,20 @@ function SlotSimPanel({
           A simulation with a FIXED slot count, not a live capital allocation. No order was placed, no capital was
           committed, and nothing here was sized by a risk model. The slot count is part of the result: the same real
           trades return materially different totals at 4, 5 or 7 slots, so this figure is only meaningful stated as{' '}
-          {SLOT_COUNT} slots.
+          {sim.slotCount} slots.
         </div>
         <div>
-          {SLOT_COUNT} slots was chosen from the recorded history rather than picked: concurrent positions run a median
-          of 3 and reach 7 at peak across the sessions on record, and {SLOT_COUNT} slots holds skipped signals to
-          roughly one in ten without slicing ${SLOT_STARTING_CAPITAL_USD.toLocaleString()} so thin that each trade is a
-          rounding error.
+          {sim.slotCount} slots was chosen from the recorded history rather than picked: concurrent positions run a
+          median of 3 and reach 7 at peak across the sessions on record, and {sim.slotCount} slots holds skipped signals
+          to roughly one in ten. The slot count is fixed for that reason; only the starting amount is adjustable, and
+          setting it very low will make each trade a rounding error.
         </div>
         <div>
           Gross, and one session only — no commission, spread, slippage, borrow or fill modelling, no fractional-share
           constraint, and no carry between days: each session restarts at{' '}
-          ${SLOT_STARTING_CAPITAL_USD.toLocaleString()}. Inherits every caveat the underlying trades carry.
+          ${sim.startingCapital.toLocaleString()}. It also ignores liquidity and market impact entirely, so a large
+          starting amount rescales the same fills rather than modelling whether they could have been filled. Inherits
+          every caveat the underlying trades carry.
         </div>
         {offCanonical && (
           <div className="text-amber-200/80">

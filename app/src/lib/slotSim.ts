@@ -59,12 +59,43 @@ export const SLOT_COUNT = 5
 export const SLOT_STARTING_CAPITAL_USD = 1000
 export const CAPITAL_PER_SLOT_USD = SLOT_STARTING_CAPITAL_USD / SLOT_COUNT
 
-export const SLOT_ASSUMPTION_LABEL =
-  `If $${SLOT_STARTING_CAPITAL_USD.toLocaleString()} had been split across ${SLOT_COUNT} simultaneous position slots `
-  + `($${CAPITAL_PER_SLOT_USD.toLocaleString()} each) and traded through this session's signals`
+// The starting amount is the reader's to choose; the slot mechanic is not. Only
+// the dollars change — the same signals fill the same five slots in the same
+// order, and a signal that was skipped for want of a free slot is still skipped,
+// because slot availability is a function of concurrency rather than of size.
+export const SLOT_DEFAULT_CAPITAL_USD = SLOT_STARTING_CAPITAL_USD
+// A floor of $5 keeps every slot worth at least a dollar, below which the
+// rounding in the display would dominate the result. The ceiling is not a claim
+// about what the strategy could absorb — this simulation ignores liquidity and
+// market impact entirely, so a very large number would quietly become fiction.
+export const SLOT_MIN_CAPITAL_USD = 5
+export const SLOT_MAX_CAPITAL_USD = 1_000_000
 
-export const SLOT_SHORT_LABEL =
-  `${SLOT_COUNT} slots × $${CAPITAL_PER_SLOT_USD.toLocaleString()} = $${SLOT_STARTING_CAPITAL_USD.toLocaleString()}`
+/** Coerces anything the input can produce into a usable starting amount. */
+export function clampSlotCapital(value: unknown): number {
+  if (typeof value !== 'number') {
+    // An emptied field means "I have not chosen", not "zero" — and Number('')
+    // is 0, which would otherwise clamp to the floor and quietly show a $5
+    // simulation to someone who was halfway through retyping the amount.
+    const text = String(value ?? '').replace(/[$,\s]/g, '')
+    if (text === '') return SLOT_DEFAULT_CAPITAL_USD
+    value = Number(text)
+  }
+  const n = value as number
+  if (!Number.isFinite(n)) return SLOT_DEFAULT_CAPITAL_USD
+  return Math.min(SLOT_MAX_CAPITAL_USD, Math.max(SLOT_MIN_CAPITAL_USD, n))
+}
+
+export function slotAssumptionLabel(startingCapital = SLOT_DEFAULT_CAPITAL_USD, slotCount = SLOT_COUNT) {
+  const perSlot = startingCapital / slotCount
+  return `If $${startingCapital.toLocaleString()} had been split across ${slotCount} simultaneous position slots `
+    + `($${perSlot.toLocaleString()} each) and traded through this session's signals`
+}
+
+export function slotShortLabel(startingCapital = SLOT_DEFAULT_CAPITAL_USD, slotCount = SLOT_COUNT) {
+  const perSlot = startingCapital / slotCount
+  return `${slotCount} slots × $${perSlot.toLocaleString()} = $${startingCapital.toLocaleString()}`
+}
 
 // Session close in ET minutes-from-midnight, per row.
 //

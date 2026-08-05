@@ -13,7 +13,8 @@
     "server": "node index.js",
     "server:dev": "nodemon index.js",
     "seed": "node seed.js",
-    "dev:full": "concurrently \"npm run dev\" \"npm run server:dev\""
+    "dev:full": "concurrently \"npm run dev\" \"npm run server:dev\"",
+    "test": "node --experimental-strip-types --test src/lib/__tests__/*.test.ts"
   },
   "dependencies": {
     "chart.js": "^4.5.1",
