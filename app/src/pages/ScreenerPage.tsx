@@ -207,10 +207,23 @@ export function ScreenerPage() {
   const predictionStillResolving = predictionViewActive && (isLoading || (isValidating && tickers.length === 0))
 
   const filtered = useMemo(() => {
+    // No exchange check here. /api/screener already applies isCleanListedUsRow,
+    // which accepts Finviz provenance in place of an exchange because Finviz's
+    // export has no exchange column. This page used to re-test the exchange
+    // against a NASDAQ/NYSE/AMEX allowlist, which threw away every row the
+    // backend had deliberately kept: measured against production, 1,348 of
+    // 3,135 rows — 43% — all of them exchange="" and quote_source
+    // "finviz_elite_screener", including the day's largest movers (PN +120.8%,
+    // QNME +120.6%, GYGY +65%). Momentum showed them because its filter already
+    // allowed Finviz rows; Screener silently did not.
+    //
+    // Only the guards the backend does not make are kept: a row needs a price
+    // and a change to be rankable, and dotted symbols are share classes this
+    // page has never listed. The user-selectable exchange filter below is
+    // unaffected — that is a deliberate choice, not a universe definition.
     let rows = [...tickers].filter(t => (
       t.price != null &&
       t.change_pct != null &&
-      ['NASDAQ', 'NYSE', 'AMEX'].includes(String((t as any).exchange || '').toUpperCase()) &&
       !String(t.ticker || '').includes('.')
     ))
 
@@ -581,7 +594,12 @@ export function ScreenerPage() {
               aria-label="Screener social rolling window in minutes"
             />
             <span className="w-24 font-mono text-xs text-slate-200">{socialWindowDisplay}</span>
-            <span className="text-neutral text-sm">{filtered.length} NASDAQ/NYSE/AMEX tickers</span>
+            {/* Was "NASDAQ/NYSE/AMEX tickers", which described the allowlist this
+                page used to apply. The universe is whatever the backend's
+                clean-listed-US predicate returns, and most of it arrives from
+                Finviz with no exchange column at all, so naming three exchanges
+                here would now be inaccurate. */}
+            <span className="text-neutral text-sm">{filtered.length} listed US tickers</span>
           </div>
         )}
       </div>
