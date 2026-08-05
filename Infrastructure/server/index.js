@@ -23,7 +23,7 @@ import correlationRouter from './routes/correlation.js'
 import settingsRouter    from './routes/settings.js'
 import decisionMapRouter from './routes/decisionMap.js'
 import catalystIntelligenceRouter from './routes/catalystIntelligence.js'
-import authRouter        from './routes/auth.js'
+import authRouter, { requireAdmin } from './routes/auth.js'
 import apiV1Router       from './routes/apiV1.js'
 import stocktwitsRouter  from './routes/stocktwits.js'
 import cookieParser      from 'cookie-parser'
@@ -9453,12 +9453,60 @@ function cleanConnectionPayload(value = {}) {
   return out;
 }
 
-app.get("/api/settings/connections", async (req, res) => {
+// Fields that are live credentials. These are readable by the server (it needs
+// them to call the upstream provider) but never serialised into a response —
+// see maskConnections.
+const CONNECTION_SECRET_FIELDS = ["token"];
+
+// What actually goes over the wire: presence and the last 4 characters, never
+// the value. Applied to every response regardless of who is asking — holding an
+// admin session is not a reason to hand a live credential back to a browser,
+// where it would sit in memory, devtools, and any logging proxy in between.
+function maskConnections(resolved) {
+  const out = {};
+  for (const [key, row] of Object.entries(resolved)) {
+    const masked = { label: row.label, url: row.url, login: row.login };
+    for (const field of CONNECTION_SECRET_FIELDS) {
+      const value = row[field] || "";
+      masked[`${field}_configured`] = value.length > 0;
+      masked[`${field}_last4`] = value.length >= 4 ? value.slice(-4) : "";
+    }
+    out[key] = masked;
+  }
+  return out;
+}
+
+// Because the client never receives a secret, it cannot echo one back. An
+// omitted or blank secret therefore means "leave this one alone", not "clear
+// it" — without that, every save from the Settings page would silently wipe the
+// stored token. Sending an explicit null is how you actually clear one.
+function mergeConnections(stored = {}, incoming = {}) {
+  const current = cleanConnectionPayload(stored);
+  const out = {};
+  for (const [key, row] of Object.entries(current)) {
+    const patch = incoming[key] || {};
+    const next = {
+      label: row.label,
+      url: patch.url === undefined ? row.url : cleanSettingText(patch.url),
+      login: patch.login === undefined ? row.login : cleanSettingText(patch.login),
+    };
+    for (const field of CONNECTION_SECRET_FIELDS) {
+      const supplied = patch[field];
+      if (supplied === null) next[field] = "";
+      else if (supplied === undefined || cleanSettingText(supplied) === "") next[field] = row[field];
+      else next[field] = cleanSettingText(supplied);
+    }
+    out[key] = next;
+  }
+  return out;
+}
+
+app.get("/api/settings/connections", requireAdmin, async (req, res) => {
   try {
     const row = await settingsDb().collection("app_settings").findOne({ key: "connections" });
     res.json({
       ok: true,
-      connections: cleanConnectionPayload(row?.value || {}),
+      connections: maskConnections(cleanConnectionPayload(row?.value || {})),
     });
   } catch (err) {
     console.error("GET /api/settings/connections failed:", err);
@@ -9466,9 +9514,10 @@ app.get("/api/settings/connections", async (req, res) => {
   }
 });
 
-app.patch("/api/settings/connections", async (req, res) => {
+app.patch("/api/settings/connections", requireAdmin, async (req, res) => {
   try {
-    const connections = cleanConnectionPayload(req.body.connections || req.body || {});
+    const existing = await settingsDb().collection("app_settings").findOne({ key: "connections" });
+    const connections = mergeConnections(existing?.value || {}, req.body?.connections || req.body || {});
     await settingsDb().collection("app_settings").updateOne(
       { key: "connections" },
       {
@@ -9481,7 +9530,7 @@ app.patch("/api/settings/connections", async (req, res) => {
       },
       { upsert: true }
     );
-    res.json({ ok: true, connections });
+    res.json({ ok: true, connections: maskConnections(connections) });
   } catch (err) {
     console.error("PATCH /api/settings/connections failed:", err);
     res.status(500).json({ ok: false, error: String(err.message || err) });

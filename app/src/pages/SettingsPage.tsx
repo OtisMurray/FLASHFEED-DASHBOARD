@@ -26,11 +26,15 @@ type SourceRow = {
   collection?: string
 }
 
+// The API never sends a token back — only whether one is set and its last 4
+// characters — so there is no `token` field to bind an input to. Newly typed
+// tokens live in their own state and are sent write-only on save.
 type ConnectionRow = {
   label: string
   url: string
-  token: string
   login: string
+  token_configured?: boolean
+  token_last4?: string
 }
 
 type ConnectionSettings = Record<string, ConnectionRow>
@@ -51,6 +55,10 @@ export function SettingsPage() {
   const [customSources, setCustomSources] = useState<SourceRow[]>([])
   const [sourceHealth, setSourceHealth] = useState<{ working_count?: number; ready_count?: number; blocked_count?: number; planned_count?: number; sources?: SourceRow[] }>({})
   const [connections, setConnections] = useState<ConnectionSettings>({})
+  // Tokens the user has typed this session, keyed by connection. Never
+  // populated from a response — the server doesn't send secrets back.
+  const [tokenDrafts, setTokenDrafts] = useState<Record<string, string>>({})
+  const [connectionsLocked, setConnectionsLocked] = useState(false)
   const [newKeyword, setNewKeyword] = useState('')
   const [newKeywordCategory, setNewKeywordCategory] = useState('custom')
   const [newSourceName, setNewSourceName] = useState('')
@@ -67,12 +75,15 @@ export function SettingsPage() {
       const [kw, src, conn, health] = await Promise.all([
         jsonFetch('/api/settings/keywords'),
         jsonFetch('/api/settings/sources'),
-        jsonFetch('/api/settings/connections'),
+        // Admin-only now. A non-admin still gets the rest of the page rather
+        // than a blank screen, with the connections block shown as locked.
+        jsonFetch('/api/settings/connections').catch(() => ({ connections: null })),
         jsonFetch('/api/sources/health').catch(() => ({ sources: [] })),
       ])
       setKeywords(kw.keywords || [])
       setStructured(src.structured || [])
       setCustomSources(src.custom_rss_sources || [])
+      setConnectionsLocked(!conn.connections)
       setConnections(conn.connections || {})
       setSourceHealth(health || {})
     } finally {
@@ -139,11 +150,11 @@ export function SettingsPage() {
     await load()
   }
 
-  const setConnectionField = (key: string, field: keyof ConnectionRow, value: string) => {
+  const setConnectionField = (key: string, field: 'url' | 'login', value: string) => {
     setConnections(prev => ({
       ...prev,
       [key]: {
-        ...(prev[key] || { label: key, url: '', token: '', login: '' }),
+        ...(prev[key] || { label: key, url: '', login: '' }),
         [field]: value,
       },
     }))
@@ -151,11 +162,19 @@ export function SettingsPage() {
 
   const saveConnections = async () => {
     setError(null); setSaved(null)
+    // Only send a token for connections where one was actually typed. Omitting
+    // it tells the server to keep the stored value, so saving a URL change
+    // can't wipe a credential the page never had a copy of.
+    const payload = Object.fromEntries(Object.entries(connections).map(([key, row]) => {
+      const draft = (tokenDrafts[key] || '').trim()
+      return [key, draft ? { url: row.url, login: row.login, token: draft } : { url: row.url, login: row.login }]
+    }))
     const data = await jsonFetch('/api/settings/connections', {
       method: 'PATCH',
-      body: JSON.stringify({ connections }),
+      body: JSON.stringify({ connections: payload }),
     })
     setConnections(data.connections || connections)
+    setTokenDrafts({})
     setSaved('Connection settings saved')
   }
 
@@ -254,15 +273,23 @@ export function SettingsPage() {
         <div className="flex items-center justify-between gap-3 mb-3">
           <div>
             <h2 className="text-white font-medium">Platform Connections</h2>
-            <p className="text-xs text-neutral">URLs and credentials reserved for Finviz, TradingView, TD/Schwab, and Interactive Brokers integrations.</p>
+            <p className="text-xs text-neutral">URLs and credentials reserved for Finviz, TradingView, TD/Schwab, and Interactive Brokers integrations. Saved tokens are write-only — they are never sent back to the browser.</p>
           </div>
-          <button
-            onClick={saveConnections}
-            className="bg-sky-700 text-white rounded px-4 py-2 text-sm"
-          >
-            Save
-          </button>
+          {!connectionsLocked && (
+            <button
+              onClick={saveConnections}
+              className="bg-sky-700 text-white rounded px-4 py-2 text-sm"
+            >
+              Save
+            </button>
+          )}
         </div>
+
+        {connectionsLocked && (
+          <p className="text-xs text-neutral border border-border rounded p-3 bg-bg/40">
+            Platform connections are restricted to admin accounts.
+          </p>
+        )}
 
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
           {Object.entries(connections).map(([key, row]) => (
@@ -282,9 +309,9 @@ export function SettingsPage() {
                   className="bg-bg border border-border rounded px-3 py-2 text-sm text-white"
                 />
                 <input
-                  value={row.token}
-                  onChange={e => setConnectionField(key, 'token', e.target.value)}
-                  placeholder="Token / API key"
+                  value={tokenDrafts[key] || ''}
+                  onChange={e => setTokenDrafts(prev => ({ ...prev, [key]: e.target.value }))}
+                  placeholder={row.token_configured ? `Saved — ends ${row.token_last4} (type to replace)` : 'Token / API key'}
                   type="password"
                   className="bg-bg border border-border rounded px-3 py-2 text-sm text-white"
                 />

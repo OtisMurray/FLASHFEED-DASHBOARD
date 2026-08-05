@@ -246,6 +246,18 @@ export async function requireAuth(req, res, next) {
   }
 }
 
+// Admin-only gate. Layers on requireAuth rather than re-reading the cookie, so
+// there stays exactly one place that decides what a valid session is: anonymous
+// still gets 401 from requireAuth, a real but non-admin session gets 403 here.
+export function requireAdmin(req, res, next) {
+  requireAuth(req, res, () => {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ ok: false, error: 'Admin access required.' })
+    }
+    next()
+  })
+}
+
 // GET /api/auth/me — reads the session cookie, used by the frontend on load
 router.get('/me', requireAuth, (req, res) => {
   res.json({ ok: true, user: publicUser(req.user) })
