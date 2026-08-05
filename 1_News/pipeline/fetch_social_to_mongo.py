@@ -42,6 +42,13 @@ TICKER_FILE = Path(os.getenv("SOCIAL_TICKER_FILE", str(DEFAULT_TICKER_FILE)))
 MAX_TICKERS = int(os.getenv("SOCIAL_MAX_TICKERS", "250"))
 MAX_WORKERS = int(os.getenv("SOCIAL_MAX_WORKERS", "8"))
 TIMEOUT = int(os.getenv("SOCIAL_REQUEST_TIMEOUT", "15"))
+# Mirrors SOCIAL_FUTURE_TOLERANCE_SECONDS in Infrastructure/server/index.js. A
+# post's event time is self-reported on some platforms (Bluesky's AT Protocol
+# createdAt is written by the posting client), so a post can claim any date it
+# likes. One dated in the future would stay "newer than now" forever and pin
+# itself to the top of every rolling window, so refuse it at write time rather
+# than only filtering on read. Minutes of slack for real clock skew, not hours.
+SOCIAL_FUTURE_TOLERANCE_SECONDS = int(os.getenv("SOCIAL_FUTURE_TOLERANCE_SECONDS", "300"))
 INCLUDE_REDDIT = os.getenv("SOCIAL_INCLUDE_REDDIT", "true").lower() in ("1", "true", "yes")
 INCLUDE_X = os.getenv("SOCIAL_INCLUDE_X", "true").lower() in ("1", "true", "yes")
 INCLUDE_BLUESKY = os.getenv("SOCIAL_INCLUDE_BLUESKY", "true").lower() in ("1", "true", "yes")
@@ -1045,6 +1052,49 @@ def _fetch_fast_ticker_social(ticker: str) -> list[dict]:
     ]
 
 
+def _doc_event_sec(doc: dict) -> int | None:
+    """Effective event time for a social doc, in epoch seconds.
+
+    Field precedence matches socialTimeStages() in Infrastructure/server/index.js
+    so a doc this script accepts is a doc the API will read back the same way.
+    """
+    for key in ("published_at", "timestamp", "created_at_dt", "created_at", "publish_date", "detected_at", "fetched_at"):
+        raw = doc.get(key)
+        if raw is None or raw == "":
+            continue
+        if isinstance(raw, datetime):
+            return int(raw.timestamp())
+        if isinstance(raw, (int, float)):
+            return int(raw)
+        if isinstance(raw, str):
+            parsed = _parse_iso_ts(raw)
+            if parsed:
+                return int(parsed)
+        continue
+    return None
+
+
+def _drop_future_dated(docs: list[dict], now_sec: int) -> tuple[list[dict], dict[str, int]]:
+    """Split docs into (keepable, per-platform counts of what was refused).
+
+    A post claiming a time meaningfully ahead of now is not a usable timestamped
+    signal — we cannot know when it actually happened — so it is dropped rather
+    than stored with a made-up time. Returning the counts keeps the drop visible
+    in the run log instead of silent.
+    """
+    cutoff = now_sec + SOCIAL_FUTURE_TOLERANCE_SECONDS
+    kept: list[dict] = []
+    refused: dict[str, int] = {}
+    for doc in docs:
+        event_sec = _doc_event_sec(doc)
+        if event_sec is not None and event_sec > cutoff:
+            platform = str(doc.get("platform") or "Unknown")
+            refused[platform] = refused.get(platform, 0) + 1
+            continue
+        kept.append(doc)
+    return kept, refused
+
+
 def main() -> None:
     tickers = _load_tickers()
     client = MongoClient(MONGODB_URI)
@@ -1057,9 +1107,13 @@ def main() -> None:
 
     found = upserted = modified = 0
     platform_counts: dict[str, int] = {}
+    future_dated: dict[str, int] = {}
     worker_errors = 0
     def write_docs(docs: list[dict]) -> None:
         nonlocal found, upserted, modified
+        docs, refused = _drop_future_dated(docs, int(time.time()))
+        for platform, count in refused.items():
+            future_dated[platform] = future_dated.get(platform, 0) + count
         found += len(docs)
         for doc in docs:
             platform = str(doc.get("platform") or "Unknown")
@@ -1121,7 +1175,12 @@ def main() -> None:
             source_type="social",
         )
 
-    print(f"Social import complete — {found} found, {upserted} new, {modified} updated")
+    summary = f"Social import complete — {found} found, {upserted} new, {modified} updated"
+    if future_dated:
+        detail = ", ".join(f"{platform} {count}" for platform, count in sorted(future_dated.items()))
+        total_refused = sum(future_dated.values())
+        summary += f"; refused {total_refused} future-dated ({detail})"
+    print(summary)
     client.close()
 
 

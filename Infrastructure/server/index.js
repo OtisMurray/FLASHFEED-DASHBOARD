@@ -3926,6 +3926,22 @@ app.get("/api/prices/:ticker", async (req, res) => {
 // SOCIAL_ROLLING_API_V2_START
 // Rolling social feed using existing Mongoose connection.
 // Supports numeric Unix-second timestamps, JS Date timestamps, and fallback fields.
+// A social row's event time comes from the post's own metadata, and on some
+// platforms that is self-reported by the posting client — Bluesky's AT Protocol
+// createdAt is set by whoever wrote the post, so it can claim any date at all.
+// A row dated in the future would otherwise sit at the top of every rolling
+// window forever, since it stays "newer than now" no matter how much time
+// passes. Allow only enough slack for real clock skew between our host and the
+// source: minutes, not hours. Measured against production on 2026-08-05, every
+// genuine row landed at or behind now, and every future-dated row was at least
+// a day ahead — so 5 minutes cleanly separates skew from corruption.
+const SOCIAL_FUTURE_TOLERANCE_SECONDS = 300
+
+// Latest event time a social row may claim and still be treated as current.
+function socialMaxEventSec(nowSec = Math.floor(Date.now() / 1000)) {
+  return nowSec + SOCIAL_FUTURE_TOLERANCE_SECONDS
+}
+
 function socialTimeStages() {
   return [
     {
@@ -4321,11 +4337,13 @@ app.get("/api/social/rolling", async (req, res) => {
     const platform = String(req.query.platform || "all").toLowerCase()
     const ticker = normalizeTickerList([req.query.ticker || req.query.symbol], 1, { ensurePrivate: false })[0] || ""
     const ranked = ["1", "true", "yes"].includes(String(req.query.ranked || "").toLowerCase())
-    const sinceSec = Math.floor(Date.now() / 1000) - windowMinutes * 60
+    const nowSec = Math.floor(Date.now() / 1000)
+    const sinceSec = nowSec - windowMinutes * 60
+    const maxEventSec = socialMaxEventSec(nowSec)
 
     const pipeline = [
       ...socialTimeStages(),
-      { $match: { _event_sec: { $gte: sinceSec } } },
+      { $match: { _event_sec: { $gte: sinceSec, $lte: maxEventSec } } },
       {
         $match: {
           _norm_platform: { $ne: "Unstructured" },
@@ -4410,7 +4428,9 @@ app.get("/api/social/rolling", async (req, res) => {
 
     const platformStatusPipeline = [
       ...socialTimeStages(),
-      { $match: { _event_sec: { $gte: sinceSec }, _norm_platform: { $ne: "Unstructured" } } },
+      // Same bound as the rows pipeline — otherwise the per-platform counts and
+      // "latest post" times would still be driven by rows the caller can't see.
+      { $match: { _event_sec: { $gte: sinceSec, $lte: maxEventSec }, _norm_platform: { $ne: "Unstructured" } } },
       {
         $group: {
           _id: "$_norm_platform",
@@ -4462,7 +4482,8 @@ app.get("/api/social/rolling", async (req, res) => {
       platform,
       ticker,
       since_sec: sinceSec,
-      now_sec: Math.floor(Date.now() / 1000),
+      max_event_sec: maxEventSec,
+      now_sec: nowSec,
     })
   } catch (err) {
     console.error("GET /api/social/rolling failed:", err)
