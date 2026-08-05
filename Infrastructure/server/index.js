@@ -31,6 +31,7 @@ import { runSmsAlertCheck } from './smsAlerts.js'
 import { allowedSource, approvedNewsSourceMongoFilter } from './sourceFilter.js'
 import { dedupeWatcherSeries, loadWatcherFeatureMap, persistWatcherSnapshot } from './lib/watcherSnapshots.js'
 import { socialTickerEvidenceStages } from './lib/socialTickerEvidence.js'
+import { predictionModelStatus } from './lib/predictionModelStatus.js'
 import Screener from './models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './routes/screener.js'
 import {
@@ -9059,8 +9060,8 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
     short_interest_estimates_ran: shortInterestEstimateDue,
     short_interest_estimates: (shortInterestEstimates.stdout || shortInterestEstimates.stderr || "").trim().slice(-400),
     prediction_signals_saved: predictionSnapshot.saved,
-    prediction_model_status: predictionModel.status,
-    prediction_model_samples: predictionModel.samples || 0,
+    prediction_model_status: predictionModelStatus(predictionModel),
+    prediction_model_samples: predictionModel?.samples || 0,
     threshold_features_ok: thresholdFeatures.ok,
     threshold_features_error: thresholdFeatures.ok ? "" : thresholdFeatures.error,
     social_mode: socialMode,
