@@ -7,6 +7,15 @@ const router = express.Router()
 const MARKET_WINDOW_TIME_ZONE = process.env.MARKET_WINDOW_TIMEZONE || 'America/New_York'
 const MARKET_WINDOW_CLOSE_HOUR = Number(process.env.MARKET_WINDOW_CLOSE_HOUR_ET || 17)
 const VALID_TICKER_FIELD_REGEX = /(^|[,\s$])\$?[A-Z][A-Z0-9.-]{0,5}(?=$|[,\s])/
+// The raw fields matched-only used to test in Mongo, in the same order.
+const RAW_TICKER_FIELDS = ['ticker', 'tickers', 'tickers_mentioned', 'matched_mover_tickers']
+// Bounds for the matched-only inference pass. It reads only the documents with
+// no usable raw symbol, which is the minority of any window, so these are
+// generous rather than tight — but they are hard limits, and the response says
+// when one was hit rather than quietly returning a short answer.
+const TICKER_INFERENCE_SCAN_LIMIT = Math.max(1000, Number(process.env.ARTICLE_TICKER_INFERENCE_SCAN_LIMIT) || 30000)
+const TICKER_INFERENCE_MATCH_LIMIT = Math.max(100, Number(process.env.ARTICLE_TICKER_INFERENCE_MATCH_LIMIT) || 5000)
+const TICKER_INFERENCE_SORT = { publish_date: -1, fetched_date: -1, detected_at: -1 }
 const ARTICLE_LIST_PROJECTION = {
   content: 0,
   raw_content: 0,
@@ -405,6 +414,51 @@ async function loadTickerAliasRows() {
   return out
 }
 
+// A lookup keyed by the alias phrase itself, for the one place that has to test
+// thousands of articles against thousands of aliases at once.
+//
+// inferArticleTickers walks every alias row per article and builds a RegExp for
+// each — fine for the fifty rows of a page, hopeless for a whole window. Over a
+// three-day window in production that shape took 22.9s, and 41.9s over seven
+// days. Indexing the phrases and probing the article's own word n-grams instead
+// makes the work proportional to the article's length rather than to the size
+// of the alias table.
+//
+// The match this performs is the same one textContainsAlias performs: an alias
+// is a whitespace-delimited phrase inside the normalised text. Aliases are
+// always at least two words, so n-gram widths start at two.
+export function buildAliasPhraseIndex(aliasRows = []) {
+  const phrases = new Map()
+  let maxWords = 2
+  for (const row of aliasRows) {
+    if (!row?.ticker || !Array.isArray(row.aliases)) continue
+    for (const alias of row.aliases) {
+      const words = String(alias).split(' ').filter(Boolean)
+      if (words.length < 2) continue
+      if (words.length > maxWords) maxWords = words.length
+      if (!phrases.has(alias)) phrases.set(alias, row.ticker)
+    }
+  }
+  return { phrases, maxWords }
+}
+
+// Whether an article would gain a ticker it does not already have. Used to
+// decide which documents matched-only should additionally admit; the row's
+// actual ticker is still resolved later by inferArticleTickers.
+export function articleGainsInferredTicker(article = {}, index) {
+  if (!index || !index.phrases.size) return false
+  if (cashtagArticleTickers(article).length) return true
+  const haystack = normalizedText(`${article.title || ''} ${article.summary || ''} ${article.company || ''}`)
+  if (!haystack) return false
+  const words = haystack.split(' ').filter(Boolean)
+  for (let start = 0; start < words.length; start += 1) {
+    for (let width = 2; width <= index.maxWords && start + width <= words.length; width += 1) {
+      if (index.phrases.has(words.slice(start, start + width).join(' '))) return true
+    }
+  }
+  return false
+}
+
 function buildTickerAliasContext(aliasRows = []) {
   const byTicker = new Map()
   for (const row of aliasRows) {
@@ -792,6 +846,9 @@ router.get('/', async (req, res) => {
     let moverTickers = []
     const requestedTicker = normalizeTickerSymbol(ticker)
     let requestedTickerAliasRows = []
+    let tickerInferenceScanned = 0
+    let tickerInferenceRescued = 0
+    let tickerInferenceTruncated = false
 
     if (sentiment) filter.sentiment = sentiment
     if (source) filter.source = source
@@ -821,16 +878,21 @@ router.get('/', async (req, res) => {
         ],
       })
     }
-    if (ticker_only === '1' || ticker_only === 'true') {
-      tickerFilters.push({
-        $or: [
-          { ticker: { $regex: VALID_TICKER_FIELD_REGEX } },
-          { tickers: { $regex: VALID_TICKER_FIELD_REGEX } },
-          { tickers_mentioned: { $regex: VALID_TICKER_FIELD_REGEX } },
-          { matched_mover_tickers: { $regex: VALID_TICKER_FIELD_REGEX } },
-        ],
-      })
-    }
+    // "Matched only" used to be answered entirely in Mongo, by requiring one of
+    // the raw ticker fields to already hold a valid symbol. But the ticker is
+    // worked out later, in mapArticle -> inferArticleTickers, which can also
+    // recognise a company by name. So an approved newswire story whose raw
+    // ticker field was empty at ingestion was dropped before inference ever ran
+    // — "RBLX Investors Have Opportunity to Join Roblox Corporation Fraud
+    // Investigation", raw ticker "", is a real example from production.
+    //
+    // The filter is therefore no longer applied here. Instead the request joins
+    // the post-verification path below, which walks a bounded candidate set,
+    // runs the same inference the response already uses, and keeps the rows
+    // that actually resolve to a ticker. That is the same machinery a ticker or
+    // mover query already uses, so matched-only now agrees with the ticker
+    // shown on the row rather than second-guessing it.
+    const tickerOnlyRequested = ticker_only === '1' || ticker_only === 'true'
     if (mover_only === '1' || mover_only === 'true') {
       moverTickers = await loadPositiveMoverTickers(mover_source)
       const moverRegex = tickerCsvRegex(moverTickers)
@@ -848,6 +910,41 @@ router.get('/', async (req, res) => {
       { from, to, feed, today, recent_days, days, window_minutes },
       { filingFacet: explicitFilingRequest && includeFilings }
     ))
+
+    if (tickerOnlyRequested) {
+      // Only the documents WITHOUT a usable raw symbol can gain anything from
+      // inference, and there are far fewer of them than there are articles —
+      // 5,379 against 24,797 over a three-day window in production. Resolving
+      // just those, then handing Mongo an id list, keeps the page on its normal
+      // paginated query: exact totals, no in-memory scan of the whole window,
+      // and no truncated tail. Scanning everything instead cost 434ms at three
+      // days and 654ms at seven, and still truncated.
+      const aliasRows = await loadTickerAliasRows()
+      const aliasPhraseIndex = buildAliasPhraseIndex(aliasRows)
+      const rawSymbolFilter = {
+        $or: RAW_TICKER_FIELDS.map(field => ({ [field]: { $regex: VALID_TICKER_FIELD_REGEX } })),
+      }
+      const inferenceCandidates = await Article.collection
+        .find({ ...filter, $and: [...(filter.$and || []), ...policyFilters, { $nor: [rawSymbolFilter] }] })
+        .project({ _id: 1, title: 1, summary: 1, company: 1, ticker: 1, source: 1, collector: 1, category: 1 })
+        .sort(TICKER_INFERENCE_SORT)
+        .limit(TICKER_INFERENCE_SCAN_LIMIT)
+        .maxTimeMS(15_000)
+        .toArray()
+      const inferredIds = []
+      for (const candidate of inferenceCandidates) {
+        if (inferredIds.length >= TICKER_INFERENCE_MATCH_LIMIT) break
+        if (articleGainsInferredTicker(candidate, aliasPhraseIndex)) inferredIds.push(candidate._id)
+      }
+      tickerInferenceScanned = inferenceCandidates.length
+      tickerInferenceRescued = inferredIds.length
+      tickerInferenceTruncated = inferenceCandidates.length >= TICKER_INFERENCE_SCAN_LIMIT
+      // Additive by construction: everything the old raw-field test admitted is
+      // still admitted, plus the rows inference just recognised.
+      tickerFilters.push(inferredIds.length
+        ? { $or: [rawSymbolFilter, { _id: { $in: inferredIds } }] }
+        : rawSymbolFilter)
+    }
 
     filter.$and = [...(filter.$and || []), ...policyFilters, ...tickerFilters]
 
@@ -874,8 +971,10 @@ router.get('/', async (req, res) => {
       fetched_date: -1,
       detected_at: -1
     }
+    // Matched-only resolves its extra rows before the query rather than after
+    // it, so it keeps the fast paginated path and does not join verification.
     const requirePostTickerVerification = Boolean(requestedTicker) || mover_only === '1' || mover_only === 'true'
-    const needsTickerAliasRows = requirePostTickerVerification || !(ticker_only === '1' || ticker_only === 'true')
+    const needsTickerAliasRows = requirePostTickerVerification || !tickerOnlyRequested
 
     const [rawTotal, sourceRowsRaw, categoryRowsRaw, filingFacetCount, tickerAliasRows] = await Promise.all([
       lightweightList ? Promise.resolve(null) : Article.collection.countDocuments(filter),
@@ -1012,6 +1111,9 @@ router.get('/', async (req, res) => {
       raw_scanned: rawScanned,
       unverified_filtered: unverifiedFiltered,
       total_may_be_truncated: totalMayBeTruncated,
+      ticker_inference_scanned: tickerInferenceScanned,
+      ticker_inference_rescued: tickerInferenceRescued,
+      ticker_inference_truncated: tickerInferenceTruncated,
       post_ticker_verification: requirePostTickerVerification,
       facets_included: includeFacets,
       sources: sourceRows,
@@ -1034,5 +1136,9 @@ router.get('/', async (req, res) => {
     res.status(500).json({ error: 'Failed to load articles' })
   }
 })
+
+// Exported for tests: matched-only is now decided by inference rather than by a
+// Mongo filter, so the behaviour has to be assertable directly.
+export { inferArticleTickers, buildTickerAliasContext, companyAliases }
 
 export default router
