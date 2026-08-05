@@ -7,6 +7,7 @@ import { clsx } from 'clsx'
 import * as THREE from 'three'
 import { useTickerDatalistOptions } from '@/lib/useTickerUniverse'
 import { CatalystIntelligencePanel } from '@/components/shared/CatalystIntelligencePanel'
+import { MapErrorBoundary } from '@/components/shared/MapErrorBoundary'
 
 const fetcher = (url: string) => fetch(url).then(r => r.json())
 const JOURNEY_PLAYBACK_SPEED_MULTIPLIER = 0.28125 // 0.5x the prior selected-journey playback speed.
@@ -993,6 +994,9 @@ function ThreeDecisionMap({
   onHoverTicker?: (ticker: string) => void
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null)
+  // Non-null once WebGL has refused to start. Holds the reason so the fallback
+  // can say what actually went wrong rather than guessing.
+  const [webglError, setWebglError] = useState<string | null>(null)
   const stateRef = useRef({ theta: -0.7, phi: 1.12, radius: 18, dragging: false, x: 0, y: 0 })
   const selectedTickerRef = useRef(selectedTicker || '')
   const playbackRef = useRef<{ ticker?: string; progress: number | null }>({ ticker: selectedTicker, progress: playbackProgress ?? null })
@@ -1021,10 +1025,26 @@ function ThreeDecisionMap({
     const scene = new THREE.Scene()
     scene.background = new THREE.Color(0x0f172a)
     const camera = new THREE.PerspectiveCamera(48, 1, 0.1, 1000)
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
-    renderer.setSize(host.clientWidth, host.clientHeight)
-    host.appendChild(renderer.domElement)
+
+    // WebGLRenderer throws rather than returning null when a context cannot be
+    // created — no GPU, a blocklisted driver, webgl disabled, or too many live
+    // contexts on the page. Unhandled, that escaped this effect and took the
+    // whole route down, so a machine that simply cannot do 3D got a blank page
+    // instead of the map's data. Everything built above this point is disposed
+    // before giving up, or the failed attempt leaks a scene and a canvas on
+    // every re-run of the effect.
+    let renderer: THREE.WebGLRenderer
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+      renderer.setSize(host.clientWidth, host.clientHeight)
+      host.appendChild(renderer.domElement)
+    } catch (err) {
+      scene.clear()
+      setWebglError(err instanceof Error ? err.message : String(err))
+      return
+    }
+    setWebglError(null)
 
     const group = new THREE.Group()
     scene.add(group)
@@ -1489,6 +1509,65 @@ function ThreeDecisionMap({
       } catch (_) {}
     }
   }, [rows, resetKey, zoom, onSelectTicker])
+
+  // No 3D context available. Everything the map encodes spatially is still in
+  // `rows`, so the fallback lists it and keeps selection working — the panels
+  // around this component are driven by onSelectTicker, and they stay useful
+  // whether or not a canvas ever appeared.
+  if (webglError) {
+    return (
+      <div
+        data-testid="decision-map-webgl-fallback"
+        data-plotted-points={rows.length}
+        data-unique-tickers={new Set(rows.map(row => row.ticker)).size}
+        data-tickers={rows.map(row => row.ticker).join(',')}
+        role="region"
+        aria-label={`Decision Map ticker list. 3D rendering unavailable. ${rows.length} ticker points.`}
+        className="relative h-[560px] min-h-[420px] overflow-auto rounded bg-bg border border-border p-4"
+      >
+        <div role="alert" className="mb-3 rounded border border-amber-500/40 bg-amber-500/10 p-3">
+          <h3 className="text-sm font-semibold text-amber-200">3D view unavailable on this device</h3>
+          <p className="mt-1 text-xs leading-relaxed text-amber-100/80">
+            This browser could not start WebGL, so the map cannot be drawn. Every ticker it would
+            have plotted is listed below and still selectable — only the 3D positions are missing.
+          </p>
+          <p className="mt-2 font-mono text-[10px] text-amber-100/50">{webglError}</p>
+        </div>
+
+        {isLoading ? (
+          <p className="text-sm text-neutral">Loading real screener rows...</p>
+        ) : rows.length === 0 ? (
+          <p className="text-sm text-neutral">No screener rows in this window.</p>
+        ) : (
+          <ul className="grid grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-4">
+            {rows.map(row => (
+              <li key={row.ticker}>
+                <button
+                  type="button"
+                  onClick={() => onSelectTicker?.(row.ticker)}
+                  onMouseEnter={() => onHoverTicker?.(row.ticker)}
+                  aria-pressed={selectedTicker === row.ticker}
+                  className={clsx(
+                    'w-full rounded border px-2 py-1.5 text-left text-xs transition-colors',
+                    selectedTicker === row.ticker
+                      ? 'border-accent/50 bg-accent/15 text-white'
+                      : 'border-border bg-surface/60 text-neutral hover:border-accent/40 hover:text-white',
+                  )}
+                >
+                  <span className="font-mono">{row.ticker}</span>
+                  {Number.isFinite(row.priceChangePct) && (
+                    <span className={clsx('ml-1.5', row.priceChangePct >= 0 ? 'text-emerald-400' : 'text-rose-400')}>
+                      {row.priceChangePct >= 0 ? '+' : ''}{row.priceChangePct.toFixed(1)}%
+                    </span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div
@@ -1960,6 +2039,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
             )}
           </div>
           <div className="p-3">
+            <MapErrorBoundary>
             <ThreeDecisionMap
               key={singleTickerMode ? `single-${focusTicker}-${data?.cacheSignature || data?.generatedAt || rows[0]?.ticker || 'loading'}` : `multi-${resetKey}-${data?.cacheSignature || rows.length}`}
               rows={plottedRows}
@@ -1974,6 +2054,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
               onSelectTicker={selectTicker}
               onHoverTicker={setHoveredTicker}
             />
+            </MapErrorBoundary>
           </div>
         </section>
       </div>
@@ -2214,6 +2295,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
           </div>
 
           <div className="p-3">
+            <MapErrorBoundary>
             <ThreeDecisionMap
               rows={plottedRows}
               zoom={zoom}
@@ -2227,6 +2309,7 @@ export function DecisionMapPanel({ focusTicker: forcedFocusTicker = '', single =
               onSelectTicker={selectTicker}
               onHoverTicker={setHoveredTicker}
             />
+            </MapErrorBoundary>
             {singleTickerMismatch && (
               <div className="mt-2 rounded border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
                 Loaded Decision Map cache did not match {requestTicker}; waiting for the ticker-specific payload.
