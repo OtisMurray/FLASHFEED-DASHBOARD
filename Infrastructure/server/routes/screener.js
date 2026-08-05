@@ -3,6 +3,7 @@ import mongoose from 'mongoose'
 import Screener from '../models/Screener.js'
 import { loadWatcherFeatureMap, persistWatcherSnapshot, watcherRankScore } from '../lib/watcherSnapshots.js'
 import { socialTickerEvidenceStages } from '../lib/socialTickerEvidence.js'
+import { requireAdmin } from './auth.js'
 import * as predictionThresholdPolicy from '../lib/predictionThresholdPolicy.js'
 // The clean-universe definition lives in one place now — see lib/cleanUniverse.js
 // for why there used to be three of them and what changed when they were merged.
@@ -7384,7 +7385,7 @@ router.get('/', async (req, res) => {
 })
 
 // POST /api/screener/upsert  — upsert a single ticker
-router.post('/upsert', async (req, res) => {
+router.post('/upsert', requireAdmin, async (req, res) => {
   try {
     const doc = await Screener.findOneAndUpdate(
       { ticker: req.body.ticker },

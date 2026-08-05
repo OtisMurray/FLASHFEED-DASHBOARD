@@ -6266,7 +6266,7 @@ app.get("/api/positions/history/status", async (_req, res) => {
   }
 })
 
-app.post("/api/positions/history/run", async (_req, res) => {
+app.post("/api/positions/history/run", requireAdmin, async (_req, res) => {
   try {
     const status = await runPositionHistoryCycle('manual_api')
     res.json({ ok: true, ...status })
@@ -6275,7 +6275,7 @@ app.post("/api/positions/history/run", async (_req, res) => {
   }
 })
 
-app.post("/api/chart/watchers/run", async (_req, res) => {
+app.post("/api/chart/watchers/run", requireAdmin, async (_req, res) => {
   try {
     const status = await runWatcherSnapshotCycle('manual_api')
     res.json({ ok: true, ...status })
@@ -7887,7 +7887,7 @@ app.get("/api/prediction/model", async (req, res) => {
   }
 })
 
-app.post("/api/prediction/train", async (req, res) => {
+app.post("/api/prediction/train", requireAdmin, async (req, res) => {
   try {
     const db = mongoose.connection.db
     if (!db) return res.status(503).json({ ok: false, error: "MongoDB is not connected" })
@@ -9588,7 +9588,7 @@ app.get("/api/keywords", async (req, res) => {
   }
 });
 
-app.post("/api/keywords", async (req, res) => {
+app.post("/api/keywords", requireAdmin, async (req, res) => {
   try {
     const keyword = cleanKeyword(req.body.keyword || req.body.word);
     const category = cleanSettingText(req.body.category || "custom").toLowerCase();
@@ -9612,7 +9612,7 @@ app.post("/api/keywords", async (req, res) => {
   }
 });
 
-app.patch("/api/keywords/:keyword", async (req, res) => {
+app.patch("/api/keywords/:keyword", requireAdmin, async (req, res) => {
   try {
     const keyword = cleanKeyword(decodeURIComponent(req.params.keyword));
     const enabled = req.body.enabled !== false && req.body.active !== false;
@@ -9627,7 +9627,7 @@ app.patch("/api/keywords/:keyword", async (req, res) => {
   }
 });
 
-app.delete("/api/keywords/:keyword", async (req, res) => {
+app.delete("/api/keywords/:keyword", requireAdmin, async (req, res) => {
   try {
     const keyword = cleanKeyword(decodeURIComponent(req.params.keyword));
     const result = await settingsDb().collection("keywords").deleteOne({ $or: [{ keyword }, { word: keyword }] });
@@ -9698,7 +9698,7 @@ app.get("/api/settings/sources", async (req, res) => {
   }
 });
 
-app.post("/api/settings/sources/:name/favorite", async (req, res) => {
+app.post("/api/settings/sources/:name/favorite", requireAdmin, async (req, res) => {
   try {
     const name = cleanSettingText(decodeURIComponent(req.params.name))
     await settingsDb().collection("source_favorites").updateOne(
@@ -9712,7 +9712,7 @@ app.post("/api/settings/sources/:name/favorite", async (req, res) => {
   }
 })
 
-app.delete("/api/settings/sources/:name/favorite", async (req, res) => {
+app.delete("/api/settings/sources/:name/favorite", requireAdmin, async (req, res) => {
   try {
     const name = cleanSettingText(decodeURIComponent(req.params.name))
     await settingsDb().collection("source_favorites").deleteOne({ name })
@@ -9731,7 +9731,7 @@ app.get("/api/settings/sources/favorites", async (req, res) => {
   }
 })
 
-app.post("/api/settings/sources", async (req, res) => {
+app.post("/api/settings/sources", requireAdmin, async (req, res) => {
   try {
     const name = cleanSettingText(req.body.name || req.body.source);
     const url = cleanSettingText(req.body.url);
@@ -9757,7 +9757,7 @@ app.post("/api/settings/sources", async (req, res) => {
   }
 });
 
-app.patch("/api/settings/sources/:name", async (req, res) => {
+app.patch("/api/settings/sources/:name", requireAdmin, async (req, res) => {
   try {
     const name = cleanSettingText(decodeURIComponent(req.params.name));
     const enabled = req.body.enabled !== false;
@@ -9772,7 +9772,7 @@ app.patch("/api/settings/sources/:name", async (req, res) => {
   }
 });
 
-app.delete("/api/settings/sources/:name", async (req, res) => {
+app.delete("/api/settings/sources/:name", requireAdmin, async (req, res) => {
   try {
     const name = cleanSettingText(decodeURIComponent(req.params.name));
     const result = await settingsDb().collection("rss_sources").deleteOne({ name });
@@ -9812,7 +9812,7 @@ app.get('/api/settings/keywords', async (req, res) => {
   }
 })
 
-app.post('/api/settings/keywords', async (req, res) => {
+app.post('/api/settings/keywords', requireAdmin, async (req, res) => {
   try {
     const keyword = cleanKeyword(req.body?.keyword || req.body?.word)
     const category = cleanSettingText(req.body?.category || 'custom').toLowerCase()
@@ -9836,7 +9836,7 @@ app.post('/api/settings/keywords', async (req, res) => {
   }
 })
 
-app.patch('/api/settings/keywords/:keyword', async (req, res) => {
+app.patch('/api/settings/keywords/:keyword', requireAdmin, async (req, res) => {
   try {
     const keyword = cleanKeyword(decodeURIComponent(req.params.keyword))
     const enabled = req.body?.enabled !== false && req.body?.active !== false
@@ -9853,7 +9853,7 @@ app.patch('/api/settings/keywords/:keyword', async (req, res) => {
   }
 })
 
-app.delete('/api/settings/keywords/:keyword', async (req, res) => {
+app.delete('/api/settings/keywords/:keyword', requireAdmin, async (req, res) => {
   try {
     const keyword = cleanKeyword(decodeURIComponent(req.params.keyword))
 
@@ -10023,7 +10023,7 @@ app.delete('/api/settings/keywords/:keyword', async (req, res) => {
     res.send(JSON.stringify({ exported_at: new Date().toISOString(), days, bucket: bucket || 'all', count: rows.length, news: rows }, null, 2))
   })
 
-  app.post('/api/disk/sweep', (req, res) => {
+  app.post('/api/disk/sweep', requireAdmin, (req, res) => {
     res.json({ ok: true, deleted: diskdb.sweep(), stats: diskdb.stats() })
   })
 
