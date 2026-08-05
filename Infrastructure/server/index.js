@@ -30,6 +30,7 @@ import cookieParser      from 'cookie-parser'
 import { runSmsAlertCheck } from './smsAlerts.js'
 import { allowedSource, approvedNewsSourceMongoFilter } from './sourceFilter.js'
 import { dedupeWatcherSeries, loadWatcherFeatureMap, persistWatcherSnapshot } from './lib/watcherSnapshots.js'
+import { socialTickerEvidenceStages } from './lib/socialTickerEvidence.js'
 import Screener from './models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './routes/screener.js'
 import {
@@ -4204,7 +4205,10 @@ function socialTickerCandidateStages() {
           },
         },
       },
-    }
+    },
+    // The stamped ticker/symbol/cashtag fields above are the collector's search
+    // term echoed back, so shape alone does not make a candidate real.
+    ...socialTickerEvidenceStages(),
   ]
 }
 

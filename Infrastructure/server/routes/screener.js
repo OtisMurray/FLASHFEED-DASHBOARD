@@ -2,6 +2,7 @@ import { Router } from 'express'
 import mongoose from 'mongoose'
 import Screener from '../models/Screener.js'
 import { loadWatcherFeatureMap, persistWatcherSnapshot, watcherRankScore } from '../lib/watcherSnapshots.js'
+import { socialTickerEvidenceStages } from '../lib/socialTickerEvidence.js'
 import * as predictionThresholdPolicy from '../lib/predictionThresholdPolicy.js'
 // The clean-universe definition lives in one place now — see lib/cleanUniverse.js
 // for why there used to be three of them and what changed when they were merged.
@@ -3297,6 +3298,9 @@ function socialTickerCandidateStages() {
         },
       },
     },
+    // Shape alone does not make a candidate real — the stamped fields feeding
+    // _ticker_values_raw are the collector's search term echoed back.
+    ...socialTickerEvidenceStages(),
   ]
 }
 

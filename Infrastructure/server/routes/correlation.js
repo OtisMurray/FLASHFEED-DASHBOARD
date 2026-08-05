@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import mongoose from 'mongoose'
 import Correlation from '../models/Correlation.js'
+import { socialTickerEvidenceStages } from '../lib/socialTickerEvidence.js'
 
 const router = Router()
 
@@ -171,6 +172,9 @@ function tickerCandidateStages() {
         },
       },
     },
+    // The stamped fields above are the collector's search term echoed back, so
+    // a well-shaped candidate still has to be evidenced by the row itself.
+    ...socialTickerEvidenceStages(),
   ]
 }
 

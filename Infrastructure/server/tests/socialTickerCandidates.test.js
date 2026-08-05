@@ -54,12 +54,19 @@ function countStages() {
   ]
 }
 
+// Every one of the 314,388 documents in the production collection carries a
+// `collector`, and socialTickerCandidateStages now requires the row to evidence
+// its ticker — either through that provenance or through a $TICKER in the text.
+// These fixtures therefore name their collector, as real documents do; without
+// it they would describe a document shape that does not occur.
+const STOCKTWITS_COLLECTOR = 'stocktwits_public_symbol_stream'
+
 test('one real message counts once, not once per ticker alias', async t => {
   // The exact production shape: ticker, symbol and cashtag all say AAPL.
   const docs = [
-    { id: 'm1', ticker: 'AAPL', symbol: 'AAPL', cashtag: '$AAPL', platform: 'StockTwits' },
-    { id: 'm2', ticker: 'AAPL', symbol: 'AAPL', cashtag: '$AAPL', platform: 'StockTwits' },
-    { id: 'm3', ticker: 'AAPL', symbol: 'AAPL', cashtag: '$AAPL', platform: 'StockTwits' },
+    { id: 'm1', collector: STOCKTWITS_COLLECTOR, ticker: 'AAPL', symbol: 'AAPL', cashtag: '$AAPL', platform: 'StockTwits' },
+    { id: 'm2', collector: STOCKTWITS_COLLECTOR, ticker: 'AAPL', symbol: 'AAPL', cashtag: '$AAPL', platform: 'StockTwits' },
+    { id: 'm3', collector: STOCKTWITS_COLLECTOR, ticker: 'AAPL', symbol: 'AAPL', cashtag: '$AAPL', platform: 'StockTwits' },
   ]
   const rows = await withCollection(docs, coll => coll.aggregate(countStages()).toArray())
   if (rows === null) return t.skip('no MongoDB reachable')
@@ -68,7 +75,7 @@ test('one real message counts once, not once per ticker alias', async t => {
 
 test('a message genuinely mentioning several tickers still counts once for each', async t => {
   const docs = [
-    { id: 'm1', ticker: 'AAPL', symbol: 'AAPL', cashtag: '$AAPL', tickers_mentioned: ['MSFT', 'NVDA'] },
+    { id: 'm1', collector: STOCKTWITS_COLLECTOR, ticker: 'AAPL', symbol: 'AAPL', cashtag: '$AAPL', tickers_mentioned: ['MSFT', 'NVDA'] },
   ]
   const rows = await withCollection(docs, coll => coll.aggregate(countStages()).toArray())
   if (rows === null) return t.skip('no MongoDB reachable')
@@ -82,7 +89,7 @@ test('a message genuinely mentioning several tickers still counts once for each'
 
 test('duplicates within a single field are collapsed too', async t => {
   const docs = [
-    { id: 'm1', ticker: 'TSLA', symbol: 'tsla', cashtag: '$TSLA', tickers_mentioned: 'TSLA,TSLA, $TSLA' },
+    { id: 'm1', collector: STOCKTWITS_COLLECTOR, ticker: 'TSLA', symbol: 'tsla', cashtag: '$TSLA', tickers_mentioned: 'TSLA,TSLA, $TSLA' },
   ]
   const rows = await withCollection(docs, coll => coll.aggregate(countStages()).toArray())
   if (rows === null) return t.skip('no MongoDB reachable')
