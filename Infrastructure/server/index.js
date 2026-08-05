@@ -23,7 +23,7 @@ import correlationRouter from './routes/correlation.js'
 import settingsRouter    from './routes/settings.js'
 import decisionMapRouter from './routes/decisionMap.js'
 import catalystIntelligenceRouter from './routes/catalystIntelligence.js'
-import authRouter, { requireAdmin } from './routes/auth.js'
+import authRouter, { requireAdmin, requireAdminTokenOrSession } from './routes/auth.js'
 import apiV1Router       from './routes/apiV1.js'
 import stocktwitsRouter  from './routes/stocktwits.js'
 import cookieParser      from 'cookie-parser'
@@ -7902,7 +7902,7 @@ app.post("/api/prediction/train", requireAdmin, async (req, res) => {
   }
 })
 
-app.post("/api/prediction/snapshot", async (req, res) => {
+app.post("/api/prediction/snapshot", requireAdminTokenOrSession, async (req, res) => {
   try {
     const db = mongoose.connection.db
     if (!db) return res.status(503).json({ ok: false, error: "MongoDB is not connected" })
@@ -9168,8 +9168,8 @@ async function handleApiFetch(req, res) {
   }
 }
 
-app.post("/api/fetch", handleApiFetch)
-app.get("/api/fetch", handleApiFetch)
+app.post("/api/fetch", requireAdminTokenOrSession, handleApiFetch)
+app.get("/api/fetch", requireAdminTokenOrSession, handleApiFetch)
 // NEWS_RSS_FETCH_API_V3_END
 
 app.get("/api/watch", async (req, res) => {

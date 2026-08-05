@@ -258,6 +258,54 @@ export function requireAdmin(req, res, next) {
   })
 }
 
+// Machine callers cannot hold a session cookie, so the maintenance endpoints a
+// script drives accept a shared token instead. .env.example has documented this
+// since the endpoint was written and scripts/auto_refresh_loop.sh has been
+// sending the header all along, but nothing on the server ever read it — the
+// documented protection did not exist.
+//
+// Read at call time rather than at import so a deploy that sets the variable
+// takes effect without the module needing to have been loaded after it.
+const adminToken = () => String(process.env.ADMIN_TOKEN || '').trim()
+
+function presentedAdminToken(req) {
+  const header = String(req.get('X-Admin-Token') || '').trim()
+  if (header) return header
+  const authorization = String(req.get('Authorization') || '').trim()
+  if (/^bearer\s+/i.test(authorization)) return authorization.replace(/^bearer\s+/i, '').trim()
+  return ''
+}
+
+// Compare through fixed-length digests: timingSafeEqual throws on a length
+// mismatch, and comparing raw secrets would leak the token's length through it.
+function tokenMatches(presented, expected) {
+  if (!presented || !expected) return false
+  const a = crypto.createHash('sha256').update(presented).digest()
+  const b = crypto.createHash('sha256').update(expected).digest()
+  return crypto.timingSafeEqual(a, b)
+}
+
+// Either a valid shared token or a real admin session. Both are needed: a shell
+// script cannot log in, and the browser must never be handed the shared token,
+// so the Fetch button in the top bar authenticates as the admin who clicked it.
+//
+// Fails closed. With no ADMIN_TOKEN configured there is no token that can pass,
+// so a token-bearing request is refused outright rather than waved through —
+// the same posture JWT_SECRET takes. An admin session still works, because that
+// path does not depend on the variable being set.
+export function requireAdminTokenOrSession(req, res, next) {
+  const presented = presentedAdminToken(req)
+  if (!presented) return requireAdmin(req, res, next)
+  if (!adminToken()) {
+    console.error('  Auth    →  admin token presented but ADMIN_TOKEN is not set; refusing')
+    return res.status(503).json({ ok: false, error: 'Admin token authentication is not configured on this server.' })
+  }
+  if (!tokenMatches(presented, adminToken())) {
+    return res.status(401).json({ ok: false, error: 'Invalid admin token.' })
+  }
+  return next()
+}
+
 // GET /api/auth/me — reads the session cookie, used by the frontend on load
 router.get('/me', requireAuth, (req, res) => {
   res.json({ ok: true, user: publicUser(req.user) })

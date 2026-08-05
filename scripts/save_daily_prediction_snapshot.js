@@ -50,11 +50,19 @@ function nextTradingDateKey(dateKey) {
   return d.toISOString().slice(0, 10)
 }
 
+// POST /api/prediction/snapshot is behind the shared admin token. This script
+// has no session to offer, so it presents the same header auto_refresh_loop.sh
+// uses. Sent on every request rather than only the POST: the read endpoints
+// ignore it, and branching on the method here would be one more thing to get
+// wrong the next time an endpoint moves behind the gate.
+const ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || '').trim()
+
 async function fetchJson(url, options = {}) {
   const response = await fetch(url, {
     ...options,
     headers: {
       Accept: 'application/json',
+      ...(ADMIN_TOKEN ? { 'X-Admin-Token': ADMIN_TOKEN } : {}),
       ...(options.headers || {}),
     },
   })
