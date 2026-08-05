@@ -33,6 +33,11 @@ import { dedupeWatcherSeries, loadWatcherFeatureMap, persistWatcherSnapshot } fr
 import { socialTickerEvidenceStages } from './lib/socialTickerEvidence.js'
 import { predictionModelStatus } from './lib/predictionModelStatus.js'
 import { priceBasisAuditHealthy, shortInterestStatus, summariseRthRows } from './lib/healthDerivations.js'
+import { settingsKeyConfigured, SettingsKeyUnavailableError } from './lib/settingsCrypto.js'
+import {
+  loadUserConnections, saveUserConnections, decryptConnections,
+  migrateSharedConnections, ensureUserConnectionsIndex,
+} from './lib/userConnections.js'
 import Screener from './models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './routes/screener.js'
 import {
@@ -8168,9 +8173,50 @@ app.get('/api/health', async (req, res) => {
 })
 
 // ── Start ─────────────────────────────────────────────────
+// One-time move of the old shared connections document into the admin's
+// encrypted per-user record.
+//
+// Runs on boot rather than as a manual script so the cutover happens in the
+// same deploy as the code that reads the new shape — otherwise the routes would
+// briefly look at an empty collection and report the admin's real credentials
+// as unset.
+//
+// Refuses to act without a key. Migrating while SETTINGS_ENCRYPTION_KEY is
+// missing would either write plaintext or delete the only copy of the token,
+// and both are worse than waiting for the variable to be set.
+async function migrateConnectionsOnBoot() {
+  const db = mongoose.connection.db
+  if (!db) return
+  if (!settingsKeyConfigured()) {
+    const pending = await db.collection('app_settings').countDocuments({ key: 'connections' }).catch(() => 0)
+    if (pending) console.warn('  Settings →  shared connections document present but SETTINGS_ENCRYPTION_KEY is unset; migration deferred')
+    return
+  }
+  try {
+    await ensureUserConnectionsIndex(db)
+    const admin = await db.collection('users').findOne({ role: 'admin' }, { projection: { _id: 1, username: 1 } })
+    if (!admin) return
+    const dryRun = String(process.env.SETTINGS_MIGRATION_VERIFY_ONLY || '').toLowerCase() === 'true'
+    const result = await migrateSharedConnections(db, {
+      userId: String(admin._id),
+      verifyOnly: dryRun,
+      log: (msg) => console.log(`  Settings →  ${msg}`),
+    })
+    if (result.reason && !result.migrated && result.reason !== 'no_shared_document' && result.reason !== 'target_already_has_record') {
+      console.warn(`  Settings →  connections migration did not complete: ${result.reason}`, result.mismatches || result.errors || '')
+    }
+  } catch (err) {
+    // Never fatal. The shared document is only removed after a verified
+    // read-back, so a failure here leaves the old data exactly where it was.
+    console.error('  Settings →  connections migration failed:', err?.message || err)
+  }
+}
+
 async function ensureRuntimeIndexes() {
   const db = mongoose.connection.db
   if (!db) return
+
+  await migrateConnectionsOnBoot()
 
   await Promise.allSettled([
     db.collection("articles").createIndex({ ticker: 1, detected_at: -1 }),
@@ -9556,14 +9602,39 @@ function mergeConnections(stored = {}, incoming = {}) {
   return out;
 }
 
+// Connections are stored per user and encrypted at rest. requireAdmin still
+// gates both verbs — the per-user split narrows what a compromised session can
+// reach, it does not replace the guard.
+//
+// 503 rather than 500 when the key is missing: the request is well formed and
+// the caller is authorised, the server is just not configured to handle
+// secrets, and answering 500 would invite a retry that cannot succeed.
+function connectionsUserId(req) {
+  return String(req.user?._id || '')
+}
+
 app.get("/api/settings/connections", requireAdmin, async (req, res) => {
   try {
-    const row = await settingsDb().collection("app_settings").findOne({ key: "connections" });
+    if (!settingsKeyConfigured()) {
+      return res.status(503).json({ ok: false, error: "Connection storage is not configured on this server (SETTINGS_ENCRYPTION_KEY)." });
+    }
+    const userId = connectionsUserId(req);
+    const row = await loadUserConnections(settingsDb(), userId);
+    const { connections, errors } = decryptConnections(row?.value || {}, userId);
+    // Defaults fill in providers this user has never configured, so the page
+    // still lists all four rather than only the ones with a saved record.
+    const resolved = cleanConnectionPayload(connections);
     res.json({
       ok: true,
-      connections: maskConnections(cleanConnectionPayload(row?.value || {})),
+      connections: maskConnections(resolved),
+      // Surfaced, not swallowed: a field that will not decrypt must not be
+      // indistinguishable from one that was never set.
+      ...(errors.length ? { decrypt_errors: errors } : {}),
     });
   } catch (err) {
+    if (err instanceof SettingsKeyUnavailableError) {
+      return res.status(503).json({ ok: false, error: String(err.message) });
+    }
     console.error("GET /api/settings/connections failed:", err);
     res.status(500).json({ ok: false, error: String(err.message || err) });
   }
@@ -9571,22 +9642,19 @@ app.get("/api/settings/connections", requireAdmin, async (req, res) => {
 
 app.patch("/api/settings/connections", requireAdmin, async (req, res) => {
   try {
-    const existing = await settingsDb().collection("app_settings").findOne({ key: "connections" });
-    const connections = mergeConnections(existing?.value || {}, req.body?.connections || req.body || {});
-    await settingsDb().collection("app_settings").updateOne(
-      { key: "connections" },
-      {
-        $set: {
-          key: "connections",
-          value: connections,
-          updated_at: Math.floor(Date.now() / 1000),
-        },
-        $setOnInsert: { created_at: Math.floor(Date.now() / 1000) },
-      },
-      { upsert: true }
-    );
+    if (!settingsKeyConfigured()) {
+      return res.status(503).json({ ok: false, error: "Connection storage is not configured on this server (SETTINGS_ENCRYPTION_KEY)." });
+    }
+    const userId = connectionsUserId(req);
+    const row = await loadUserConnections(settingsDb(), userId);
+    const { connections: current } = decryptConnections(row?.value || {}, userId);
+    const connections = mergeConnections(current, req.body?.connections || req.body || {});
+    await saveUserConnections(settingsDb(), userId, connections);
     res.json({ ok: true, connections: maskConnections(connections) });
   } catch (err) {
+    if (err instanceof SettingsKeyUnavailableError) {
+      return res.status(503).json({ ok: false, error: String(err.message) });
+    }
     console.error("PATCH /api/settings/connections failed:", err);
     res.status(500).json({ ok: false, error: String(err.message || err) });
   }
