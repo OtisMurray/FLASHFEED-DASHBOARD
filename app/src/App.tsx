@@ -79,9 +79,9 @@ export default function App() {
             <Route path="/correlation" element={<CorrelationPage />} />
             <Route path="/prediction-audit" element={<PredictionAuditPage />} />
             <Route path="/system-health" element={<SystemHealthPage />} />
-            {/* Settings mutates keywords, sources and platform credentials, all of
-                which the API now restricts to admins. Gate the page so a non-admin
-                sees one clear message instead of a form that 401s on save. */}
+            {/* Any logged-in account can use Settings (sources, keywords, accounts,
+                config, logs, API keys) — not just admins. RequireAuth just needs a
+                session; there's no separate admin check on this route or its API. */}
             <Route path="/settings"    element={<RequireAuth><SettingsPage /></RequireAuth>} />
           </Routes>
         </Suspense>
