@@ -39,7 +39,12 @@ import {
   loadUserConnections, saveUserConnections, decryptConnections,
   migrateSharedConnections, ensureUserConnectionsIndex,
 } from './lib/userConnections.js'
+import {
+  resolveRuntimeConfig, getRuntimeConfigValue, setRuntimeConfigOverride, clearRuntimeConfigOverride,
+} from './lib/runtimeConfig.js'
+import { installConsoleCapture, getLogEntries } from './lib/logBuffer.js'
 import Screener from './models/Screener.js'
+import ApiKey from './models/ApiKey.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './routes/screener.js'
 import {
   isPositiveMoverRow,
@@ -81,6 +86,8 @@ import {
   promotionDecision as intradayModelPromotionDecision,
   transformIntradayFeatures,
 } from './lib/intradayPredictionModel.js'
+
+installConsoleCapture()   // Logs tab: capture console output from here on, before the first startup log line
 
 const app  = express()
 const PORT = process.env.PORT || 3001
@@ -2035,7 +2042,8 @@ function loadTrackedTickers(limit = TRACKED_TICKER_LIMIT) {
 async function loadArticleStats(db, days = 0) {
   const articles = db.collection("articles")
   const trackedTickers = loadTrackedTickers()
-  const trackedMarketTickers = await loadTrackedMarketTickerSymbols(db, Number(process.env.TRACKED_MARKET_TICKER_LIMIT || 5000))
+  const trackedMarketTickerLimit = await getRuntimeConfigValue(db, "tracked_market_ticker_limit")
+  const trackedMarketTickers = await loadTrackedMarketTickerSymbols(db, trackedMarketTickerLimit)
   // "Total Articles" should mean the same thing the News page shows, not every
   // raw wire item in the window:
   //  - /api/articles already scopes to approved sources (approvedNewsSourceMongoFilter
@@ -9581,7 +9589,38 @@ function cleanConnectionPayload(value = {}) {
       login: cleanSettingText(row.login ?? defaults.login),
     };
   }
+  // Accounts tab: admins can add arbitrary named accounts beyond the 4 built-in
+  // integrations above (POST /api/settings/connections). Those live only in the
+  // stored value, so they must be carried through here too, or a save made
+  // right after loading the page would silently drop them.
+  for (const [key, row] of Object.entries(value)) {
+    if (Object.prototype.hasOwnProperty.call(DEFAULT_CONNECTION_SETTINGS, key)) continue;
+    out[key] = {
+      label: cleanSettingText(row?.label) || key,
+      url: cleanSettingText(row?.url),
+      token: cleanSettingText(row?.token),
+      login: cleanSettingText(row?.login),
+    };
+  }
   return out;
+}
+
+// Lowercase, alphanumeric/underscore key derived from a label, unique against
+// whatever's already stored — mirrors how the 4 built-in keys look
+// (finviz, tradingview, ...) so custom and built-in accounts are indistinguishable
+// to the rest of the connections code.
+function slugifyConnectionKey(label, existingKeys) {
+  const base = String(label || "account")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "account";
+  let key = base;
+  let n = 2;
+  while (existingKeys.has(key)) {
+    key = `${base}_${n}`;
+    n += 1;
+  }
+  return key;
 }
 
 // Fields that are live credentials. These are readable by the server (it needs
@@ -9596,7 +9635,9 @@ const CONNECTION_SECRET_FIELDS = ["token"];
 function maskConnections(resolved) {
   const out = {};
   for (const [key, row] of Object.entries(resolved)) {
-    const masked = { label: row.label, url: row.url, login: row.login };
+    // Built-ins (Finviz/TradingView/Schwab/IB) can be edited but not removed —
+    // the Accounts tab uses this to decide whether to show a Remove button.
+    const masked = { label: row.label, url: row.url, login: row.login, builtin: Object.prototype.hasOwnProperty.call(DEFAULT_CONNECTION_SETTINGS, key) };
     for (const field of CONNECTION_SECRET_FIELDS) {
       const value = row[field] || "";
       masked[`${field}_configured`] = value.length > 0;
@@ -9686,6 +9727,75 @@ app.patch("/api/settings/connections", requireAdmin, async (req, res) => {
       return res.status(503).json({ ok: false, error: String(err.message) });
     }
     console.error("PATCH /api/settings/connections failed:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// POST /api/settings/connections — add a new named account (Accounts tab).
+// The 4 built-ins above cover Finviz/TradingView/Schwab/IB; this is how an
+// admin adds anything else (a Reddit API app, an X/Twitter dev account, ...).
+app.post("/api/settings/connections", requireAdmin, async (req, res) => {
+  try {
+    if (!settingsKeyConfigured()) {
+      return res.status(503).json({ ok: false, error: "Connection storage is not configured on this server (SETTINGS_ENCRYPTION_KEY)." });
+    }
+    const label = cleanSettingText(req.body?.label);
+    if (!label) return res.status(400).json({ ok: false, error: "label is required" });
+
+    const userId = connectionsUserId(req);
+    const row = await loadUserConnections(settingsDb(), userId);
+    const { connections: current } = decryptConnections(row?.value || {}, userId);
+    const existingKeys = new Set([...Object.keys(DEFAULT_CONNECTION_SETTINGS), ...Object.keys(current)]);
+    const key = slugifyConnectionKey(label, existingKeys);
+
+    const next = {
+      ...current,
+      [key]: {
+        label,
+        url: cleanSettingText(req.body?.url),
+        login: cleanSettingText(req.body?.login),
+        token: cleanSettingText(req.body?.token),
+      },
+    };
+    await saveUserConnections(settingsDb(), userId, next);
+    res.status(201).json({ ok: true, key, connections: maskConnections(cleanConnectionPayload(next)) });
+  } catch (err) {
+    if (err instanceof SettingsKeyUnavailableError) {
+      return res.status(503).json({ ok: false, error: String(err.message) });
+    }
+    console.error("POST /api/settings/connections failed:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// DELETE /api/settings/connections/:key — removes a custom account. The 4
+// built-ins can't be removed (they'd just reappear with blank fields on the
+// next load, since cleanConnectionPayload always includes them) — clearing
+// their fields via PATCH is the equivalent for those.
+app.delete("/api/settings/connections/:key", requireAdmin, async (req, res) => {
+  try {
+    if (!settingsKeyConfigured()) {
+      return res.status(503).json({ ok: false, error: "Connection storage is not configured on this server (SETTINGS_ENCRYPTION_KEY)." });
+    }
+    const key = cleanSettingText(decodeURIComponent(req.params.key));
+    if (Object.prototype.hasOwnProperty.call(DEFAULT_CONNECTION_SETTINGS, key)) {
+      return res.status(400).json({ ok: false, error: "This is a built-in integration — clear its fields instead of removing it." });
+    }
+    const userId = connectionsUserId(req);
+    const row = await loadUserConnections(settingsDb(), userId);
+    const { connections: current } = decryptConnections(row?.value || {}, userId);
+    if (!Object.prototype.hasOwnProperty.call(current, key)) {
+      return res.status(404).json({ ok: false, error: "No account with that key." });
+    }
+    const next = { ...current };
+    delete next[key];
+    await saveUserConnections(settingsDb(), userId, next);
+    res.json({ ok: true, deleted: key });
+  } catch (err) {
+    if (err instanceof SettingsKeyUnavailableError) {
+      return res.status(503).json({ ok: false, error: String(err.message) });
+    }
+    console.error("DELETE /api/settings/connections/:key failed:", err);
     res.status(500).json({ ok: false, error: String(err.message || err) });
   }
 });
@@ -9911,6 +10021,60 @@ app.delete("/api/settings/sources/:name", requireAdmin, async (req, res) => {
   }
 });
 
+// ── Config tab: admin-editable operational settings ────────────────────────
+// See lib/runtimeConfig.js — a small, defined set of settings that would
+// otherwise need a Railway env var change + redeploy. The Python RSS pipeline
+// reads the same collection at the start of each fetch cycle.
+app.get("/api/settings/config", requireAdmin, async (req, res) => {
+  try {
+    const config = await resolveRuntimeConfig(settingsDb());
+    res.json({ ok: true, config: Object.values(config) });
+  } catch (err) {
+    console.error("GET /api/settings/config failed:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+app.patch("/api/settings/config", requireAdmin, async (req, res) => {
+  try {
+    const key = cleanSettingText(req.body?.key);
+    if (!key) return res.status(400).json({ ok: false, error: "key is required" });
+    if (req.body?.value === null) {
+      await clearRuntimeConfigOverride(settingsDb(), key);
+    } else {
+      await setRuntimeConfigOverride(settingsDb(), key, req.body?.value);
+    }
+    const config = await resolveRuntimeConfig(settingsDb());
+    res.json({ ok: true, config: Object.values(config) });
+  } catch (err) {
+    console.error("PATCH /api/settings/config failed:", err);
+    res.status(400).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// ── Logs tab: recent in-process console output (see lib/logBuffer.js) ──────
+// Only reflects this server process since its last restart/deploy — there is
+// no Railway API token wired up to pull real deployment logs.
+app.get("/api/settings/logs", requireAdmin, (req, res) => {
+  try {
+    const entries = getLogEntries({ level: req.query.level, limit: req.query.limit });
+    res.json({ ok: true, entries });
+  } catch (err) {
+    console.error("GET /api/settings/logs failed:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// ── API tab: admin-visible aggregate stats for the public /api/v1/* keys ───
+app.get("/api/settings/api-overview", requireAdmin, async (req, res) => {
+  try {
+    const activeKeyCount = await ApiKey.countDocuments({ revoked: false });
+    res.json({ ok: true, active_key_count: activeKeyCount, base_url: `${req.protocol}://${req.get("host")}` });
+  } catch (err) {
+    console.error("GET /api/settings/api-overview failed:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
 
 // FEEDFLASH_SETTINGS_KEYWORDS_ALIAS_PATCH_V1
 app.get('/api/settings/keywords', async (req, res) => {
