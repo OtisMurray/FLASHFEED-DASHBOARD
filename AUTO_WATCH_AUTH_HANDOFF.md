@@ -35,7 +35,7 @@ So this is hygiene, not an incident. It is worth fixing, and worth fixing
 ## The trap: why the API guard cannot ship alone
 
 The obvious one-line fix — add `requireAdminTokenOrSession` to `/api/watch`,
-matching `/api/fetch` four lines above at `index.js:9373-9374` — **breaks the Auto
+matching `/api/fetch` four lines above at `index.js:9411-9412` — **breaks the Auto
 toggle for every anonymous and non-admin visitor**, silently.
 
 Two facts combine:
@@ -51,11 +51,20 @@ Two facts combine:
    bogus X-Admin-Token   → HTTP 503  {"error":"Admin token ... not configured"}  (token path)
    ```
 
-2. The Auto control is **not** admin-gated in the UI. In
-   `app/src/components/shared/TopBar.tsx`, `user` is referenced only at line 696
-   (the login/logout menu); the Controls dropdown holding the Auto toggle renders
-   unconditionally. Confirmed against production anonymously — the nav renders
-   `Controls · Auto · ⚙ · Log In`.
+2. The Auto control is **not** admin-gated in the UI.
+   `app/src/components/shared/TopBar.tsx` does already pull `isAdmin` from
+   `useAuth` (line 191 at time of writing), but uses it in exactly one place — the
+   `SETTINGS_NAV.filter(item => !item.adminOnly || isAdmin)` at line 487, which
+   gates the Settings nav link. The Controls dropdown holding the Auto toggle
+   (`showControls`, line 566) and the `EventSource` call (line 357) are
+   ungated and render for everyone. Confirmed against production anonymously —
+   the nav renders `Controls · Auto · ⚙ · Log In`.
+
+   Line numbers are as of this commit; match on the symbols, not the numbers.
+   Note the precedent: `SETTINGS_NAV` is gated with a raw `isAdmin` filter rather
+   than `AdminOnly`, because it filters a list rather than wrapping an element.
+   The Auto toggle is a single element, so `AdminOnly` is the right primitive
+   there — see step 1.
 
 `EventSource` surfaces only a generic `onerror`, so the failure presents as
 "Auto-watch connection lost" with no cause. It is also invisible in local testing
@@ -77,7 +86,7 @@ Accept header     : text/event-stream
 >>> COOKIE CARRIED BY EventSource: YES
 ```
 
-The session cookie (`routes/auth.js:41-44`) is `httpOnly`, `sameSite: 'lax'`,
+The session cookie (`routes/auth.js:47-52`) is `httpOnly`, `sameSite: 'lax'`,
 `secure` in production, and the stream is same-origin, so it rides along
 automatically. The genuine `EventSource` limitation is **custom headers only** —
 you cannot set `Authorization`; the constructor silently ignores a `headers`
@@ -119,7 +128,7 @@ It is already imported at `index.js:26`. Same commit as step 1.
 
 ### 3. Stop echoing raw error text to SSE clients
 
-`Infrastructure/server/index.js:9433` currently writes upstream exception text
+`Infrastructure/server/index.js:9471` currently writes upstream exception text
 straight to the stream:
 
 ```js
@@ -143,7 +152,7 @@ state, and it is a two-line change while the file is open.
 
 | Location | Status |
 |---|---|
-| `app/src/components/shared/TopBar.tsx:355` | **Live caller** — the SPA that ships |
+| `app/src/components/shared/TopBar.tsx:357` | **Live caller** — the SPA that ships |
 | `frontend/shared/TopBar.tsx:53` | Stale mirror folder; not built, not served |
 | `1_News/backend/fetch.ts:284` | A different server's own route definition, not a caller |
 | `Infrastructure/server/index.js:9415` | The handler itself |
@@ -154,7 +163,7 @@ Zero references in `scripts/`, zero in any `*.sh`, zero cron. Searched for both
 
 ## Related, explicitly out of scope
 
-`/api/position-screener` (`index.js:3632`) is also fully public — it served 162KB
+`/api/position-screener` (`index.js:3670`) is also fully public — it served 162KB
 of position data to an unauthenticated production request on 2026-08-06. That is a
 separate decision about whether dashboard data is public-by-design, not part of
 this ticket. Do not bundle it in.
