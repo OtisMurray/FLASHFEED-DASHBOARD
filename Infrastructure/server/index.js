@@ -2034,9 +2034,34 @@ function loadTrackedTickers(limit = TRACKED_TICKER_LIMIT) {
 
 async function loadArticleStats(db, days = 0) {
   const articles = db.collection("articles")
-  const match = recentArticleMatch(days)
   const trackedTickers = loadTrackedTickers()
   const trackedMarketTickers = await loadTrackedMarketTickerSymbols(db, Number(process.env.TRACKED_MARKET_TICKER_LIMIT || 5000))
+  // "Total Articles" should mean the same thing the News page shows, not every
+  // raw wire item in the window:
+  //  - /api/articles already scopes to approved sources (approvedNewsSourceMongoFilter
+  //    blocks Reuters/Bloomberg/Yahoo Finance/CNBC/etc., see sourceFilter.js), but this
+  //    endpoint never applied that same policy.
+  //  - Approved aggregators like TradingView News Flow relay global wire content
+  //    (e.g. a Reuters filing notice about an LSE-listed stock) tagged with a
+  //    non-US ticker. That's real content, but not part of the market this
+  //    product covers, so it inflated the count far past what the screener
+  //    actually tracks. Untagged articles (broad market news, no single ticker)
+  //    still count — only articles tagged with a ticker outside the tracked
+  //    market universe are excluded.
+  const match = {
+    $and: [
+      recentArticleMatch(days),
+      approvedNewsSourceMongoFilter("source"),
+      {
+        $or: [
+          { ticker: { $exists: false } },
+          { ticker: null },
+          { ticker: "" },
+          { ticker: { $in: trackedMarketTickers } },
+        ],
+      },
+    ],
+  }
 
   const [sources, categories, sentimentRows, tickerRows, total, totalAll] = await Promise.all([
     articles.aggregate([
