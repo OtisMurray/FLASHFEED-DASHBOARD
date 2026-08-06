@@ -52,7 +52,9 @@ import {
 const router = Router()
 
 const CHART_SERVICE_URL = (process.env.CHART_SERVICE_URL || 'http://localhost:5055').replace(/\/+$/, '')
-const CORR_WINDOW_MINUTES = 360
+// Exported so the settings endpoint can report the window the screener actually
+// runs at rather than keeping a second copy of the number.
+export const CORR_WINDOW_MINUTES = 360
 const UNIVERSE_SCAN_LIMIT = Number(process.env.SCREENER_UNIVERSE_SCAN_LIMIT || 6000)
 const DEFAULT_LIMIT = 30
 const MAX_LIMIT = 50                     // chart-service batch cap

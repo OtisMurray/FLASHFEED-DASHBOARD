@@ -17,7 +17,7 @@ import v11ScreenerRouter from './routes/v11Screener.js'
 import v12ScreenerRouter from './routes/v12Screener.js'
 import longTermFundamentalsRouter from './routes/longTermFundamentals.js'
 import squeezeScreenerRouter from './routes/squeezeScreener.js'
-import positionScreenerRouter from './routes/positionScreener.js'
+import positionScreenerRouter, { CORR_WINDOW_MINUTES as POSITION_CORR_WINDOW_MINUTES } from './routes/positionScreener.js'
 import socialRouter      from './routes/social.js'
 import correlationRouter from './routes/correlation.js'
 import settingsRouter    from './routes/settings.js'
@@ -38,6 +38,7 @@ import {
   loadUserConnections, saveUserConnections, decryptConnections,
   migrateSharedConnections, ensureUserConnectionsIndex,
 } from './lib/userConnections.js'
+import { positionPolicySnapshot, POSITION_PARAM_LIMITS } from './lib/positionPolicy.js'
 import {
   SOURCE_TOGGLE_COLLECTION, SOURCE_COLLECTORS, sourceKey,
   buildSourceToggleState, isSourceEnabled, disabledSourceNames,
@@ -9874,6 +9875,46 @@ async function countArticlesForSourceLabel(label) {
   const pattern = parts.length ? parts.join("|") : label;
   return settingsDb().collection("articles").countDocuments({ source: new RegExp(pattern, "i") });
 }
+
+// The investment and risk defaults that already exist, read out of the modules
+// that own them. READ-ONLY, and every number is sourced rather than restated:
+// nothing here is a new setting, and no value is copied into a second home where
+// it could drift from the one the screeners actually run under.
+//
+// /api/position-screener already returns position_policy and rth, but running a
+// whole screener pass to read a handful of constants is not what a settings page
+// should cost, so this serves the same values directly.
+app.get("/api/settings/investment", async (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      position_policy: positionPolicySnapshot(),
+      limits: POSITION_PARAM_LIMITS,
+      corr_window_minutes: POSITION_CORR_WINDOW_MINUTES,
+      position_history: {
+        enabled: POSITION_HISTORY_ENABLED,
+        interval_seconds: Math.round(POSITION_HISTORY_INTERVAL_MS / 1000),
+      },
+      // Named as not-ours rather than omitted. The gate binds on the
+      // chart-service and this service must not mirror its exemption list — a
+      // second copy of a trading gate's config is a copy that can disagree with
+      // the one actually binding.
+      rth: {
+        enforced_by: "chart-service",
+        authoritative_config: "RTH_EXEMPT_TICKERS on the chart-service; not readable from this service",
+        observed_at: "/api/system/health -> rth_gate",
+      },
+      // Stated so the page cannot imply the API sizes positions. It does not.
+      position_sizing: {
+        available: false,
+        note: "No position size is carried anywhere in the API. The Positions page's dollar figures are an illustrative client-side constant.",
+      },
+    })
+  } catch (err) {
+    console.error("GET /api/settings/investment failed:", err)
+    res.status(500).json({ ok: false, error: String(err.message || err) })
+  }
+})
 
 app.get("/api/settings/sources", async (req, res) => {
   try {
