@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useTickerDatalistOptions } from '@/lib/useTickerUniverse'
+import { StockTwitsConnect } from './StockTwitsConnect'
 
 type SocialPost = {
   platform?: string
@@ -489,6 +490,7 @@ export default function SocialPage() {
         <GrokSocialAnalysis />
       ) : (
         <>
+      {active === 'stocktwits' && <StockTwitsConnect />}
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
         {platformCards.map(row => (
           <div key={row.id} className="border border-slate-700 bg-slate-900/60 rounded-lg px-3 py-2">
