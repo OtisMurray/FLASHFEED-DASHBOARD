@@ -2,10 +2,12 @@ import { Router } from 'express'
 import crypto from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
+import mongoose from 'mongoose'
 import User from '../models/User.js'
 import ApiKey from '../models/ApiKey.js'
 import { sendTwoFactorCodeEmail, mailerReady } from '../mailer.js'
 import { sendTwoFactorCodeSms, smsReady } from '../smsSender.js'
+import { getRuntimeConfigValue } from '../lib/runtimeConfig.js'
 
 const router = Router()
 
@@ -26,9 +28,14 @@ const MAX_TWO_FACTOR_ATTEMPTS = 5
 const RESEND_COOLDOWN_MS = 20 * 1000
 
 // Email 2FA is off by default until Gmail SMTP is actually configured and
-// working — set AUTH_REQUIRE_2FA=true once GMAIL_APP_PASSWORD is live to turn
-// the code-email step back on. Login still checks the password either way.
-const REQUIRE_2FA = String(process.env.AUTH_REQUIRE_2FA || 'false').toLowerCase() === 'true'
+// working — set AUTH_REQUIRE_2FA=true (or flip it from the Settings > Config
+// tab, which takes effect immediately, no redeploy) once GMAIL_APP_PASSWORD
+// is live to turn the code-email step back on. Login still checks the
+// password either way. Read per-login rather than once at module load so a
+// Config tab change applies to the very next login attempt.
+async function requireTwoFactor() {
+  return getRuntimeConfigValue(mongoose.connection.db, 'auth_require_2fa')
+}
 
 const publicUser = (u) => ({ username: u.username, email: u.email, role: u.role })
 
@@ -86,7 +93,7 @@ router.post('/login', async (req, res) => {
     const passwordOk = await bcrypt.compare(password, user.passwordHash)
     if (!passwordOk) return invalid()
 
-    if (!REQUIRE_2FA) {
+    if (!(await requireTwoFactor())) {
       user.lastLoginAt = new Date()
       await user.save()
       setSessionCookie(res, user)
