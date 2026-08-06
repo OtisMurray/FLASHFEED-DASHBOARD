@@ -238,9 +238,36 @@ function regexForSource(value) {
   return new RegExp(`^${String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "i");
 }
 
+// Sources an admin switched off in Settings, pushed in by lib/sourceEnabled.js
+// whenever the toggle state is read. Kept here rather than imported so this
+// module stays synchronous and dependency-free — it is called inside request
+// paths that cannot await a Mongo read.
+//
+// DELIBERATELY NOT CONSULTED BY allowedSource(). That function drives the
+// response-shaping middleware, which also covers /api/settings/sources and
+// /api/sources/health — the two endpoints whose entire job is to list a source
+// so an admin can switch it back on. Filtering a disabled source out of those
+// would make the switch one-way. The disable is enforced at query level
+// instead, which is where rankings and summaries are actually computed.
+let runtimeDisabledSources = [];
+
+export function setRuntimeDisabledSources(names = []) {
+  runtimeDisabledSources = Array.from(new Set(
+    (names || []).map(n => String(n || "").trim().toLowerCase()).filter(Boolean)
+  ));
+}
+
+export function runtimeDisabledSourceList() {
+  return [...runtimeDisabledSources];
+}
+
 export function approvedNewsSourceMongoFilter(field = "source") {
   const allow = narrowedByEnv("ENABLED_NEWS_SOURCES", DEFAULT_ALLOWED_NEWS_SOURCES);
-  const block = Array.from(new Set([...DEFAULT_BLOCKED_SOURCES, ...splitEnv("DISABLED_NEWS_SOURCES", [])]));
+  const block = Array.from(new Set([
+    ...DEFAULT_BLOCKED_SOURCES,
+    ...splitEnv("DISABLED_NEWS_SOURCES", []),
+    ...runtimeDisabledSources,
+  ]));
   const parts = [];
 
   if (allow.length) {

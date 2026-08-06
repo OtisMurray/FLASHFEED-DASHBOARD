@@ -150,16 +150,15 @@ test('a source with no collector is reported, not silently dropped', () => {
 
 test('the social gate excludes only the disabled platform', () => {
   const stage = socialPlatformGate(off('Reddit'))
-  const re = stage.$match.platform.$not
-  assert.ok(re.test('Reddit'))
-  assert.ok(re.test('reddit'), 'stored casing is inconsistent, so the match must be case-insensitive')
-  assert.ok(!re.test('StockTwits'))
-  assert.ok(!re.test('Bluesky'))
+  // Gates the canonical _norm_platform socialTimeStages() produces, so the
+  // stored spelling ("reddit", a blank platform with a reddit collector) is
+  // already resolved before this stage sees it.
+  assert.deepEqual(stage, { $match: { _norm_platform: { $nin: ['Reddit'] } } })
 })
 
-test('the social gate does not partial-match a longer platform name', () => {
-  const re = socialPlatformGate(off('Reddit')).$match.platform.$not
-  assert.ok(!re.test('Reddit Archive'), 'anchored, so a differently-named platform survives')
+test('X/Twitter gates the normalized name, not the registry display name', () => {
+  const stage = socialPlatformGate(off('X/Twitter'))
+  assert.deepEqual(stage.$match._norm_platform.$nin, ['Grok/X'])
 })
 
 test('disabling a news source produces no social stage', () => {
@@ -167,10 +166,18 @@ test('disabling a news source produces no social stage', () => {
 })
 
 test('two disabled platforms are both excluded', () => {
-  const re = socialPlatformGate(off('Reddit', 'X/Twitter')).$match.platform.$not
-  assert.ok(re.test('Reddit'))
-  assert.ok(re.test('X/Twitter'))
-  assert.ok(!re.test('Bluesky'))
+  const nin = socialPlatformGate(off('Reddit', 'X/Twitter')).$match._norm_platform.$nin
+  assert.deepEqual(nin.sort(), ['Grok/X', 'Reddit'])
+})
+
+test('every gated platform is one socialTimeStages() can actually produce', () => {
+  // The $switch in socialTimeStages() is the only writer of _norm_platform.
+  // A value outside its vocabulary would gate nothing and fail silently.
+  const PRODUCED = new Set(['ApeWisdom Summary', 'StockTwits', 'Bluesky', 'Reddit', 'Grok/X'])
+  for (const [source, entry] of Object.entries(SOURCE_COLLECTORS)) {
+    if (!entry.platform) continue
+    assert.ok(PRODUCED.has(entry.platform), `${source} gates "${entry.platform}", which _norm_platform never equals`)
+  }
 })
 
 // ── Audit ───────────────────────────────────────────────────────────────────

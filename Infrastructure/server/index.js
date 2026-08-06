@@ -28,7 +28,7 @@ import apiV1Router       from './routes/apiV1.js'
 import stocktwitsRouter  from './routes/stocktwits.js'
 import cookieParser      from 'cookie-parser'
 import { runSmsAlertCheck } from './smsAlerts.js'
-import { allowedSource, approvedNewsSourceMongoFilter } from './sourceFilter.js'
+import { allowedSource, approvedNewsSourceMongoFilter, setRuntimeDisabledSources } from './sourceFilter.js'
 import { dedupeWatcherSeries, loadWatcherFeatureMap, persistWatcherSnapshot } from './lib/watcherSnapshots.js'
 import { socialTickerEvidenceStages } from './lib/socialTickerEvidence.js'
 import { predictionModelStatus } from './lib/predictionModelStatus.js'
@@ -796,6 +796,7 @@ app.get('/api/ai/ticker/:ticker', async (req, res) => {
       }).sort({ publish_date: -1, fetched_date: -1, detected_at: -1 }).limit(120).toArray(),
       db.collection('socials').aggregate([
         ...socialTimeStages(),
+        ...socialGateStages(),
         { $match: { _event_sec: { $gte: sinceSocialSec }, _ticker_candidates: ticker } },
         { $sort: { _event_sec: -1 } },
         { $limit: 20 },
@@ -2205,6 +2206,7 @@ async function loadSocialStatsForTickers(db, tickers = [], windowMinutes = 1440)
   const sinceSec = Math.floor(Date.now() / 1000) - Math.max(1, Number(windowMinutes || 1440)) * 60
   const rows = await db.collection("socials").aggregate([
     ...socialTimeStages(),
+    ...socialGateStages(),
     { $match: { _event_sec: { $gte: sinceSec } } },
     // ApeWisdom rows are mention counts, not messages — excluded so they never
     // inflate `count` / `bullish` / `bearish` for any threshold that reads them.
@@ -3873,6 +3875,7 @@ app.get("/api/momentum/:ticker/details", async (req, res) => {
 
     const socialRows = await db.collection("socials").aggregate([
       ...socialTimeStages(),
+      ...socialGateStages(),
       { $match: { _ticker_candidates: ticker } },
       { $sort: { _event_sec: -1 } },
       { $limit: 12 },
@@ -4359,6 +4362,7 @@ app.get("/api/social/rolling", async (req, res) => {
 
     const pipeline = [
       ...socialTimeStages(),
+      ...socialGateStages(),
       { $match: { _event_sec: { $gte: sinceSec, $lte: maxEventSec } } },
       {
         $match: {
@@ -4444,6 +4448,7 @@ app.get("/api/social/rolling", async (req, res) => {
 
     const platformStatusPipeline = [
       ...socialTimeStages(),
+      ...socialGateStages(),
       // Same bound as the rows pipeline — otherwise the per-platform counts and
       // "latest post" times would still be driven by rows the caller can't see.
       { $match: { _event_sec: { $gte: sinceSec, $lte: maxEventSec }, _norm_platform: { $ne: "Unstructured" } } },
@@ -4532,6 +4537,7 @@ async function buildLocalGrokSocialAnalysis(db, ticker, context = "") {
     db.collection("screeners").findOne({ ticker: cleanTicker }),
     db.collection("socials").aggregate([
       ...socialTimeStages(),
+      ...socialGateStages(),
       { $match: { _event_sec: { $gte: sinceSec }, _ticker_candidates: cleanTicker } },
       // Mention-count rows read as real posts once they are in an LLM prompt
       // ("$ORCL is #16 on Reddit by mentions"), so keep them out of the sample
@@ -4671,6 +4677,7 @@ app.get("/api/social/series/:ticker", async (req, res) => {
 
     const rows = await db.collection("socials").aggregate([
       ...socialTimeStages(),
+      ...socialGateStages(),
       { $match: { _event_sec: { $gte: sinceSec } } },
       // Mention-count rows must not appear as message density in the series.
       { $match: { _is_ape_summary: { $ne: true } } },
@@ -5821,6 +5828,7 @@ async function chartSocialSeries(db, ticker, windowMinutes, bucketMinutes, optio
   const bucketSec = bucketMinutes * 60
   const rows = await db.collection("socials").aggregate([
     ...socialTimeStages(),
+    ...socialGateStages(),
     { $match: { _event_sec: { $gte: sinceSec } } },
     { $match: { _event_sec: { $lte: endSec } } },
     // Mention-count rows must not appear as message density in the chart series
@@ -6315,6 +6323,7 @@ async function tickerSocialPlatformMetric(db, ticker, platform, windowHours = 72
   const sinceSec = Math.floor(Date.now() / 1000) - Math.max(1, Number(windowHours || 72)) * 3600
   const rows = await db.collection("socials").aggregate([
     ...socialTimeStages(),
+    ...socialGateStages(),
     {
       $match: {
         _event_sec: { $gte: sinceSec },
@@ -6351,6 +6360,7 @@ async function tickerSocialRumor(db, ticker, windowHours = 72) {
   const sinceSec = Math.floor(Date.now() / 1000) - Math.max(1, Number(windowHours || 72)) * 3600
   const rows = await db.collection("socials").aggregate([
     ...socialTimeStages(),
+    ...socialGateStages(),
     {
       $match: {
         _event_sec: { $gte: sinceSec },
@@ -6914,6 +6924,7 @@ app.get(["/api/sentiment/audit", "/api/sentiment/snapshot"], async (req, res) =>
       ]).toArray(),
       db.collection("socials").aggregate([
         ...socialTimeStages(),
+        ...socialGateStages(),
         { $match: { _event_sec: { $gte: socialSinceSec }, _ticker_candidates: { $ne: [] } } },
         // Synthetic mention-count rows carry a canned Bullish/Neutral label that
         // would skew the audit's sentiment totals.
@@ -7174,6 +7185,7 @@ app.get("/api/prediction/features", async (req, res) => {
       ]).toArray(),
       db.collection("socials").aggregate([
         ...socialTimeStages(),
+        ...socialGateStages(),
         ...socialTickerCandidateStages(),
         { $match: { _event_sec: { $gte: sinceSec }, _ticker_candidates: { $in: tickers } } },
         // Keep mention-count rows out of `social_count`, which feeds the
@@ -8075,6 +8087,7 @@ app.get("/api/social/rolling/stats", async (req, res) => {
 
     const rows = await db.collection("socials").aggregate([
       ...socialTimeStages(),
+      ...socialGateStages(),
       { $match: { _event_sec: { $gte: sinceSec } } },
       {
         $match: {
@@ -8228,7 +8241,14 @@ async function ensureRuntimeIndexes() {
 
   await migrateConnectionsOnBoot()
 
+  // Publish the disabled-source list before the first request. The news read
+  // path is synchronous and takes what it was last given, so without this a
+  // freshly booted server would serve one round of rankings that still counted
+  // a source an admin switched off before the restart.
+  await loadSourceToggleState({ force: true }).catch(() => {})
+
   await Promise.allSettled([
+    db.collection(SOURCE_TOGGLE_COLLECTION).createIndex({ key: 1 }, { unique: true }),
     db.collection("articles").createIndex({ ticker: 1, detected_at: -1 }),
     db.collection("articles").createIndex({ ticker: 1, fetched_date: -1 }),
     db.collection("articles").createIndex({ source: 1, fetched_date: -1 }),
@@ -9517,6 +9537,10 @@ async function loadSourceToggleState({ force = false } = {}) {
   try {
     const rows = await settingsDb().collection(SOURCE_TOGGLE_COLLECTION).find({}).toArray()
     sourceToggleCache = { state: buildSourceToggleState(rows), loadedAt: Date.now() }
+    // The news read path is synchronous and cannot await this read, so the
+    // answer is pushed to it here — one owner of the state, one place it is
+    // published from.
+    setRuntimeDisabledSources(disabledSourceNames(sourceToggleCache.state))
   } catch (err) {
     console.warn('source toggles unreadable, keeping last known state:', err?.message || err)
     sourceToggleCache = { ...sourceToggleCache, loadedAt: Date.now() }
@@ -9536,11 +9560,22 @@ function settingsActor(req) {
 /**
  * Social aggregation stages for the disabled-platform gate.
  *
- * Spread into a pipeline: `...await socialGateStages()`. Empty array when
- * nothing is disabled, so the pipeline is byte-identical to what it was.
+ * Spread into a pipeline: `...socialGateStages()`. Empty array when nothing is
+ * disabled, so the pipeline stays byte-identical to what it was.
+ *
+ * Synchronous on purpose. These stages are built inside pipeline literals, some
+ * of them inside Promise.all arrays, and making a dozen of those await a Mongo
+ * read would serialise work that currently runs in parallel. It reads the same
+ * cache every other consumer reads, which is refreshed on boot, on every
+ * settings read, on every toggle PATCH and at the top of every refresh cycle —
+ * and kicks off a background refresh when that cache is stale, so a quiet
+ * server still converges without any caller waiting on it.
  */
-async function socialGateStages() {
-  const stage = socialPlatformGate(await loadSourceToggleState())
+function socialGateStages() {
+  if (Date.now() - sourceToggleCache.loadedAt >= SOURCE_TOGGLE_CACHE_MS) {
+    loadSourceToggleState().catch(() => {})
+  }
+  const stage = socialPlatformGate(sourceToggleCache.state)
   return stage ? [stage] : []
 }
 

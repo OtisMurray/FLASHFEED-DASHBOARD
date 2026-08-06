@@ -137,7 +137,9 @@ export const SOURCE_COLLECTORS = Object.freeze({
   },
   'X/Twitter': {
     env: { SOCIAL_INCLUDE_X: 'false' },
-    platform: 'X/Twitter',
+    // socialTimeStages() normalizes every X/Twitter spelling to "Grok/X", so
+    // that — not the registry's display name — is what the read gate matches.
+    platform: 'Grok/X',
     writer: 'fetch_social_to_mongo.py::_fetch_x_ticker -> socials',
   },
   // Rows exist in `articles` from an earlier import; nothing in this service
@@ -234,6 +236,12 @@ export function collectorGate(state) {
 /**
  * `$match` stage excluding disabled social platforms, or null when none are.
  *
+ * Matches `_norm_platform`, not the raw `platform` field. socialTimeStages()
+ * already resolves every stored spelling — "reddit" vs "Reddit", "bsky" vs
+ * "bluesky", the collector field when platform is blank — into one canonical
+ * value, so gating on it reuses that work instead of writing a second, weaker
+ * copy of it here. It therefore MUST be spread after socialTimeStages().
+ *
  * Returning null rather than a match-everything stage is load-bearing: an
  * always-present stage would change every social aggregation's plan even with
  * nothing disabled, and the point of this module is that the default costs
@@ -246,11 +254,7 @@ export function socialPlatformGate(state) {
     if (collector?.platform) platforms.push(collector.platform)
   }
   if (!platforms.length) return null
-  // Stored platform casing is inconsistent ("reddit" and "Reddit" both occur —
-  // see the reddit-archive casing split), so match case-insensitively rather
-  // than listing every spelling.
-  const pattern = platforms.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
-  return { $match: { platform: { $not: new RegExp(`^(${pattern})$`, 'i') } } }
+  return { $match: { _norm_platform: { $nin: Array.from(new Set(platforms)) } } }
 }
 
 /** Source names the ingestion gate cannot act on — surfaced, never swallowed. */
