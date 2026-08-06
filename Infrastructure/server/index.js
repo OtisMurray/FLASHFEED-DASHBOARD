@@ -38,6 +38,11 @@ import {
   loadUserConnections, saveUserConnections, decryptConnections,
   migrateSharedConnections, ensureUserConnectionsIndex,
 } from './lib/userConnections.js'
+import {
+  SOURCE_TOGGLE_COLLECTION, SOURCE_COLLECTORS, sourceKey,
+  buildSourceToggleState, isSourceEnabled, disabledSourceNames,
+  sourceToggleAudit, collectorGate, socialPlatformGate,
+} from './lib/sourceEnabled.js'
 import Screener from './models/Screener.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './routes/screener.js'
 import {
@@ -9460,6 +9465,56 @@ function settingsDb() {
   return d
 }
 
+// ── Source toggles ──────────────────────────────────────────────────────────
+// One cached read of the stored on/off state, shared by the ingestion gate, the
+// read gate and the settings API so all three can never disagree about whether
+// a source is on.
+//
+// The cache exists because the social read gate consults this per aggregation.
+// It is short (5s) and invalidated synchronously by the PATCH handler, so an
+// admin flipping a toggle sees it take effect on their next request rather than
+// up to five seconds later.
+//
+// Fails OPEN. If the collection cannot be read we return the last good state,
+// or an empty one on a cold start — a Mongo hiccup must not silently switch
+// every source off mid-cycle.
+let sourceToggleCache = { state: buildSourceToggleState([]), loadedAt: 0 }
+const SOURCE_TOGGLE_CACHE_MS = 5000
+
+async function loadSourceToggleState({ force = false } = {}) {
+  if (!force && Date.now() - sourceToggleCache.loadedAt < SOURCE_TOGGLE_CACHE_MS) {
+    return sourceToggleCache.state
+  }
+  try {
+    const rows = await settingsDb().collection(SOURCE_TOGGLE_COLLECTION).find({}).toArray()
+    sourceToggleCache = { state: buildSourceToggleState(rows), loadedAt: Date.now() }
+  } catch (err) {
+    console.warn('source toggles unreadable, keeping last known state:', err?.message || err)
+    sourceToggleCache = { ...sourceToggleCache, loadedAt: Date.now() }
+  }
+  return sourceToggleCache.state
+}
+
+function invalidateSourceToggleCache() {
+  sourceToggleCache = { ...sourceToggleCache, loadedAt: 0 }
+}
+
+/** Who made a settings change, for the audit stamp. Never a credential. */
+function settingsActor(req) {
+  return String(req?.user?.username || req?.user?.email || 'admin-token')
+}
+
+/**
+ * Social aggregation stages for the disabled-platform gate.
+ *
+ * Spread into a pipeline: `...await socialGateStages()`. Empty array when
+ * nothing is disabled, so the pipeline is byte-identical to what it was.
+ */
+async function socialGateStages() {
+  const stage = socialPlatformGate(await loadSourceToggleState())
+  return stage ? [stage] : []
+}
+
 const DEFAULT_SIGNAL_KEYWORDS = [
   ["earnings", "fundamental"],
   ["ipo", "fundamental"],
@@ -9764,19 +9819,51 @@ app.get("/api/settings/sources", async (req, res) => {
       db.collection("source_favorites").find({}).toArray(),
     ])
     const favSet = new Set(favDocs.map(f => f.name))
+    const toggles = await loadSourceToggleState({ force: true })
 
     const structured = [];
     for (const s of PROFESSOR_STRUCTURED_SOURCES) {
       structured.push({
         ...s,
         is_favorite: favSet.has(s.source),
+        // Fixed sources are disabled, never deleted — `editable: false` above
+        // has always meant "no delete", and now there is something to do
+        // instead of nothing.
+        enabled: isSourceEnabled(toggles, s.source),
         count: await countArticlesForSourceLabel(s.source)
       });
     }
 
+    // Every source the registry knows about, with its switch and who last threw
+    // it. Broader than `structured`, which only lists the eleven newswire-shaped
+    // ones and so cannot represent the social sources at all.
+    const registry = readConfigJson("professor_source_registry.json").map(entry => {
+      const collector = SOURCE_COLLECTORS[entry.source] || {}
+      return {
+        source: entry.source,
+        key: sourceKey(entry.source),
+        type: entry.type,
+        collection: entry.collection,
+        registry_status: entry.status,
+        auth_required: Boolean(entry.auth_required),
+        env_var: entry.env_var || null,
+        enabled: isSourceEnabled(toggles, entry.source),
+        // Server-side ingestion is shared, so is its switch. Said out loud
+        // because the same page also edits per-user connection credentials.
+        scope: "global",
+        // An honest "this toggle stops the read path but there is nothing left
+        // to stop collecting", rather than implying a collector that does not
+        // exist.
+        has_collector: Boolean(collector.script || collector.env || collector.rssFeeds || collector.unstructured),
+        audit: sourceToggleAudit(toggles, entry.source),
+      }
+    })
+
     res.json({
       ok: true,
       structured,
+      registry,
+      disabled_sources: disabledSourceNames(toggles),
       favorites: Array.from(favSet),
       custom_rss_sources: custom.map(s => ({
         id: String(s._id),
@@ -9787,7 +9874,9 @@ app.get("/api/settings/sources", async (req, res) => {
         enabled: s.enabled !== false,
         is_favorite: favSet.has(s.name),
         status: s.enabled === false ? "disabled" : "enabled",
-        editable: true
+        scope: "global",
+        editable: true,
+        audit: s.updated_by ? { enabled: s.enabled !== false, updated_at: s.updated_at ?? null, updated_by: s.updated_by } : null,
       }))
     });
   } catch (err) {
@@ -9842,8 +9931,8 @@ app.post("/api/settings/sources", requireAdmin, async (req, res) => {
     await settingsDb().collection("rss_sources").updateOne(
       { name },
       {
-        $set: { name, url, category, enabled: true, updated_at: now },
-        $setOnInsert: { created_at: now }
+        $set: { name, url, category, enabled: true, updated_at: now, updated_by: settingsActor(req) },
+        $setOnInsert: { created_at: now, created_by: settingsActor(req) }
       },
       { upsert: true }
     );
@@ -9855,13 +9944,65 @@ app.post("/api/settings/sources", requireAdmin, async (req, res) => {
   }
 });
 
+// Registry-source on/off. Separate path from the custom-RSS routes below
+// because these are different things: a custom feed is a row someone added and
+// may delete, a registry source is fixed and may only be switched.
+//
+// Upsert rather than update: a source that has never been touched has no row,
+// and the first flip is what creates one.
+app.patch("/api/settings/source-toggles/:key", requireAdmin, async (req, res) => {
+  try {
+    const key = sourceKey(decodeURIComponent(req.params.key))
+    const known = readConfigJson("professor_source_registry.json").find(e => sourceKey(e.source) === key)
+    if (!known) return res.status(404).json({ ok: false, error: "Unknown source." })
+    if (typeof req.body?.enabled !== "boolean") {
+      return res.status(400).json({ ok: false, error: "enabled must be true or false" })
+    }
+
+    const enabled = req.body.enabled
+    const now = Math.floor(Date.now() / 1000)
+    const actor = settingsActor(req)
+    await settingsDb().collection(SOURCE_TOGGLE_COLLECTION).updateOne(
+      { key },
+      {
+        $set: { key, source: known.source, enabled, updated_at: now, updated_by: actor },
+        $setOnInsert: { created_at: now },
+      },
+      { upsert: true },
+    )
+    // Synchronous, so the response already reflects the new state rather than
+    // the caller seeing their own change up to a cache window later.
+    invalidateSourceToggleCache()
+    const toggles = await loadSourceToggleState({ force: true })
+    const gate = collectorGate(toggles)
+
+    res.json({
+      ok: true,
+      source: known.source,
+      key,
+      enabled,
+      audit: sourceToggleAudit(toggles, known.source),
+      // What this actually switched off, so the UI can say so instead of
+      // implying an effect it cannot verify.
+      effect: {
+        skipped_collectors: Array.from(gate.skipScripts),
+        collector_env: gate.extraEnv,
+        unmapped: gate.unmapped,
+      },
+    })
+  } catch (err) {
+    console.error("PATCH /api/settings/source-toggles/:key failed:", err)
+    res.status(500).json({ ok: false, error: String(err.message || err) })
+  }
+})
+
 app.patch("/api/settings/sources/:name", requireAdmin, async (req, res) => {
   try {
     const name = cleanSettingText(decodeURIComponent(req.params.name));
     const enabled = req.body.enabled !== false;
     const result = await settingsDb().collection("rss_sources").updateOne(
       { name },
-      { $set: { enabled, updated_at: Math.floor(Date.now() / 1000) } }
+      { $set: { enabled, updated_at: Math.floor(Date.now() / 1000), updated_by: settingsActor(req) } }
     );
     res.json({ ok: true, matched: result.matchedCount, modified: result.modifiedCount });
   } catch (err) {
@@ -9901,7 +10042,11 @@ app.get('/api/settings/keywords', async (req, res) => {
         category: r.category || 'custom',
         enabled: r.enabled !== false && r.active !== false,
         active: r.enabled !== false && r.active !== false,
-        hits: r.hits || 0
+        hits: r.hits || 0,
+        // Null for the seeded defaults and for anything changed before the
+        // stamp existed — an absent actor is shown as absent, not guessed at.
+        updated_at: r.updated_at ?? null,
+        updated_by: r.updated_by ?? null
       }))
     })
   } catch (err) {
@@ -9921,8 +10066,8 @@ app.post('/api/settings/keywords', requireAdmin, async (req, res) => {
     await settingsDb().collection('keywords').updateOne(
       { keyword },
       {
-        $set: { keyword, word: keyword, category, enabled: true, active: true, updated_at: now },
-        $setOnInsert: { hits: 0, created_at: now }
+        $set: { keyword, word: keyword, category, enabled: true, active: true, updated_at: now, updated_by: settingsActor(req) },
+        $setOnInsert: { hits: 0, created_at: now, created_by: settingsActor(req) }
       },
       { upsert: true }
     )
@@ -9941,7 +10086,7 @@ app.patch('/api/settings/keywords/:keyword', requireAdmin, async (req, res) => {
 
     const result = await settingsDb().collection('keywords').updateOne(
       { $or: [{ keyword }, { word: keyword }] },
-      { $set: { enabled, active: enabled, updated_at: Math.floor(Date.now() / 1000) } }
+      { $set: { enabled, active: enabled, updated_at: Math.floor(Date.now() / 1000), updated_by: settingsActor(req) } }
     )
 
     res.json({ ok: true, matched: result.matchedCount, modified: result.modifiedCount })
