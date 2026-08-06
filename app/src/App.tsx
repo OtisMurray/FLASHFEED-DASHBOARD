@@ -79,9 +79,11 @@ export default function App() {
             <Route path="/correlation" element={<CorrelationPage />} />
             <Route path="/prediction-audit" element={<PredictionAuditPage />} />
             <Route path="/system-health" element={<SystemHealthPage />} />
-            {/* Settings mutates keywords, sources and platform credentials, all of
-                which the API now restricts to admins. Gate the page so a non-admin
-                sees one clear message instead of a form that 401s on save. */}
+            {/* Admin-only, and it must stay in step with the API: every
+                /api/settings/* route is requireAdmin. Guarding this route with
+                RequireAuth instead would let a non-admin reach a page that
+                renders and then answers 403 to every call it makes, which is
+                the failure this guard exists to prevent. */}
             <Route path="/settings"    element={<RequireAdmin><SettingsPage /></RequireAdmin>} />
           </Routes>
         </Suspense>

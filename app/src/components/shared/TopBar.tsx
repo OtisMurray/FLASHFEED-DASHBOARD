@@ -41,8 +41,11 @@ const NAV = [
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
 ]
-// `adminOnly` entries are filtered out for everyone else — the page behind them
-// is gated by RequireAdmin, so linking there would only lead to a refusal.
+// Entries without adminOnly are gated by RequireAuth on their route rather
+// than filtered out of this list — a logged-out visitor who clicks one is sent
+// to /login instead of the item just not being shown. Settings is different:
+// it is admin-only end to end, so a non-admin is not offered a door that can
+// only answer 403.
 const SETTINGS_NAV = [
   { href: '/settings', label: 'Settings', adminOnly: true },
   { href: '/watchlist', label: 'Watchlist' },

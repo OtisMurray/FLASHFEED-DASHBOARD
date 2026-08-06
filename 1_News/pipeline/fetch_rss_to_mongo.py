@@ -322,6 +322,34 @@ _SEC_CIK_TICKER_MAP: dict[str, str] | None = None
 _PUBLIC_COMPANY_ALIAS_MAP: dict[str, str] | None = None
 
 
+def _load_runtime_config_overrides() -> None:
+    """Apply admin-saved Settings > Config overrides for this run.
+
+    Mirrors Infrastructure/server/lib/runtimeConfig.js's storage shape
+    (single doc, collection "runtime_config", _id "overrides", {values: {key: value}})
+    so a value saved from the Config tab reaches the next fetch cycle without
+    a redeploy — the same pattern already used below for keywords/rss_sources,
+    just read once per process instead of per document.
+    """
+    global ARTICLE_CACHE_DAYS, FILTER_TO_MARKET_WINDOW, RSS_FAST_MODE
+    try:
+        doc = db["runtime_config"].find_one({"_id": "overrides"})
+        values = (doc or {}).get("values") or {}
+    except Exception as exc:
+        print(f"[WARN] could not read runtime_config overrides: {exc}")
+        return
+
+    if "article_cache_days" in values:
+        ARTICLE_CACHE_DAYS = max(1, int(values["article_cache_days"]))
+    if "market_window_filter" in values:
+        FILTER_TO_MARKET_WINDOW = bool(values["market_window_filter"])
+    if "rss_fast_mode" in values:
+        RSS_FAST_MODE = bool(values["rss_fast_mode"])
+
+
+_load_runtime_config_overrides()
+
+
 def _load_public_company_alias_map() -> dict[str, str]:
     """Build a lightweight company-name resolver from the current screener universe."""
     global _PUBLIC_COMPANY_ALIAS_MAP

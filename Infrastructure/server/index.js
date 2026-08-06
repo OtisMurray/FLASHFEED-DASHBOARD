@@ -2,6 +2,7 @@ import 'dotenv/config'
 import express from 'express'
 import mongoose from 'mongoose'
 import cors    from 'cors'
+import compression from 'compression'   // gzip/brotli response compression — transport-only, no effect on any computed values
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -44,7 +45,12 @@ import {
   buildSourceToggleState, isSourceEnabled, disabledSourceNames,
   sourceToggleAudit, collectorGate, socialPlatformGate,
 } from './lib/sourceEnabled.js'
+import {
+  resolveRuntimeConfig, getRuntimeConfigValue, setRuntimeConfigOverride, clearRuntimeConfigOverride,
+} from './lib/runtimeConfig.js'
+import { installConsoleCapture, getLogEntries } from './lib/logBuffer.js'
 import Screener from './models/Screener.js'
+import ApiKey from './models/ApiKey.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './routes/screener.js'
 import {
   isPositiveMoverRow,
@@ -86,6 +92,8 @@ import {
   promotionDecision as intradayModelPromotionDecision,
   transformIntradayFeatures,
 } from './lib/intradayPredictionModel.js'
+
+installConsoleCapture()   // Logs tab: capture console output from here on, before the first startup log line
 
 const app  = express()
 const PORT = process.env.PORT || 3001
@@ -248,6 +256,10 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS || 'http://localhost:5173,http://
   .map(s => s.trim())
   .filter(Boolean)
 app.use(cors({ origin: CORS_ORIGINS }))
+// Speed: gzip/brotli-compress every JSON response above ~1KB. Pure HTTP
+// transport optimization — it compresses bytes on the wire, it does not
+// touch, reorder, or recompute anything the routes below produce.
+app.use(compression())
 app.use(express.json({ limit: '2mb' }))
 app.use(cookieParser())   // reads the httpOnly session cookie for /api/auth/me
 
@@ -2107,9 +2119,35 @@ function loadTrackedTickers(limit = TRACKED_TICKER_LIMIT) {
 
 async function loadArticleStats(db, days = 0) {
   const articles = db.collection("articles")
-  const match = recentArticleMatch(days)
   const trackedTickers = loadTrackedTickers()
-  const trackedMarketTickers = await loadTrackedMarketTickerSymbols(db, Number(process.env.TRACKED_MARKET_TICKER_LIMIT || 5000))
+  const trackedMarketTickerLimit = await getRuntimeConfigValue(db, "tracked_market_ticker_limit")
+  const trackedMarketTickers = await loadTrackedMarketTickerSymbols(db, trackedMarketTickerLimit)
+  // "Total Articles" should mean the same thing the News page shows, not every
+  // raw wire item in the window:
+  //  - /api/articles already scopes to approved sources (approvedNewsSourceMongoFilter
+  //    blocks Reuters/Bloomberg/Yahoo Finance/CNBC/etc., see sourceFilter.js), but this
+  //    endpoint never applied that same policy.
+  //  - Approved aggregators like TradingView News Flow relay global wire content
+  //    (e.g. a Reuters filing notice about an LSE-listed stock) tagged with a
+  //    non-US ticker. That's real content, but not part of the market this
+  //    product covers, so it inflated the count far past what the screener
+  //    actually tracks. Untagged articles (broad market news, no single ticker)
+  //    still count — only articles tagged with a ticker outside the tracked
+  //    market universe are excluded.
+  const match = {
+    $and: [
+      recentArticleMatch(days),
+      approvedNewsSourceMongoFilter("source"),
+      {
+        $or: [
+          { ticker: { $exists: false } },
+          { ticker: null },
+          { ticker: "" },
+          { ticker: { $in: trackedMarketTickers } },
+        ],
+      },
+    ],
+  }
 
   const [sources, categories, sentimentRows, tickerRows, total, totalAll] = await Promise.all([
     articles.aggregate([
@@ -9677,7 +9715,38 @@ function cleanConnectionPayload(value = {}) {
       login: cleanSettingText(row.login ?? defaults.login),
     };
   }
+  // Accounts tab: admins can add arbitrary named accounts beyond the 4 built-in
+  // integrations above (POST /api/settings/connections). Those live only in the
+  // stored value, so they must be carried through here too, or a save made
+  // right after loading the page would silently drop them.
+  for (const [key, row] of Object.entries(value)) {
+    if (Object.prototype.hasOwnProperty.call(DEFAULT_CONNECTION_SETTINGS, key)) continue;
+    out[key] = {
+      label: cleanSettingText(row?.label) || key,
+      url: cleanSettingText(row?.url),
+      token: cleanSettingText(row?.token),
+      login: cleanSettingText(row?.login),
+    };
+  }
   return out;
+}
+
+// Lowercase, alphanumeric/underscore key derived from a label, unique against
+// whatever's already stored — mirrors how the 4 built-in keys look
+// (finviz, tradingview, ...) so custom and built-in accounts are indistinguishable
+// to the rest of the connections code.
+function slugifyConnectionKey(label, existingKeys) {
+  const base = String(label || "account")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "account";
+  let key = base;
+  let n = 2;
+  while (existingKeys.has(key)) {
+    key = `${base}_${n}`;
+    n += 1;
+  }
+  return key;
 }
 
 // Fields that are live credentials. These are readable by the server (it needs
@@ -9692,7 +9761,9 @@ const CONNECTION_SECRET_FIELDS = ["token"];
 function maskConnections(resolved) {
   const out = {};
   for (const [key, row] of Object.entries(resolved)) {
-    const masked = { label: row.label, url: row.url, login: row.login };
+    // Built-ins (Finviz/TradingView/Schwab/IB) can be edited but not removed —
+    // the Accounts tab uses this to decide whether to show a Remove button.
+    const masked = { label: row.label, url: row.url, login: row.login, builtin: Object.prototype.hasOwnProperty.call(DEFAULT_CONNECTION_SETTINGS, key) };
     for (const field of CONNECTION_SECRET_FIELDS) {
       const value = row[field] || "";
       masked[`${field}_configured`] = value.length > 0;
@@ -9728,9 +9799,18 @@ function mergeConnections(stored = {}, incoming = {}) {
   return out;
 }
 
-// Connections are stored per user and encrypted at rest. requireAdmin still
-// gates both verbs — the per-user split narrows what a compromised session can
-// reach, it does not replace the guard.
+// Connections are stored per user and encrypted at rest. requireAdmin gates
+// every verb, and the per-user storage means each account only ever
+// reads/writes its own saved connections, never anyone else's.
+//
+// MERGE NOTE (origin/main #16 "Open Settings to any logged-in account"): that
+// commit flipped every /api/settings/* route here to requireAuth. This merge
+// deliberately keeps requireAdmin on all of them, because these routes mutate
+// platform credentials, the source registry and runtime config — shared state
+// that is not the caller's to change just because they hold an account. The
+// per-user encryption limits blast radius on connections specifically, but it
+// does nothing for sources, keywords or config. Flipping back is a one-word
+// change per route; do it deliberately rather than by re-merging.
 //
 // 503 rather than 500 when the key is missing: the request is well formed and
 // the caller is authorised, the server is just not configured to handle
@@ -9782,6 +9862,75 @@ app.patch("/api/settings/connections", requireAdmin, async (req, res) => {
       return res.status(503).json({ ok: false, error: String(err.message) });
     }
     console.error("PATCH /api/settings/connections failed:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// POST /api/settings/connections — add a new named account (Accounts tab).
+// The 4 built-ins above cover Finviz/TradingView/Schwab/IB; this is how an
+// admin adds anything else (a Reddit API app, an X/Twitter dev account, ...).
+app.post("/api/settings/connections", requireAdmin, async (req, res) => {
+  try {
+    if (!settingsKeyConfigured()) {
+      return res.status(503).json({ ok: false, error: "Connection storage is not configured on this server (SETTINGS_ENCRYPTION_KEY)." });
+    }
+    const label = cleanSettingText(req.body?.label);
+    if (!label) return res.status(400).json({ ok: false, error: "label is required" });
+
+    const userId = connectionsUserId(req);
+    const row = await loadUserConnections(settingsDb(), userId);
+    const { connections: current } = decryptConnections(row?.value || {}, userId);
+    const existingKeys = new Set([...Object.keys(DEFAULT_CONNECTION_SETTINGS), ...Object.keys(current)]);
+    const key = slugifyConnectionKey(label, existingKeys);
+
+    const next = {
+      ...current,
+      [key]: {
+        label,
+        url: cleanSettingText(req.body?.url),
+        login: cleanSettingText(req.body?.login),
+        token: cleanSettingText(req.body?.token),
+      },
+    };
+    await saveUserConnections(settingsDb(), userId, next);
+    res.status(201).json({ ok: true, key, connections: maskConnections(cleanConnectionPayload(next)) });
+  } catch (err) {
+    if (err instanceof SettingsKeyUnavailableError) {
+      return res.status(503).json({ ok: false, error: String(err.message) });
+    }
+    console.error("POST /api/settings/connections failed:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// DELETE /api/settings/connections/:key — removes a custom account. The 4
+// built-ins can't be removed (they'd just reappear with blank fields on the
+// next load, since cleanConnectionPayload always includes them) — clearing
+// their fields via PATCH is the equivalent for those.
+app.delete("/api/settings/connections/:key", requireAdmin, async (req, res) => {
+  try {
+    if (!settingsKeyConfigured()) {
+      return res.status(503).json({ ok: false, error: "Connection storage is not configured on this server (SETTINGS_ENCRYPTION_KEY)." });
+    }
+    const key = cleanSettingText(decodeURIComponent(req.params.key));
+    if (Object.prototype.hasOwnProperty.call(DEFAULT_CONNECTION_SETTINGS, key)) {
+      return res.status(400).json({ ok: false, error: "This is a built-in integration — clear its fields instead of removing it." });
+    }
+    const userId = connectionsUserId(req);
+    const row = await loadUserConnections(settingsDb(), userId);
+    const { connections: current } = decryptConnections(row?.value || {}, userId);
+    if (!Object.prototype.hasOwnProperty.call(current, key)) {
+      return res.status(404).json({ ok: false, error: "No account with that key." });
+    }
+    const next = { ...current };
+    delete next[key];
+    await saveUserConnections(settingsDb(), userId, next);
+    res.json({ ok: true, deleted: key });
+  } catch (err) {
+    if (err instanceof SettingsKeyUnavailableError) {
+      return res.status(503).json({ ok: false, error: String(err.message) });
+    }
+    console.error("DELETE /api/settings/connections/:key failed:", err);
     res.status(500).json({ ok: false, error: String(err.message || err) });
   }
 });
@@ -10133,6 +10282,60 @@ app.delete("/api/settings/sources/:name", requireAdmin, async (req, res) => {
   }
 });
 
+// ── Config tab: admin-editable operational settings ────────────────────────
+// See lib/runtimeConfig.js — a small, defined set of settings that would
+// otherwise need a Railway env var change + redeploy. The Python RSS pipeline
+// reads the same collection at the start of each fetch cycle.
+app.get("/api/settings/config", requireAdmin, async (req, res) => {
+  try {
+    const config = await resolveRuntimeConfig(settingsDb());
+    res.json({ ok: true, config: Object.values(config) });
+  } catch (err) {
+    console.error("GET /api/settings/config failed:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+app.patch("/api/settings/config", requireAdmin, async (req, res) => {
+  try {
+    const key = cleanSettingText(req.body?.key);
+    if (!key) return res.status(400).json({ ok: false, error: "key is required" });
+    if (req.body?.value === null) {
+      await clearRuntimeConfigOverride(settingsDb(), key);
+    } else {
+      await setRuntimeConfigOverride(settingsDb(), key, req.body?.value);
+    }
+    const config = await resolveRuntimeConfig(settingsDb());
+    res.json({ ok: true, config: Object.values(config) });
+  } catch (err) {
+    console.error("PATCH /api/settings/config failed:", err);
+    res.status(400).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// ── Logs tab: recent in-process console output (see lib/logBuffer.js) ──────
+// Only reflects this server process since its last restart/deploy — there is
+// no Railway API token wired up to pull real deployment logs.
+app.get("/api/settings/logs", requireAdmin, (req, res) => {
+  try {
+    const entries = getLogEntries({ level: req.query.level, limit: req.query.limit });
+    res.json({ ok: true, entries });
+  } catch (err) {
+    console.error("GET /api/settings/logs failed:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// ── API tab: admin-visible aggregate stats for the public /api/v1/* keys ───
+app.get("/api/settings/api-overview", requireAdmin, async (req, res) => {
+  try {
+    const activeKeyCount = await ApiKey.countDocuments({ revoked: false });
+    res.json({ ok: true, active_key_count: activeKeyCount, base_url: `${req.protocol}://${req.get("host")}` });
+  } catch (err) {
+    console.error("GET /api/settings/api-overview failed:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
 
 // FEEDFLASH_SETTINGS_KEYWORDS_ALIAS_PATCH_V1
 app.get('/api/settings/keywords', async (req, res) => {

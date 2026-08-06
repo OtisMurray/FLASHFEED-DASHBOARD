@@ -9,13 +9,29 @@ import { KeywordsTab } from './settings/KeywordsTab'
 import { ConnectionsTab, type DecryptError } from './settings/ConnectionsTab'
 import { InvestmentTab, type InvestmentSettings } from './settings/InvestmentTab'
 import { AccountTab } from './settings/AccountTab'
+import { ConfigTab } from './settings/ConfigTab'
+import { LogsTab } from './settings/LogsTab'
+import { ApiTab } from './settings/ApiTab'
+import { ImpersonateTab } from './settings/ImpersonateTab'
 
+// The first five own the page's shared load (see below). The last four arrived
+// with origin/main's parallel rebuild, each self-loading from an endpoint no
+// other tab reads, so they stay self-loading rather than being forced through
+// the shared fetch for symmetry's sake.
+//
+// "Scraping", not "Impersonate": the tab explains curl-impersonate's TLS
+// fingerprinting for blocked feeds and has nothing to do with impersonating a
+// user. The id keeps the original word so existing links still resolve.
 const TABS = [
   { id: 'sources', label: 'Sources' },
   { id: 'keywords', label: 'Keywords & catalyst rules' },
   { id: 'connections', label: 'Connections & logins' },
   { id: 'investment', label: 'Investment & risk' },
   { id: 'account', label: 'Account' },
+  { id: 'config', label: 'Config' },
+  { id: 'logs', label: 'Logs' },
+  { id: 'api', label: 'API' },
+  { id: 'impersonate', label: 'Scraping' },
 ] as const
 
 type TabId = typeof TABS[number]['id']
@@ -29,11 +45,20 @@ const isTabId = (v: string | null): v is TabId => TABS.some(t => t.id === v)
  * lands where the reader was, rather than dropping them back on Sources after
  * every save.
  *
- * All five tabs share one load. They read overlapping data — the Sources tab
- * needs both the registry and the health rows, and the Connections tab's status
- * badges depend on the same connections response — so loading per tab would
- * mean the same endpoints being hit several times and, worse, two tabs able to
- * disagree about the same source.
+ * The first five tabs share one load. They read overlapping data — the Sources
+ * tab needs both the registry and the health rows, and the Connections tab's
+ * status badges depend on the same connections response — so loading per tab
+ * would mean the same endpoints being hit several times and, worse, two tabs
+ * able to disagree about the same source. Config, Logs, API and Scraping each
+ * read an endpoint nobody else reads, so they load themselves.
+ *
+ * MERGE NOTE: origin/main's rebuild also shipped an AccountsTab, a second UI
+ * over the same /api/settings/connections store. It is not carried here —
+ * two tabs writing one credential store is a way to lose a token, and that
+ * one held complete secrets in component state, which Connections is
+ * deliberately built to avoid. The one thing it could do that Connections
+ * cannot is add an arbitrary new connection row; that capability is still
+ * owed.
  */
 export function SettingsPage() {
   const [params, setParams] = useSearchParams()
@@ -178,6 +203,14 @@ export function SettingsPage() {
       {tab === 'investment' && <InvestmentTab settings={investment} />}
 
       {tab === 'account' && <AccountTab />}
+
+      {tab === 'config' && <ConfigTab />}
+
+      {tab === 'logs' && <LogsTab />}
+
+      {tab === 'api' && <ApiTab />}
+
+      {tab === 'impersonate' && <ImpersonateTab />}
     </div>
   )
 }
