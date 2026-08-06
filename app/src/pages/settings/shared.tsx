@@ -66,6 +66,13 @@ export type ConnectionRow = {
   login: string
   token_configured?: boolean
   token_last4?: string
+  /**
+   * One of the four integrations the system ships with. The server stamps this
+   * on every masked row. Built-ins cannot be removed — cleanConnectionPayload
+   * always re-includes them, so a delete would only produce a blank row on the
+   * next load; clearing their fields is the equivalent.
+   */
+  builtin?: boolean
 }
 
 export type ConnectionSettings = Record<string, ConnectionRow>

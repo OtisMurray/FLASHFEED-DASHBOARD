@@ -9678,12 +9678,22 @@ function cleanKeyword(v) {
   return cleanSettingText(v).toLowerCase();
 }
 
+// Seeded from the environment so a provider configured at the platform level
+// reports as configured instead of looking absent.
+//
+// FINVIZ_AUTH_TOKEN comes first because it is the variable the collectors
+// actually read — 2_Screener/pipeline/fetch_finviz_elite_to_mongo.py takes
+// FINVIZ_AUTH_TOKEN (falling back to FINVIZ_TOKEN), and chart-service's
+// finviz_auth.py takes FINVIZ_LOGIN/FINVIZ_PASSWORD. Seeding only from
+// FINVIZ_TOKEN meant production showed Finviz as "Not configured" while Finviz
+// ingestion was working perfectly, because the tab was reading a variable
+// nothing sets. FINVIZ_LOGIN is used for the login field for the same reason.
 const DEFAULT_CONNECTION_SETTINGS = {
   finviz: {
     label: "Finviz Elite",
     url: process.env.FINVIZ_URL || "https://elite.finviz.com/screener",
-    token: process.env.FINVIZ_TOKEN || "",
-    login: "",
+    token: process.env.FINVIZ_AUTH_TOKEN || process.env.FINVIZ_TOKEN || "",
+    login: process.env.FINVIZ_LOGIN || process.env.FINVIZ_EMAIL || "",
   },
   tradingview: {
     label: "TradingView",

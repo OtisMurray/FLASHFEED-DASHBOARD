@@ -67,6 +67,11 @@ export function ConnectionsTab({
   const [tokenDrafts, setTokenDrafts] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState<string | null>(null)
 
+  // New-connection form. Held apart from `connections` so a half-typed row is
+  // never mistaken for a stored one, and the token follows the same write-only
+  // rule as the drafts above: it exists only until the POST returns.
+  const [draftRow, setDraftRow] = useState({ label: '', url: '', login: '', token: '' })
+
   const brokenKeys = new Set(decryptErrors.map(e => e.connection))
 
   const statusFor = (key: string, row: ConnectionRow): Status => {
@@ -119,6 +124,53 @@ export function ConnectionsTab({
       if (data.connections) setConnections(data.connections)
       setTokenDrafts(prev => ({ ...prev, [key]: '' }))
       onSaved(`${connections[key]?.label || key} credential cleared`)
+    } catch (e) {
+      onError(String((e as Error).message || e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  // Adds a connection the system does not ship with — a second brokerage, a
+  // data provider that is not one of the four built-ins. The server derives the
+  // key by slugifying the label and de-duplicating it, so two rows called the
+  // same thing become e.g. schwab and schwab_2 rather than one overwriting the
+  // other.
+  const addConnection = async () => {
+    const label = draftRow.label.trim()
+    if (!label) return
+    setBusy('__new__')
+    try {
+      const data = await jsonFetch('/api/settings/connections', {
+        method: 'POST',
+        body: JSON.stringify({
+          label,
+          url: draftRow.url.trim(),
+          login: draftRow.login.trim(),
+          token: draftRow.token,
+        }),
+      })
+      if (data.connections) setConnections(data.connections)
+      setDraftRow({ label: '', url: '', login: '', token: '' })
+      onSaved(`${label} added`)
+    } catch (e) {
+      onError(String((e as Error).message || e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  // Removes a custom row entirely, credential included. Built-ins are refused
+  // by the server and have no button here.
+  const removeConnection = async (key: string, label: string) => {
+    setBusy(key)
+    try {
+      await jsonFetch(`/api/settings/connections/${encodeURIComponent(key)}`, { method: 'DELETE' })
+      const rest = { ...connections }
+      delete rest[key]
+      setConnections(rest)
+      setTokenDrafts(prev => { const next = { ...prev }; delete next[key]; return next })
+      onSaved(`${label} removed`)
     } catch (e) {
       onError(String((e as Error).message || e))
     } finally {
@@ -222,6 +274,18 @@ export function ConnectionsTab({
           >
             Disconnect
           </button>
+          {/* Disconnect clears the credential and keeps the row; Remove takes
+              the row with it. Only custom rows can go — a built-in would be
+              re-created blank on the next load, so the server refuses it. */}
+          {!row.builtin && (
+            <button
+              onClick={() => removeConnection(key, row.label)}
+              disabled={busy === key}
+              className="border border-red-500/40 text-red-300 hover:text-red-200 rounded px-3 py-1.5 text-xs disabled:opacity-40"
+            >
+              Remove
+            </button>
+          )}
         </div>
       </div>
     )
@@ -241,8 +305,22 @@ export function ConnectionsTab({
     <div className="space-y-6">
       <Section
         title="System providers"
-        hint="Credentials the dashboard's own collectors use. Stored against your account and encrypted at rest — the server never sends a saved token back to the browser."
+        hint="Credentials for the providers the dashboard's own collectors use. Stored against your account and encrypted at rest — the server never sends a saved token back to the browser."
       >
+        {/* Said plainly because the alternative is worse: someone pastes a
+            working token, sees "Configured", and concludes ingestion is fixed
+            when nothing about it changed. The collectors are separate
+            processes reading their own environment; they have never read this
+            store, and no save or refresh here will reach them. */}
+        <div className="border border-yellow-500/40 bg-yellow-500/10 text-yellow-200 rounded p-3 text-xs mb-3">
+          <span className="font-medium">Saving here does not switch a provider on.</span>{' '}
+          The collectors run as separate services and read their credentials from the server
+          environment — <span className="font-mono">FINVIZ_AUTH_TOKEN</span> and{' '}
+          <span className="font-mono">FINVIZ_LOGIN</span>/<span className="font-mono">FINVIZ_PASSWORD</span> on
+          Railway. What is stored here is kept per account and encrypted, and the badge below reflects
+          the environment the server is running with. Changing what the collectors use is still a
+          platform variable change and a redeploy.
+        </div>
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">{system.map(renderRow)}</div>
       </Section>
 
@@ -251,6 +329,59 @@ export function ConnectionsTab({
         hint="Your own broker credentials. Separate from the system providers above: these are not used to collect the shared feeds."
       >
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">{personal.map(renderRow)}</div>
+      </Section>
+
+      <Section
+        title="Add a connection"
+        hint="For a provider or brokerage the dashboard does not ship with. Stored against your account and encrypted the same way as the rows above; the token is sent once and never returned."
+        right={<ScopeTag scope="user" />}
+      >
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+          <input
+            value={draftRow.label}
+            onChange={e => setDraftRow(prev => ({ ...prev, label: e.target.value }))}
+            placeholder="Name (e.g. Schwab)"
+            className={inputCls}
+            aria-label="New connection name"
+          />
+          <input
+            value={draftRow.url}
+            onChange={e => setDraftRow(prev => ({ ...prev, url: e.target.value }))}
+            placeholder="URL (optional)"
+            className={inputCls}
+            aria-label="New connection URL"
+          />
+          <input
+            value={draftRow.login}
+            onChange={e => setDraftRow(prev => ({ ...prev, login: e.target.value }))}
+            placeholder="Login (optional)"
+            className={inputCls}
+            aria-label="New connection login"
+          />
+          <input
+            value={draftRow.token}
+            onChange={e => setDraftRow(prev => ({ ...prev, token: e.target.value }))}
+            placeholder="Token / API key (optional)"
+            type="password"
+            autoComplete="new-password"
+            className={inputCls}
+            aria-label="New connection token"
+          />
+        </div>
+        <div className="mt-3">
+          <button
+            onClick={addConnection}
+            disabled={!draftRow.label.trim() || busy === '__new__'}
+            className="bg-sky-700 text-white rounded px-4 py-2 text-sm disabled:opacity-40"
+          >
+            {busy === '__new__' ? 'Adding…' : 'Add connection'}
+          </button>
+          <p className="text-[11px] text-neutral mt-2">
+            Only the name is required — a row can be created first and its credential added later.
+            The name becomes its key, and a duplicate name is numbered rather than overwriting the
+            row already there.
+          </p>
+        </div>
       </Section>
 
       <Section
