@@ -158,7 +158,7 @@ export function ConnectionsTab({
     const status = statusFor(key, row)
     const draft = tokenDrafts[key] || ''
     return (
-      <div key={key} className="border border-border rounded p-3 bg-bg/40">
+      <div key={key} data-connection={key} className="border border-border rounded p-3 bg-bg/40">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
           <div className="flex items-center gap-2 min-w-0">
             <span className="text-sm text-white truncate">{row.label}</span>
