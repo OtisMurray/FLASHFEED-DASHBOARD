@@ -1,7 +1,7 @@
 import express from 'express'
 import mongoose from 'mongoose'
 import Article from '../models/Article.js'
-import { approvedNewsSourceMongoFilter } from '../sourceFilter.js'
+import { approvedNewsSourceMongoFilter, disabledSourceMongoFilter } from '../sourceFilter.js'
 
 const router = express.Router()
 const MARKET_WINDOW_TIME_ZONE = process.env.MARKET_WINDOW_TIMEZONE || 'America/New_York'
@@ -755,9 +755,15 @@ router.get('/recent-lite', async (req, res) => {
     const scanLimit = tickerOnly
       ? Math.max(pageLimit * 100, Math.floor(Number(process.env.ARTICLE_RECENT_LITE_TICKER_SCAN_LIMIT || 3000) || 3000))
       : Math.max(pageLimit * 20, 300)
+    // Only the sources an admin switched off, NOT the full source policy. This
+    // feed intentionally carries no policy — one index scan, nothing else — and
+    // adding the policy here would change what it shows today. This adds
+    // nothing at all until something is disabled.
+    const disabledFilter = disabledSourceMongoFilter('source')
     const rawRows = await Article.collection.find({
       suppress_from_main_news: { $ne: true },
       feed_sort_time: { $gte: cutoffSec },
+      ...(disabledFilter || {}),
     })
       .project(ARTICLE_LIST_PROJECTION)
       .sort({ feed_sort_time: -1 })

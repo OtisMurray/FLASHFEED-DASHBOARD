@@ -149,6 +149,77 @@ const watcherSnapshotStatus = {
 // default to. The trade set is a function of these parameters, so recording a
 // user's slider position would produce a second, incompatible history — the
 // unified view's sliders are a live what-if and are deliberately not persisted.
+// ── Source toggles ──────────────────────────────────────────────────────────
+// One cached read of the stored on/off state, shared by the ingestion gate, the
+// read gate and the settings API so all three can never disagree about whether
+// a source is on.
+//
+// The cache exists because the social read gate consults this per aggregation.
+// It is short (5s) and invalidated synchronously by the PATCH handler, so an
+// admin flipping a toggle sees it take effect on their next request rather than
+// up to five seconds later.
+//
+// Fails OPEN. If the collection cannot be read we return the last good state,
+// or an empty one on a cold start — a Mongo hiccup must not silently switch
+// every source off mid-cycle.
+let sourceToggleCache = { state: buildSourceToggleState([]), loadedAt: 0 }
+const SOURCE_TOGGLE_CACHE_MS = 5000
+
+async function loadSourceToggleState({ force = false } = {}) {
+  if (!force && Date.now() - sourceToggleCache.loadedAt < SOURCE_TOGGLE_CACHE_MS) {
+    return sourceToggleCache.state
+  }
+  try {
+    // mongoose.connection.db directly rather than settingsDb(): that helper is
+    // scoped to start(), and this has to be reachable from the read paths and
+    // the boot sequence, which are both defined outside it.
+    const db = mongoose.connection.db
+    if (!db) throw new Error('MongoDB connection is not ready')
+    const rows = await db.collection(SOURCE_TOGGLE_COLLECTION).find({}).toArray()
+    sourceToggleCache = { state: buildSourceToggleState(rows), loadedAt: Date.now() }
+    // The news read path is synchronous and cannot await this read, so the
+    // answer is pushed to it here — one owner of the state, one place it is
+    // published from.
+    setRuntimeDisabledSources(disabledSourceNames(sourceToggleCache.state))
+  } catch (err) {
+    console.warn('source toggles unreadable, keeping last known state:', err?.message || err)
+    sourceToggleCache = { ...sourceToggleCache, loadedAt: Date.now() }
+  }
+  return sourceToggleCache.state
+}
+
+function invalidateSourceToggleCache() {
+  sourceToggleCache = { ...sourceToggleCache, loadedAt: 0 }
+}
+
+/** Who made a settings change, for the audit stamp. Never a credential. */
+function settingsActor(req) {
+  return String(req?.user?.username || req?.user?.email || 'admin-token')
+}
+
+/**
+ * Social aggregation stages for the disabled-platform gate.
+ *
+ * Spread into a pipeline: `...socialGateStages()`. Empty array when nothing is
+ * disabled, so the pipeline stays byte-identical to what it was.
+ *
+ * Synchronous on purpose. These stages are built inside pipeline literals, some
+ * of them inside Promise.all arrays, and making a dozen of those await a Mongo
+ * read would serialise work that currently runs in parallel. It reads the same
+ * cache every other consumer reads, which is refreshed on boot, on every
+ * settings read, on every toggle PATCH and at the top of every refresh cycle —
+ * and kicks off a background refresh when that cache is stale, so a quiet
+ * server still converges without any caller waiting on it.
+ */
+function socialGateStages() {
+  if (Date.now() - sourceToggleCache.loadedAt >= SOURCE_TOGGLE_CACHE_MS) {
+    loadSourceToggleState().catch(() => {})
+  }
+  const stage = socialPlatformGate(sourceToggleCache.state)
+  return stage ? [stage] : []
+}
+
+
 const POSITION_HISTORY_ENABLED = !['0', 'false', 'no'].includes(String(process.env.POSITION_HISTORY_ENABLED || 'true').toLowerCase())
 const POSITION_HISTORY_INTERVAL_MS = Math.max(60_000, Number(process.env.POSITION_HISTORY_INTERVAL_MS || 5 * 60_000))
 // Capped at 50: the chart-service batch endpoint hard-truncates above that
@@ -9513,71 +9584,6 @@ function settingsDb() {
   const d = mongoose.connection.db
   if (!d) throw new Error('MongoDB connection is not ready')
   return d
-}
-
-// ── Source toggles ──────────────────────────────────────────────────────────
-// One cached read of the stored on/off state, shared by the ingestion gate, the
-// read gate and the settings API so all three can never disagree about whether
-// a source is on.
-//
-// The cache exists because the social read gate consults this per aggregation.
-// It is short (5s) and invalidated synchronously by the PATCH handler, so an
-// admin flipping a toggle sees it take effect on their next request rather than
-// up to five seconds later.
-//
-// Fails OPEN. If the collection cannot be read we return the last good state,
-// or an empty one on a cold start — a Mongo hiccup must not silently switch
-// every source off mid-cycle.
-let sourceToggleCache = { state: buildSourceToggleState([]), loadedAt: 0 }
-const SOURCE_TOGGLE_CACHE_MS = 5000
-
-async function loadSourceToggleState({ force = false } = {}) {
-  if (!force && Date.now() - sourceToggleCache.loadedAt < SOURCE_TOGGLE_CACHE_MS) {
-    return sourceToggleCache.state
-  }
-  try {
-    const rows = await settingsDb().collection(SOURCE_TOGGLE_COLLECTION).find({}).toArray()
-    sourceToggleCache = { state: buildSourceToggleState(rows), loadedAt: Date.now() }
-    // The news read path is synchronous and cannot await this read, so the
-    // answer is pushed to it here — one owner of the state, one place it is
-    // published from.
-    setRuntimeDisabledSources(disabledSourceNames(sourceToggleCache.state))
-  } catch (err) {
-    console.warn('source toggles unreadable, keeping last known state:', err?.message || err)
-    sourceToggleCache = { ...sourceToggleCache, loadedAt: Date.now() }
-  }
-  return sourceToggleCache.state
-}
-
-function invalidateSourceToggleCache() {
-  sourceToggleCache = { ...sourceToggleCache, loadedAt: 0 }
-}
-
-/** Who made a settings change, for the audit stamp. Never a credential. */
-function settingsActor(req) {
-  return String(req?.user?.username || req?.user?.email || 'admin-token')
-}
-
-/**
- * Social aggregation stages for the disabled-platform gate.
- *
- * Spread into a pipeline: `...socialGateStages()`. Empty array when nothing is
- * disabled, so the pipeline stays byte-identical to what it was.
- *
- * Synchronous on purpose. These stages are built inside pipeline literals, some
- * of them inside Promise.all arrays, and making a dozen of those await a Mongo
- * read would serialise work that currently runs in parallel. It reads the same
- * cache every other consumer reads, which is refreshed on boot, on every
- * settings read, on every toggle PATCH and at the top of every refresh cycle —
- * and kicks off a background refresh when that cache is stale, so a quiet
- * server still converges without any caller waiting on it.
- */
-function socialGateStages() {
-  if (Date.now() - sourceToggleCache.loadedAt >= SOURCE_TOGGLE_CACHE_MS) {
-    loadSourceToggleState().catch(() => {})
-  }
-  const stage = socialPlatformGate(sourceToggleCache.state)
-  return stage ? [stage] : []
 }
 
 const DEFAULT_SIGNAL_KEYWORDS = [

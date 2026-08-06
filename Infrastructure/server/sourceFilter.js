@@ -212,6 +212,19 @@ export function allowedSource(src) {
     return false;
   }
 
+  // Sources switched off in Settings. Needed here as well as in the Mongo
+  // filter below: routes like /api/articles/recent-lite deliberately keep their
+  // query minimal and lean on this middleware for source policy, so a check
+  // that only lived in the query would leave the Overview news feed still
+  // showing a source an admin had turned off.
+  //
+  // Safe only because /api/settings and /api/sources bypass this middleware
+  // entirely — see shouldBypassSourceFilter. Without that, disabling a source
+  // would remove it from the very page that has to offer the switch back.
+  if (runtimeDisabledSources.some(x => src.includes(x) || x.includes(src))) {
+    return false;
+  }
+
   if (enabledSources.length) {
     return enabledSources.some(x => src.includes(x) || x.includes(src));
   }
@@ -259,6 +272,25 @@ export function setRuntimeDisabledSources(names = []) {
 
 export function runtimeDisabledSourceList() {
   return [...runtimeDisabledSources];
+}
+
+/**
+ * Mongo filter excluding only the sources switched off in Settings, or null
+ * when none are.
+ *
+ * Separate from approvedNewsSourceMongoFilter because it is far narrower. Some
+ * feeds — /api/articles/recent-lite most of all — deliberately keep their query
+ * to a single index scan and carry no source policy. Handing them the full
+ * policy would change what they return today; handing them this changes nothing
+ * until an admin disables something, which is the only reason it is safe to add
+ * to a working feed.
+ */
+export function disabledSourceMongoFilter(field = "source") {
+  if (!runtimeDisabledSources.length) return null;
+  const pattern = runtimeDisabledSources
+    .map(x => String(x).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  return { [field]: { $not: new RegExp(pattern, "i") } };
 }
 
 export function approvedNewsSourceMongoFilter(field = "source") {
@@ -388,6 +420,17 @@ function shouldBypassSourceFilter(path) {
     "/api/auto-refresh",
     "/api/status",
     "/api/health",
+    // Configuration surfaces, not article feeds. These exist to list every
+    // source — including the ones this filter blocks — so an operator can see
+    // and change its state. Shaping their responses by source policy would make
+    // the switch one-way: disable a source and it vanishes from the page that
+    // offers the only way to re-enable it.
+    //
+    // Listed defensively. applySourceFilterMiddleware is not installed by this
+    // service today, so nothing here currently runs; the entries exist so that
+    // installing it later cannot quietly break the settings page.
+    "/api/settings",
+    "/api/sources",
   ].some(prefix => path === prefix || path.startsWith(`${prefix}/`));
 }
 

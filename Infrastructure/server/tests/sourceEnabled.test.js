@@ -216,3 +216,26 @@ test('every social registry entry carries a platform, and only those do', () => 
     }
   }
 })
+
+// ── The narrow filter the policy-free feeds take ────────────────────────────
+
+test('the disabled-source Mongo filter is null until something is disabled', async () => {
+  const { setRuntimeDisabledSources, disabledSourceMongoFilter } = await import('../sourceFilter.js')
+  setRuntimeDisabledSources([])
+  assert.equal(disabledSourceMongoFilter('source'), null,
+    'a feed with no source policy must be handed nothing at all by default')
+})
+
+test('the disabled-source Mongo filter excludes exactly what was disabled', async () => {
+  const { setRuntimeDisabledSources, disabledSourceMongoFilter } = await import('../sourceFilter.js')
+  try {
+    setRuntimeDisabledSources(disabledSourceNames(off('GlobeNewswire Public Companies')))
+    const re = disabledSourceMongoFilter('source').source.$not
+    assert.ok(re.test('GlobeNewswire Public Companies'))
+    assert.ok(!re.test('PR Newswire'))
+    assert.ok(!re.test('FDA Recalls'))
+  } finally {
+    // Module-level state: leaving it set would leak into any later test.
+    setRuntimeDisabledSources([])
+  }
+})
