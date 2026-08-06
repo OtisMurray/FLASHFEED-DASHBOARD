@@ -8029,9 +8029,14 @@ app.post("/api/social/fetch", async (req, res) => {
   }
 
   try {
+    // The other way social rows get collected, so it takes the same gate as the
+    // refresh cycle. Without this, a platform switched off in Settings would
+    // keep ingesting every time someone opened a ticker.
+    const { extraEnv: socialGate } = collectorGate(await loadSourceToggleState())
     const result = await runPythonScriptForRoute("1_News/pipeline/fetch_social_to_mongo.py", {
       timeout: 45000,
       extraEnv: {
+        ...socialGate,
         SOCIAL_TICKERS: ticker,
         SOCIAL_MAX_TICKERS: "1",
         SOCIAL_MAX_WORKERS: "1",
@@ -8923,6 +8928,30 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
   const fastMode = refreshMode !== "full"
   const beforeArticles = await db.collection("articles").countDocuments()
   const beforeSocial = await db.collection("socials").countDocuments()
+
+  // ── Disabled sources ──────────────────────────────────────────────────────
+  // Read once per cycle so every script in the batch below sees the same
+  // answer. A source switched off in Settings either loses its spawn entirely
+  // or is switched off inside the collector it shares with others; the gate
+  // decides which, this function does not.
+  //
+  // Forced read rather than the 5s cache: a cycle is the unit of work this
+  // gates, and starting one on a stale answer would collect from a source an
+  // admin has already turned off.
+  const sourceToggles = await loadSourceToggleState({ force: true })
+  const gate = collectorGate(sourceToggles)
+  if (gate.unmapped.length) {
+    // Loud, because it means a source is off in the UI and still ingesting.
+    console.warn(`refresh: no collector mapping for disabled source(s): ${gate.unmapped.join(", ")}`)
+  }
+  // Every script gets the whole env: each reads only the variable addressed to
+  // it, and routing per script is one more place for the mapping to drift.
+  // The call site wins on collision so nothing already passed is overwritten.
+  const runGated = (scriptPath, options = {}) =>
+    gate.skipScripts.has(scriptPath)
+      ? Promise.resolve(skippedPythonResult(scriptPath, "source disabled in Settings"))
+      : runPythonScript(scriptPath, { ...options, extraEnv: { ...gate.extraEnv, ...(options.extraEnv || {}) } })
+
   const socialExtraEnv = {
     SOCIAL_TICKER_SOURCE: "momentum",
     SOCIAL_MOMENTUM_LIMIT: process.env.SOCIAL_MOMENTUM_LIMIT || "40",
@@ -8977,37 +9006,37 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
   if (ohlcvHydrationDue) lastOhlcvHydrationAt = Date.now()
 
   const [finvizElite, tradingViewScreener, quotes, structured, tradingView, benzinga, ibkrNews, schwabSignals, unstructured, social, ohlcvHydration] = await Promise.all([
-    runPythonScript("2_Screener/pipeline/fetch_finviz_elite_to_mongo.py", {
+    runGated("2_Screener/pipeline/fetch_finviz_elite_to_mongo.py", {
       timeout: fastMode ? 25000 : 90000,
       extraEnv: { FINVIZ_MAX_WORKERS: process.env.FINVIZ_MAX_WORKERS || (fastMode ? "12" : "6") },
     }),
     fastMode
       ? Promise.resolve(skippedPythonResult("TradingView numeric screener"))
-      : runPythonScript("2_Screener/pipeline/fetch_tradingview_screener_to_mongo.py", { timeout: 90000 }),
-    runPythonScript("1_News/pipeline/fetch_quotes_to_mongo.py", {
+      : runGated("2_Screener/pipeline/fetch_tradingview_screener_to_mongo.py", { timeout: 90000 }),
+    runGated("1_News/pipeline/fetch_quotes_to_mongo.py", {
       timeout: fastMode ? 20000 : 90000,
       extraEnv: quoteExtraEnv,
     }),
-    runPythonScript("1_News/pipeline/fetch_rss_to_mongo.py", {
+    runGated("1_News/pipeline/fetch_rss_to_mongo.py", {
       timeout: fastMode ? 22000 : 180000,
       extraEnv: fastMode
         ? { RSS_FAST_MODE: "1", RSS_MAX_WORKERS: process.env.RSS_MAX_WORKERS || "32", RSS_HTTP_TIMEOUT: process.env.RSS_HTTP_TIMEOUT || "5" }
         : { RSS_MAX_WORKERS: process.env.RSS_MAX_WORKERS || "16" },
     }),
-    runPythonScript("1_News/pipeline/fetch_tradingview_to_mongo.py", {
+    runGated("1_News/pipeline/fetch_tradingview_to_mongo.py", {
       timeout: fastMode ? 20000 : 90000,
       extraEnv: tradingViewExtraEnv,
     }),
-    runPythonScript("1_News/pipeline/fetch_benzinga_to_mongo.py", {
+    runGated("1_News/pipeline/fetch_benzinga_to_mongo.py", {
       timeout: fastMode ? 25000 : 90000,
     }),
     fastMode
       ? Promise.resolve(skippedPythonResult("IBKR News"))
-      : runPythonScript("1_News/pipeline/fetch_ibkr_news_to_mongo.py", { timeout: 30000 }),
+      : runGated("1_News/pipeline/fetch_ibkr_news_to_mongo.py", { timeout: 30000 }),
     fastMode
       ? Promise.resolve(skippedPythonResult("Schwab signals"))
-      : runPythonScript("2_Screener/pipeline/fetch_schwab_signals_to_mongo.py", { timeout: 30000 }),
-    runPythonScript("1_News/pipeline/fetch_unstructured_news_titles_to_mongo.py", {
+      : runGated("2_Screener/pipeline/fetch_schwab_signals_to_mongo.py", { timeout: 30000 }),
+    runGated("1_News/pipeline/fetch_unstructured_news_titles_to_mongo.py", {
       timeout: fastMode ? 25000 : 90000,
       extraEnv: fastMode
         ? {
@@ -9020,7 +9049,7 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
             ...(trackedMarketTickers.length ? { TRACKED_TICKERS: trackedMarketTickers.join(",") } : {}),
           },
     }),
-    runPythonScript("1_News/pipeline/fetch_social_to_mongo.py", {
+    runGated("1_News/pipeline/fetch_social_to_mongo.py", {
       timeout: fastMode ? 20000 : 90000,
       extraEnv: socialExtraEnv,
     }),
@@ -9039,7 +9068,7 @@ async function runDataRefreshCycle(db, { socialMode = "top_momentum", mode = "fa
     (Date.now() - lastShortInterestEstimateAt) >= SHORT_INTEREST_ESTIMATE_INTERVAL_MS
   const shortInterestStartedAt = Date.now()
   const shortInterestEstimates = shortInterestEstimateDue
-    ? await runPythonScript("2_Screener/pipeline/fetch_short_interest_estimates_to_mongo.py", {
+    ? await runGated("2_Screener/pipeline/fetch_short_interest_estimates_to_mongo.py", {
         timeout: Number(process.env.SHORT_INTEREST_ESTIMATE_TIMEOUT_MS || 120000),
       })
     : skippedPythonResult("Short interest estimates", "FINRA data is daily; next estimate not due yet")

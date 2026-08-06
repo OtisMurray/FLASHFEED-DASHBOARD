@@ -521,6 +521,21 @@ def _runtime_rss_feeds():
         ("GlobeNewswire Public Companies", "globenewswire://search", "press_releases"),
     ])
     feeds.append(("ACCESS Newswire", "accessnewswire://newsroom", "press_releases"))
+
+    # Feeds an admin switched off in Settings. Applied to the approved list and
+    # to the custom rows below, so one publisher's toggle covers every feed that
+    # writes under its name (GlobeNewswire has three desks, Business Wire is
+    # spelled two ways). Empty means block nothing.
+    disabled = {
+        item.strip().lower()
+        for item in os.getenv("RSS_DISABLED_SOURCES", "").split(",")
+        if item.strip()
+    }
+    if disabled:
+        before = len(feeds)
+        feeds = [feed for feed in feeds if feed[0].strip().lower() not in disabled]
+        print(f"[INFO] {before - len(feeds)} feed(s) skipped: disabled in Settings")
+
     seen = {(name.lower(), url) for name, url, _cat in feeds}
 
     if not INCLUDE_CUSTOM_RSS:
@@ -535,6 +550,8 @@ def _runtime_rss_feeds():
                 continue
             key = (name.lower(), url)
             if key in seen:
+                continue
+            if name.strip().lower() in disabled:
                 continue
             feeds.append((name, url, category))
             seen.add(key)

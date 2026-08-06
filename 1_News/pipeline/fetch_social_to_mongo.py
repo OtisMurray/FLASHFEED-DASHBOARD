@@ -49,6 +49,9 @@ TIMEOUT = int(os.getenv("SOCIAL_REQUEST_TIMEOUT", "15"))
 # itself to the top of every rolling window, so refuse it at write time rather
 # than only filtering on read. Minutes of slack for real clock skew, not hours.
 SOCIAL_FUTURE_TOLERANCE_SECONDS = int(os.getenv("SOCIAL_FUTURE_TOLERANCE_SECONDS", "300"))
+# StockTwits had no switch while Reddit, X and Bluesky each had one, so it was
+# the one platform Settings could not turn off. Default true, like its siblings.
+INCLUDE_STOCKTWITS = os.getenv("SOCIAL_INCLUDE_STOCKTWITS", "true").lower() in ("1", "true", "yes")
 INCLUDE_REDDIT = os.getenv("SOCIAL_INCLUDE_REDDIT", "true").lower() in ("1", "true", "yes")
 INCLUDE_X = os.getenv("SOCIAL_INCLUDE_X", "true").lower() in ("1", "true", "yes")
 INCLUDE_BLUESKY = os.getenv("SOCIAL_INCLUDE_BLUESKY", "true").lower() in ("1", "true", "yes")
@@ -576,6 +579,8 @@ def _rss_entries(xml_text: str) -> list[dict]:
 
 
 def _fetch_ticker(ticker: str) -> list[dict]:
+    if not INCLUDE_STOCKTWITS:
+        return []
     url = f"https://api.stocktwits.com/api/2/streams/symbol/{ticker}.json"
     try:
         resp = _http_get(url, headers=HEADERS, timeout=TIMEOUT)
@@ -1151,20 +1156,36 @@ def main() -> None:
                     continue
                 write_docs(docs)
 
+    # A platform that was switched off reports as disabled, not as
+    # "ready_no_rows_yet". Both produce zero rows, and Settings must be able to
+    # tell "you turned this off" apart from "this is broken".
+    included = {
+        "StockTwits": INCLUDE_STOCKTWITS,
+        "Reddit": INCLUDE_REDDIT,
+        "Bluesky": INCLUDE_BLUESKY,
+        "X/Twitter": INCLUDE_X,
+    }
+
     reddit_count = platform_counts.get("Reddit", 0)
     reddit_configured = bool(REDDIT_ACCESS_TOKEN or (REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET))
-    record_source_status(
-        db,
-        "Reddit",
-        "working" if reddit_count else ("ready_no_rows_yet" if reddit_configured else "api_key_recommended"),
-        detail=(
-            f"{reddit_count} matched ticker posts this cycle; {worker_errors} worker errors"
-            + ("" if reddit_configured else "; public Reddit endpoints may return 429, set REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET for reliable OAuth access")
-        ),
-        count=reddit_count,
-        source_type="social",
-    )
+    if not INCLUDE_REDDIT:
+        record_source_status(db, "Reddit", "disabled", detail="disabled in Settings", count=0, source_type="social")
+    else:
+        record_source_status(
+            db,
+            "Reddit",
+            "working" if reddit_count else ("ready_no_rows_yet" if reddit_configured else "api_key_recommended"),
+            detail=(
+                f"{reddit_count} matched ticker posts this cycle; {worker_errors} worker errors"
+                + ("" if reddit_configured else "; public Reddit endpoints may return 429, set REDDIT_CLIENT_ID/REDDIT_CLIENT_SECRET for reliable OAuth access")
+            ),
+            count=reddit_count,
+            source_type="social",
+        )
     for platform in ("StockTwits", "Bluesky", "X/Twitter"):
+        if not included[platform]:
+            record_source_status(db, platform, "disabled", detail="disabled in Settings", count=0, source_type="social")
+            continue
         count = platform_counts.get(platform, 0)
         record_source_status(
             db,

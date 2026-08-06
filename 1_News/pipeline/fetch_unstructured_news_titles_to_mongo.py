@@ -39,6 +39,15 @@ SOURCE_FILTER = {
     for item in os.getenv("UNSTRUCTURED_SOURCE_FILTER", "").split(",")
     if item.strip()
 }
+# Sources an admin switched off in Settings. A denylist, separate from the
+# allowlist above: fast mode narrows to one source with SOURCE_FILTER, and
+# folding a disable into that would mean an operator's temporary narrowing and a
+# durable "this source is off" were the same setting. Empty means block nothing.
+DISABLED_SOURCES = {
+    item.strip().lower()
+    for item in os.getenv("UNSTRUCTURED_DISABLED_SOURCES", "").split(",")
+    if item.strip()
+}
 MARKET_TZ = ZoneInfo(os.getenv("MARKET_WINDOW_TIMEZONE", "America/New_York"))
 
 HEADERS = {
@@ -433,6 +442,10 @@ def main():
         sources = json.load(f)
     if SOURCE_FILTER:
         sources = [cfg for cfg in sources if str(cfg.get("source", "")).strip().lower() in SOURCE_FILTER]
+    if DISABLED_SOURCES:
+        before = len(sources)
+        sources = [cfg for cfg in sources if str(cfg.get("source", "")).strip().lower() not in DISABLED_SOURCES]
+        print(f"[INFO] {before - len(sources)} source(s) skipped: disabled in Settings")
 
     client = MongoClient(MONGODB_URI)
     db = client[DB_NAME]
