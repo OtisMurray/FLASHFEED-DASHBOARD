@@ -41,10 +41,11 @@ const NAV = [
   { href: '/momentum', label: 'Momentum' },
   { href: '/correlation', label: 'Correlation' },
 ]
-// `adminOnly` entries are filtered out for everyone else — the page behind them
-// is gated by RequireAdmin, so linking there would only lead to a refusal.
+// Every entry here is gated by RequireAuth on its route (any logged-in
+// account) rather than filtered out of this list — a logged-out visitor who
+// clicks one is sent to /login instead of the item just not being shown.
 const SETTINGS_NAV = [
-  { href: '/settings', label: 'Settings', adminOnly: true },
+  { href: '/settings', label: 'Settings' },
   { href: '/watchlist', label: 'Watchlist' },
   { href: '/account', label: 'Account' },
   { href: '/v11-screener', label: 'v11 Profile (test)' },
@@ -185,7 +186,7 @@ export function TopBar() {
   const [showSentiment, setShowSentiment] = useState(false)
   const [showStorage, setShowStorage] = useState(false)
   const [showControls, setShowControls] = useState(false)
-  const { user, isAdmin, logout } = useAuth()
+  const { user, logout } = useAuth()
   const [showSettingsNav, setShowSettingsNav] = useState(false)
   const settingsNavButtonRef = useRef<HTMLButtonElement | null>(null)
   const [settingsNavPosition, setSettingsNavPosition] = useState<{ top: number; left: number } | null>(null)
@@ -481,7 +482,7 @@ export function TopBar() {
           maxHeight: `calc(100vh - ${(settingsNavPosition?.top ?? 56) + 8}px)`,
         }}
       >
-        {SETTINGS_NAV.filter(item => !item.adminOnly || isAdmin).map(({ href, label }) => (
+        {SETTINGS_NAV.map(({ href, label }) => (
           <NavLink
             key={href}
             to={href}

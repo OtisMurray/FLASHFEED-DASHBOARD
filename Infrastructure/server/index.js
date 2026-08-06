@@ -24,7 +24,7 @@ import correlationRouter from './routes/correlation.js'
 import settingsRouter    from './routes/settings.js'
 import decisionMapRouter from './routes/decisionMap.js'
 import catalystIntelligenceRouter from './routes/catalystIntelligence.js'
-import authRouter, { requireAdmin, requireAdminTokenOrSession } from './routes/auth.js'
+import authRouter, { requireAdmin, requireAuth, requireAdminTokenOrSession } from './routes/auth.js'
 import apiV1Router       from './routes/apiV1.js'
 import stocktwitsRouter  from './routes/stocktwits.js'
 import cookieParser      from 'cookie-parser'
@@ -9673,9 +9673,10 @@ function mergeConnections(stored = {}, incoming = {}) {
   return out;
 }
 
-// Connections are stored per user and encrypted at rest. requireAdmin still
-// gates both verbs — the per-user split narrows what a compromised session can
-// reach, it does not replace the guard.
+// Connections are stored per user and encrypted at rest. requireAuth gates
+// every verb — Settings is open to any logged-in account, not just admins —
+// and the per-user storage means each account only ever reads/writes its own
+// saved connections, never anyone else's.
 //
 // 503 rather than 500 when the key is missing: the request is well formed and
 // the caller is authorised, the server is just not configured to handle
@@ -9684,7 +9685,7 @@ function connectionsUserId(req) {
   return String(req.user?._id || '')
 }
 
-app.get("/api/settings/connections", requireAdmin, async (req, res) => {
+app.get("/api/settings/connections", requireAuth, async (req, res) => {
   try {
     if (!settingsKeyConfigured()) {
       return res.status(503).json({ ok: false, error: "Connection storage is not configured on this server (SETTINGS_ENCRYPTION_KEY)." });
@@ -9711,7 +9712,7 @@ app.get("/api/settings/connections", requireAdmin, async (req, res) => {
   }
 });
 
-app.patch("/api/settings/connections", requireAdmin, async (req, res) => {
+app.patch("/api/settings/connections", requireAuth, async (req, res) => {
   try {
     if (!settingsKeyConfigured()) {
       return res.status(503).json({ ok: false, error: "Connection storage is not configured on this server (SETTINGS_ENCRYPTION_KEY)." });
@@ -9734,7 +9735,7 @@ app.patch("/api/settings/connections", requireAdmin, async (req, res) => {
 // POST /api/settings/connections — add a new named account (Accounts tab).
 // The 4 built-ins above cover Finviz/TradingView/Schwab/IB; this is how an
 // admin adds anything else (a Reddit API app, an X/Twitter dev account, ...).
-app.post("/api/settings/connections", requireAdmin, async (req, res) => {
+app.post("/api/settings/connections", requireAuth, async (req, res) => {
   try {
     if (!settingsKeyConfigured()) {
       return res.status(503).json({ ok: false, error: "Connection storage is not configured on this server (SETTINGS_ENCRYPTION_KEY)." });
@@ -9772,7 +9773,7 @@ app.post("/api/settings/connections", requireAdmin, async (req, res) => {
 // built-ins can't be removed (they'd just reappear with blank fields on the
 // next load, since cleanConnectionPayload always includes them) — clearing
 // their fields via PATCH is the equivalent for those.
-app.delete("/api/settings/connections/:key", requireAdmin, async (req, res) => {
+app.delete("/api/settings/connections/:key", requireAuth, async (req, res) => {
   try {
     if (!settingsKeyConfigured()) {
       return res.status(503).json({ ok: false, error: "Connection storage is not configured on this server (SETTINGS_ENCRYPTION_KEY)." });
@@ -9936,7 +9937,7 @@ app.get("/api/settings/sources", async (req, res) => {
   }
 });
 
-app.post("/api/settings/sources/:name/favorite", requireAdmin, async (req, res) => {
+app.post("/api/settings/sources/:name/favorite", requireAuth, async (req, res) => {
   try {
     const name = cleanSettingText(decodeURIComponent(req.params.name))
     await settingsDb().collection("source_favorites").updateOne(
@@ -9950,7 +9951,7 @@ app.post("/api/settings/sources/:name/favorite", requireAdmin, async (req, res) 
   }
 })
 
-app.delete("/api/settings/sources/:name/favorite", requireAdmin, async (req, res) => {
+app.delete("/api/settings/sources/:name/favorite", requireAuth, async (req, res) => {
   try {
     const name = cleanSettingText(decodeURIComponent(req.params.name))
     await settingsDb().collection("source_favorites").deleteOne({ name })
@@ -9969,7 +9970,7 @@ app.get("/api/settings/sources/favorites", async (req, res) => {
   }
 })
 
-app.post("/api/settings/sources", requireAdmin, async (req, res) => {
+app.post("/api/settings/sources", requireAuth, async (req, res) => {
   try {
     const name = cleanSettingText(req.body.name || req.body.source);
     const url = cleanSettingText(req.body.url);
@@ -9995,7 +9996,7 @@ app.post("/api/settings/sources", requireAdmin, async (req, res) => {
   }
 });
 
-app.patch("/api/settings/sources/:name", requireAdmin, async (req, res) => {
+app.patch("/api/settings/sources/:name", requireAuth, async (req, res) => {
   try {
     const name = cleanSettingText(decodeURIComponent(req.params.name));
     const enabled = req.body.enabled !== false;
@@ -10010,7 +10011,7 @@ app.patch("/api/settings/sources/:name", requireAdmin, async (req, res) => {
   }
 });
 
-app.delete("/api/settings/sources/:name", requireAdmin, async (req, res) => {
+app.delete("/api/settings/sources/:name", requireAuth, async (req, res) => {
   try {
     const name = cleanSettingText(decodeURIComponent(req.params.name));
     const result = await settingsDb().collection("rss_sources").deleteOne({ name });
@@ -10025,7 +10026,7 @@ app.delete("/api/settings/sources/:name", requireAdmin, async (req, res) => {
 // See lib/runtimeConfig.js — a small, defined set of settings that would
 // otherwise need a Railway env var change + redeploy. The Python RSS pipeline
 // reads the same collection at the start of each fetch cycle.
-app.get("/api/settings/config", requireAdmin, async (req, res) => {
+app.get("/api/settings/config", requireAuth, async (req, res) => {
   try {
     const config = await resolveRuntimeConfig(settingsDb());
     res.json({ ok: true, config: Object.values(config) });
@@ -10035,7 +10036,7 @@ app.get("/api/settings/config", requireAdmin, async (req, res) => {
   }
 });
 
-app.patch("/api/settings/config", requireAdmin, async (req, res) => {
+app.patch("/api/settings/config", requireAuth, async (req, res) => {
   try {
     const key = cleanSettingText(req.body?.key);
     if (!key) return res.status(400).json({ ok: false, error: "key is required" });
@@ -10055,7 +10056,7 @@ app.patch("/api/settings/config", requireAdmin, async (req, res) => {
 // ── Logs tab: recent in-process console output (see lib/logBuffer.js) ──────
 // Only reflects this server process since its last restart/deploy — there is
 // no Railway API token wired up to pull real deployment logs.
-app.get("/api/settings/logs", requireAdmin, (req, res) => {
+app.get("/api/settings/logs", requireAuth, (req, res) => {
   try {
     const entries = getLogEntries({ level: req.query.level, limit: req.query.limit });
     res.json({ ok: true, entries });
@@ -10066,7 +10067,7 @@ app.get("/api/settings/logs", requireAdmin, (req, res) => {
 });
 
 // ── API tab: admin-visible aggregate stats for the public /api/v1/* keys ───
-app.get("/api/settings/api-overview", requireAdmin, async (req, res) => {
+app.get("/api/settings/api-overview", requireAuth, async (req, res) => {
   try {
     const activeKeyCount = await ApiKey.countDocuments({ revoked: false });
     res.json({ ok: true, active_key_count: activeKeyCount, base_url: `${req.protocol}://${req.get("host")}` });
@@ -10104,7 +10105,7 @@ app.get('/api/settings/keywords', async (req, res) => {
   }
 })
 
-app.post('/api/settings/keywords', requireAdmin, async (req, res) => {
+app.post('/api/settings/keywords', requireAuth, async (req, res) => {
   try {
     const keyword = cleanKeyword(req.body?.keyword || req.body?.word)
     const category = cleanSettingText(req.body?.category || 'custom').toLowerCase()
@@ -10128,7 +10129,7 @@ app.post('/api/settings/keywords', requireAdmin, async (req, res) => {
   }
 })
 
-app.patch('/api/settings/keywords/:keyword', requireAdmin, async (req, res) => {
+app.patch('/api/settings/keywords/:keyword', requireAuth, async (req, res) => {
   try {
     const keyword = cleanKeyword(decodeURIComponent(req.params.keyword))
     const enabled = req.body?.enabled !== false && req.body?.active !== false
@@ -10145,7 +10146,7 @@ app.patch('/api/settings/keywords/:keyword', requireAdmin, async (req, res) => {
   }
 })
 
-app.delete('/api/settings/keywords/:keyword', requireAdmin, async (req, res) => {
+app.delete('/api/settings/keywords/:keyword', requireAuth, async (req, res) => {
   try {
     const keyword = cleanKeyword(decodeURIComponent(req.params.keyword))
 
