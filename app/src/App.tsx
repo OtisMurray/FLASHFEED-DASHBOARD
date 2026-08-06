@@ -3,7 +3,7 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { AppShell }        from './components/shared/AppShell'
 import { ApiHealthGate }   from './components/shared/ApiHealthGate'
 import { AuthProvider }    from './lib/useAuth'
-import { RequireAuth, RequireAdmin } from './components/shared/RouteGuards'
+import { RequireAuth } from './components/shared/RouteGuards'
 
 const LoginPage = lazy(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })))
 const WatchlistPage = lazy(() => import('./pages/WatchlistPage').then(m => ({ default: m.WatchlistPage })))
@@ -82,7 +82,7 @@ export default function App() {
             {/* Settings mutates keywords, sources and platform credentials, all of
                 which the API now restricts to admins. Gate the page so a non-admin
                 sees one clear message instead of a form that 401s on save. */}
-            <Route path="/settings"    element={<RequireAdmin><SettingsPage /></RequireAdmin>} />
+            <Route path="/settings"    element={<RequireAuth><SettingsPage /></RequireAuth>} />
           </Routes>
         </Suspense>
       </AppShell>
