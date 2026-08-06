@@ -49,6 +49,7 @@ import {
   resolveRuntimeConfig, getRuntimeConfigValue, setRuntimeConfigOverride, clearRuntimeConfigOverride,
 } from './lib/runtimeConfig.js'
 import { installConsoleCapture, getLogEntries } from './lib/logBuffer.js'
+import { previewReset, executeReset, RESET_CONFIRM_PHRASE } from './lib/dataReset.js'
 import Screener from './models/Screener.js'
 import ApiKey from './models/ApiKey.js'
 import { normalizeScreenerRow, isCleanListedUsRow } from './routes/screener.js'
@@ -10310,6 +10311,46 @@ app.patch("/api/settings/config", requireAdmin, async (req, res) => {
   } catch (err) {
     console.error("PATCH /api/settings/config failed:", err);
     res.status(400).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+// ── Config tab: scoped data reset ──────────────────────────────────────────
+// Clears simulated-position history and the derived/cached rows around it.
+// The allowlist lives in lib/dataReset.js and is never taken from the request:
+// no collection name reaches Mongo from a client, so the worst a malformed or
+// hostile body can do is fail the confirm check.
+//
+// Credentials, settings, sources, keywords and accounts are out of scope, as
+// is raw ingested data (socials, articles, watcher snapshots) — see the
+// commentary on RESETTABLE_COLLECTIONS for why "not a setting" and "safe to
+// delete" are different questions.
+app.get("/api/settings/reset-preview", requireAdmin, async (req, res) => {
+  try {
+    res.json({ ok: true, confirm_phrase: RESET_CONFIRM_PHRASE, ...(await previewReset(settingsDb())) });
+  } catch (err) {
+    console.error("GET /api/settings/reset-preview failed:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+app.post("/api/settings/reset", requireAdmin, async (req, res) => {
+  try {
+    // Server-side too. The typed phrase is a guard against an accidental
+    // click, and a guard that only exists in the UI is not a guard — anything
+    // that can POST could skip it.
+    if (String(req.body?.confirm || '') !== RESET_CONFIRM_PHRASE) {
+      return res.status(400).json({
+        ok: false,
+        error: `Confirmation failed. Send confirm: "${RESET_CONFIRM_PHRASE}" to proceed.`,
+      });
+    }
+    const outcome = await executeReset(settingsDb(), { actor: settingsActor(req) });
+    // 207 when part of it failed, so a caller cannot read a blanket 200 as
+    // "everything was cleared" when some of it was not.
+    res.status(outcome.failed_count ? 207 : 200).json({ ok: outcome.failed_count === 0, ...outcome });
+  } catch (err) {
+    console.error("POST /api/settings/reset failed:", err);
+    res.status(500).json({ ok: false, error: String(err.message || err) });
   }
 });
 

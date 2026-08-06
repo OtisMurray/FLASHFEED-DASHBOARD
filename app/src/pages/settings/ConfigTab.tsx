@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { jsonFetch, inputCls } from './shared'
+import { DangerZone } from './DangerZone'
 
 type ConfigEntry = {
   key: string
@@ -121,6 +122,10 @@ export function ConfigTab() {
         ))}
         {!config.length && <div className="text-sm text-neutral border border-border rounded p-3">Loading configuration…</div>}
       </div>
+
+      {/* Last on the page, and visually separated, so it is never the thing a
+          hand lands on while reaching for a config toggle. */}
+      <DangerZone onError={setError} onSaved={setSaved} />
     </div>
   )
 }
