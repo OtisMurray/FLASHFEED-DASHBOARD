@@ -3,6 +3,7 @@ import useSWR from 'swr'
 import { useState, useMemo } from 'react'
 import { clsx } from 'clsx'
 import type { LongTermFundamentalsRow } from '@/lib/types'
+import { AiCatalystPreview } from './AiCatalystPreview'
 
 // Long-Term Fundamentals — the multi-month/multi-year counterpart to Entry/Exit/v11,
 // which are all intraday (120-360 min price×density correlation windows). This
@@ -262,6 +263,8 @@ export function LongTermFundamentalsPage() {
           components were available.
         </div>
       </div>
+
+      <AiCatalystPreview rows={rows.slice(0, 25)} />
 
       {/* Table */}
       {isLoading ? (

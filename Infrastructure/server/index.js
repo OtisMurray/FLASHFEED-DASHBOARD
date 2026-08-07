@@ -24,6 +24,7 @@ import correlationRouter from './routes/correlation.js'
 import settingsRouter    from './routes/settings.js'
 import decisionMapRouter from './routes/decisionMap.js'
 import catalystIntelligenceRouter from './routes/catalystIntelligence.js'
+import aiCatalystRouter from './routes/aiCatalyst.js'
 import authRouter, { requireAdmin, requireAdminTokenOrSession } from './routes/auth.js'
 import apiV1Router       from './routes/apiV1.js'
 import stocktwitsRouter  from './routes/stocktwits.js'
@@ -8235,6 +8236,7 @@ app.use('/api/correlation', correlationRouter)
 app.use('/api/settings',    settingsRouter)
 app.use('/api/decision-map', decisionMapRouter)
 app.use('/api/catalyst-intelligence', catalystIntelligenceRouter)
+app.use('/api/ai-catalyst', aiCatalystRouter)
 app.use('/api/auth',        authRouter)
 app.use('/api/auth/stocktwits', stocktwitsRouter)
 app.use('/api/v1',          apiV1Router)
