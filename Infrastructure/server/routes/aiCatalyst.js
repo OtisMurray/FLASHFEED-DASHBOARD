@@ -40,6 +40,46 @@ function headlineTickerFilter(ticker) {
   }
 }
 
+// The articles collection stores publish_date / first_seen_at as BSON int
+// (epoch seconds) far more often than as a real Date — confirmed against both
+// local and production data. Mongo range operators compare same-BSON-type
+// only, so a single `{ $gte: someJsDate }` clause silently matches nothing
+// against an int field: it neither errors nor throws, it just returns zero
+// rows every time, which is exactly why this bug shipped invisibly. Mirrors
+// the proven causalWindowFilter pattern in routes/catalystIntelligence.js.
+function articleWindowFilter(since, now) {
+  const sinceSec = Math.floor(since.getTime() / 1000)
+  const nowSec = Math.floor(now.getTime() / 1000) + 300
+  return {
+    $or: [
+      { publish_date: { $type: 'date', $gte: since, $lte: now } },
+      { publish_date: { $type: 'int', $gte: sinceSec, $lte: nowSec } },
+      { publish_date: { $type: 'long', $gte: sinceSec, $lte: nowSec } },
+      { publish_date: { $type: 'double', $gte: sinceSec, $lte: nowSec } },
+      { first_seen_at: { $type: 'date', $gte: since, $lte: now } },
+      { first_seen_at: { $type: 'int', $gte: sinceSec, $lte: nowSec } },
+      { first_seen_at: { $type: 'long', $gte: sinceSec, $lte: nowSec } },
+      { first_seen_at: { $type: 'double', $gte: sinceSec, $lte: nowSec } },
+    ],
+  }
+}
+
+// Same defect, same fix, for the socials collection: created_at is stored as
+// BSON int (epoch seconds) there too — confirmed locally (25,882 of 25,882
+// docs are int, none are Date) — so a Date-only bound would be equally dead.
+function socialWindowFilter(since, now) {
+  const sinceSec = Math.floor(since.getTime() / 1000)
+  const nowSec = Math.floor(now.getTime() / 1000) + 300
+  return {
+    $or: [
+      { created_at: { $type: 'date', $gte: since, $lte: now } },
+      { created_at: { $type: 'int', $gte: sinceSec, $lte: nowSec } },
+      { created_at: { $type: 'long', $gte: sinceSec, $lte: nowSec } },
+      { created_at: { $type: 'double', $gte: sinceSec, $lte: nowSec } },
+    ],
+  }
+}
+
 router.get('/status', (req, res) => {
   res.json({
     ok: true,
@@ -75,11 +115,12 @@ router.get('/ticker/:ticker', async (req, res) => {
 
     let headlines = []
     try {
-      const since = new Date(Date.now() - ARTICLE_WINDOW_HOURS * 60 * 60 * 1000)
+      const now = new Date()
+      const since = new Date(now.getTime() - ARTICLE_WINDOW_HOURS * 60 * 60 * 1000)
       const docs = await db.collection('articles').find({
         $and: [
           approvedNewsSourceMongoFilter('source'),
-          { $or: [{ publish_date: { $gte: since } }, { first_seen_at: { $gte: since } }] },
+          articleWindowFilter(since, now),
           headlineTickerFilter(ticker),
         ],
       }, {
@@ -98,10 +139,13 @@ router.get('/ticker/:ticker', async (req, res) => {
 
     let social = null
     try {
-      const since = new Date(Date.now() - SOCIAL_WINDOW_HOURS * 60 * 60 * 1000)
+      const now = new Date()
+      const since = new Date(now.getTime() - SOCIAL_WINDOW_HOURS * 60 * 60 * 1000)
       const docs = await db.collection('socials').find({
-        ticker,
-        created_at: { $gte: since },
+        $and: [
+          { ticker },
+          socialWindowFilter(since, now),
+        ],
       }, {
         projection: { platform: 1 },
       }).limit(SOCIAL_LIMIT).toArray()
@@ -126,3 +170,4 @@ router.get('/ticker/:ticker', async (req, res) => {
 })
 
 export default router
+export { articleWindowFilter, socialWindowFilter, headlineTickerFilter, normalizeTicker }
