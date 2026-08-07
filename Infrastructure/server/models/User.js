@@ -20,8 +20,35 @@ const UserSchema = new mongoose.Schema({
   // Phone number (E.164, e.g. +15551234567) — needed for SMS 2FA and/or SMS
   // stock alerts. Optional; both features no-op without it.
   phone: { type: String, default: null },
+  // Legacy SMS news-alert settings. Superseded by alertPreferences below, but
+  // kept and still read (see effectiveAlertPreferences) so an existing opted-in
+  // user does not lose their choice on deploy.
   smsAlertsOptIn:  { type: Boolean, default: false },
   smsAlertTickers: { type: [String], default: [] },
+
+  // Trading alerts (Entry / Exit / News). Deliberately a nested subdocument
+  // rather than a dozen more top-level fields, and deliberately SEPARATE from
+  // twoFactorMethod above: changing where alerts are delivered must never move
+  // where login codes are delivered. Validation lives in lib/alertPreferences.js
+  // — this schema is storage shape only.
+  alertPreferences: {
+    alertEmail:          { type: String, default: null },   // null => use the account email
+    emailEnabled:        { type: Boolean, default: false },
+    smsEnabled:          { type: Boolean, default: false },
+    entryEnabled:        { type: Boolean, default: false },
+    exitEnabled:         { type: Boolean, default: false },
+    newsEnabled:         { type: Boolean, default: false },
+    tickerScope:         { type: String, enum: ['all', 'selected'], default: 'all' },
+    tickers:             { type: [String], default: [] },
+    newsTickers:         { type: [String], default: [] },
+    minAiScore:          { type: Number, default: 50 },
+    maxPerDay:           { type: Number, default: 10 },     // null => unlimited
+    newsCooldownMinutes: { type: Number, default: 30 },
+    // The no-historical-blast watermark. Only canonical events recorded after
+    // this instant are ever eligible, so first enabling alerts (or a Railway
+    // restart) cannot replay the day's existing positions as new entries.
+    updatedAt:           { type: Date, default: null },
+  },
 
   // StockTwits OAuth (see routes/stocktwits.js) — access token only, never the
   // account password (StockTwits uses OAuth2, so FlashFeed never sees it).

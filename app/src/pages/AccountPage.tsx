@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '@/lib/useAuth'
+import { TradingAlertsCard } from '@/components/shared/TradingAlertsCard'
 
 const jsonFetch = (url: string, init?: RequestInit) =>
   fetch(url, { credentials: 'include', headers: { 'Content-Type': 'application/json' }, ...init }).then(r => r.json())
@@ -21,9 +22,6 @@ export function AccountPage() {
   const [status, setStatus] = useState<Status | null>(null)
   const [phone, setPhone] = useState('')
   const [twoFactorMethod, setTwoFactorMethod] = useState<'email' | 'sms'>('email')
-  const [smsAlertsOptIn, setSmsAlertsOptIn] = useState(false)
-  const [smsTickerInput, setSmsTickerInput] = useState('')
-  const [smsAlertTickers, setSmsAlertTickers] = useState<string[]>([])
   const [apiKeys, setApiKeys] = useState<ApiKeyRow[]>([])
   const [newKeyLabel, setNewKeyLabel] = useState('')
   const [justCreatedKey, setJustCreatedKey] = useState<string | null>(null)
@@ -107,32 +105,10 @@ export function AccountPage() {
         </div>
       </Card>
 
-      <Card title="SMS stock alerts">
-        <label className="flex items-center gap-2 text-xs text-neutral">
-          <input type="checkbox" checked={smsAlertsOptIn}
-            onChange={e => { setSmsAlertsOptIn(e.target.checked); saveProfile({ smsAlertsOptIn: e.target.checked }) }} />
-          Text me when there's news on a ticker I'm watching below
-        </label>
-        <div className="flex gap-2">
-          <input value={smsTickerInput} onChange={e => setSmsTickerInput(e.target.value.toUpperCase())}
-            placeholder="Ticker" className={`${inputCls} flex-1 font-mono`} />
-          <button
-            onClick={() => {
-              const next = Array.from(new Set([...smsAlertTickers, smsTickerInput.trim()])).filter(Boolean)
-              setSmsAlertTickers(next); setSmsTickerInput(''); saveProfile({ smsAlertTickers: next })
-            }}
-            className="px-3 py-1.5 bg-accent text-white text-xs rounded hover:bg-sky-400">Add</button>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {smsAlertTickers.map(t => (
-            <span key={t} className="text-xs font-mono bg-bg border border-border rounded-full px-2 py-1 text-white">
-              {t}
-              <button onClick={() => { const next = smsAlertTickers.filter(x => x !== t); setSmsAlertTickers(next); saveProfile({ smsAlertTickers: next }) }}
-                className="ml-1.5 text-neutral hover:text-red-400">×</button>
-            </span>
-          ))}
-        </div>
-      </Card>
+      {/* Replaces the old SMS-only stock alerts block. Entry/Exit/News, both
+          channels, and the volume controls now live in one card backed by
+          /api/auth/alert-preferences. */}
+      <TradingAlertsCard />
 
       <Card title="Connected accounts">
         <div className="flex items-center justify-between text-xs">
