@@ -5,9 +5,13 @@ import jwt from 'jsonwebtoken'
 import mongoose from 'mongoose'
 import User from '../models/User.js'
 import ApiKey from '../models/ApiKey.js'
-import { sendTwoFactorCodeEmail, mailerReady } from '../mailer.js'
-import { sendTwoFactorCodeSms, smsReady } from '../smsSender.js'
+import { sendTwoFactorCodeEmail, sendAlertEmail, mailerReady } from '../mailer.js'
+import { sendTwoFactorCodeSms, sendSms, smsReady } from '../smsSender.js'
 import { getRuntimeConfigValue } from '../lib/runtimeConfig.js'
+import {
+  normalizeAlertPreferences, effectiveAlertPreferences, resolveAlertEmail,
+  AlertPreferenceError, DEFAULT_ALERT_PREFERENCES,
+} from '../lib/alertPreferences.js'
 
 const router = Router()
 
@@ -361,6 +365,98 @@ router.put('/profile', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('PUT /api/auth/profile failed:', err)
     res.status(500).json({ ok: false, error: 'Could not save profile.' })
+  }
+})
+
+// ── Trading alerts (Entry / Exit / News) ──────────────────────────────────
+// requireAuth on every verb, and every read/write is scoped to req.user — the
+// session decides whose preferences these are, never a client-supplied id, so
+// one account cannot read or modify another's.
+
+// GET /api/auth/alert-preferences — current settings plus what the server can
+// actually deliver, so the UI can disable a channel instead of offering a
+// control that would silently never fire.
+router.get('/alert-preferences', requireAuth, (req, res) => {
+  res.json({
+    ok: true,
+    preferences: effectiveAlertPreferences(req.user),
+    defaults: DEFAULT_ALERT_PREFERENCES,
+    accountEmail: req.user.email,
+    resolvedAlertEmail: resolveAlertEmail(req.user),
+    phone: req.user.phone || null,
+    emailAvailable: mailerReady(),
+    smsAvailable: smsReady(),
+  })
+})
+
+// PUT /api/auth/alert-preferences — partial patch, fully validated server-side.
+router.put('/alert-preferences', requireAuth, async (req, res) => {
+  try {
+    const patch = req.body?.preferences ?? req.body ?? {}
+
+    // Phone lives on the user, not in alertPreferences — it is the same number
+    // SMS 2FA uses. Accepting it here lets one Save handle the whole card, but
+    // it deliberately does NOT touch twoFactorMethod: saving an alert number
+    // must never move the user's login codes to SMS.
+    if (patch.phone !== undefined) {
+      const phone = String(patch.phone || '').trim()
+      if (phone && !/^\+[1-9]\d{6,14}$/.test(phone)) {
+        return res.status(400).json({ ok: false, error: 'Phone must be E.164 format, e.g. +15551234567.' })
+      }
+      req.user.phone = phone || null
+    }
+
+    const next = normalizeAlertPreferences(patch, {
+      current: effectiveAlertPreferences(req.user),
+      accountEmail: req.user.email,
+      phone: req.user.phone,
+    })
+
+    // The watermark advances on every save. That is what stops a preference
+    // change from replaying the day's already-recorded positions as new alerts.
+    next.updatedAt = new Date()
+    req.user.alertPreferences = next
+    req.user.markModified('alertPreferences')
+    await req.user.save()
+
+    res.json({ ok: true, preferences: next, phone: req.user.phone || null, resolvedAlertEmail: resolveAlertEmail(req.user) })
+  } catch (err) {
+    if (err instanceof AlertPreferenceError) return res.status(400).json({ ok: false, error: err.message })
+    console.error('PUT /api/auth/alert-preferences failed:', err)
+    res.status(500).json({ ok: false, error: 'Could not save alert preferences.' })
+  }
+})
+
+// POST /api/auth/alert-test — send a real message through the SAME transport
+// real alerts use, so a success here proves delivery actually works.
+// Deliberately writes no alert_events row: a test must not consume the user's
+// daily cap or trip the news cooldown.
+router.post('/alert-test', requireAuth, async (req, res) => {
+  const channel = String(req.body?.channel || '')
+  if (!['email', 'sms'].includes(channel)) {
+    return res.status(400).json({ ok: false, error: 'channel must be "email" or "sms".' })
+  }
+  try {
+    if (channel === 'email') {
+      if (!mailerReady()) return res.status(503).json({ ok: false, error: 'Email delivery is not configured on the server yet.' })
+      const to = resolveAlertEmail(req.user)
+      if (!to) return res.status(400).json({ ok: false, error: 'No alert email address on file.' })
+      await sendAlertEmail(
+        to,
+        'FlashFeed test alert',
+        '<div style="font-family:system-ui,sans-serif"><p>This is a FlashFeed test alert. Trading alerts are configured correctly.</p></div>',
+        'This is a FlashFeed test alert. Trading alerts are configured correctly.',
+      )
+      return res.json({ ok: true, sentTo: to })
+    }
+    if (!smsReady()) return res.status(503).json({ ok: false, error: 'Text delivery is not configured on the server yet.' })
+    if (!req.user.phone) return res.status(400).json({ ok: false, error: 'Add a mobile number before sending a test text.' })
+    await sendSms(req.user.phone, 'FlashFeed test alert — trading alerts are configured correctly.')
+    res.json({ ok: true, sentTo: req.user.phone })
+  } catch (err) {
+    // Surface the provider's own reason: "test failed" with no detail is the
+    // least useful possible answer when someone is debugging delivery.
+    res.status(502).json({ ok: false, error: `Could not send the test ${channel}: ${err.message}` })
   }
 })
 

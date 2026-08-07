@@ -18,6 +18,17 @@ if (GMAIL_USER && GMAIL_APP_PASSWORD) {
 
 export const mailerReady = () => !!transporter
 
+/**
+ * Generic alert email (Entry / Exit / News, and the "send test email" button).
+ * Same transport and same "throw when unconfigured" contract as the 2FA mail
+ * above, so the alert system has no second, divergent idea of whether email
+ * works. Always ships a text/plain fallback alongside the HTML.
+ */
+export async function sendAlertEmail(toEmail, subject, html, text) {
+  if (!transporter) throw new Error('Email is not configured on the server yet (GMAIL_APP_PASSWORD missing).')
+  await transporter.sendMail({ from: `FlashFeed <${GMAIL_USER}>`, to: toEmail, subject, text, html })
+}
+
 export async function sendTwoFactorCodeEmail(toEmail, code) {
   if (!transporter) throw new Error('Email is not configured on the server yet (GMAIL_APP_PASSWORD missing).')
   await transporter.sendMail({

@@ -30,6 +30,10 @@ import apiV1Router       from './routes/apiV1.js'
 import stocktwitsRouter  from './routes/stocktwits.js'
 import cookieParser      from 'cookie-parser'
 import { runSmsAlertCheck } from './smsAlerts.js'
+import { ensureAlertEventIndexes, runPositionAlertCheck } from './lib/alertEvents.js'
+import { sendAlertEmail, mailerReady as alertMailerReady } from './mailer.js'
+import { sendSms as sendAlertSms, smsReady as alertSmsReady } from './smsSender.js'
+import UserModel from './models/User.js'
 import { allowedSource, approvedNewsSourceMongoFilter, setRuntimeDisabledSources } from './sourceFilter.js'
 import { dedupeWatcherSeries, loadWatcherFeatureMap, persistWatcherSnapshot } from './lib/watcherSnapshots.js'
 import { socialTickerEvidenceStages } from './lib/socialTickerEvidence.js'
@@ -5497,18 +5501,56 @@ async function runWatcherSnapshotCycle(reason = 'scheduled') {
   return watcherSnapshotStatus
 }
 
+// ── Trading alerts (Entry / Exit / News) ────────────────────────────────────
+// One injected sender pair shared by every alert path, so email and SMS have
+// exactly one implementation and the "send test" button in Account exercises
+// the same code a real alert does.
+const ALERT_SENDERS = {
+  sendEmail: (to, subject, html, text) => sendAlertEmail(to, subject, html, text),
+  sendSms: (to, body) => sendAlertSms(to, body),
+}
+
+// Only accounts that could actually receive something. Narrowing here keeps the
+// per-cycle scan proportional to subscribers rather than to the user table, and
+// the legacy smsAlertsOptIn clause keeps pre-existing opt-ins visible until they
+// save real preferences (see effectiveAlertPreferences).
+async function loadAlertSubscribers() {
+  return UserModel.find({
+    $or: [
+      { 'alertPreferences.entryEnabled': true },
+      { 'alertPreferences.exitEnabled': true },
+      { 'alertPreferences.newsEnabled': true },
+      { smsAlertsOptIn: true },
+    ],
+  }).lean()
+}
+
 // ── SMS stock alerts ────────────────────────────────────────────────────────
 // Self-contained: reads the articles the existing pipeline already wrote, does
 // not hook into or modify any fetch/pipeline code. No-ops (skips silently)
 // until TWILIO_* env vars are set — see smsAlerts.js / smsSender.js.
 const SMS_ALERT_INTERVAL_MS = Number(process.env.SMS_ALERT_INTERVAL_MS || 5 * 60 * 1000)
+// How far back each tick looks for articles. Kept slightly wider than the tick
+// interval so a late-arriving article is not missed between runs; the durable
+// per-article dedupe is what stops the overlap re-sending anything.
+const SMS_ALERT_CHECK_WINDOW_MINUTES = Number(process.env.SMS_ALERT_CHECK_WINDOW_MINUTES || 10)
 function startSmsAlertScheduler() {
   const tick = () => {
     const db = mongoose.connection.db
     if (!db) return
-    runSmsAlertCheck(db)
-      .then(result => { if (result.sent) console.log(`  SMS     →  sent ${result.sent} stock alert(s)`) })
-      .catch(err => console.error('SMS alert check failed:', err.message))
+    // News alerts now run through the shared preference/dedupe/cap machinery so
+    // email and SMS behave identically and the daily cap counts one logical
+    // event, not one per channel. Article-level dedupe is preserved.
+    loadAlertSubscribers()
+      .then(users => runSmsAlertCheck(db, {
+        users,
+        mailerReady: alertMailerReady(),
+        smsReady: alertSmsReady(),
+        senders: ALERT_SENDERS,
+        windowMinutes: SMS_ALERT_CHECK_WINDOW_MINUTES,
+      }))
+      .then(result => { if (result.sent) console.log(`  Alerts  →  sent ${result.sent} news alert(s)`) })
+      .catch(err => console.error('News alert check failed:', err.message))
   }
   setTimeout(tick, 30_000).unref?.()
   const timer = setInterval(tick, SMS_ALERT_INTERVAL_MS)
@@ -5718,6 +5760,25 @@ async function runPositionHistoryCycle(reason = 'scheduled') {
         })
       }
       if (summary) summary.superseded = superseded
+
+      // Entry/Exit alerts. Deliberately placed AFTER supersedeMissingTrades so
+      // the frontier-drift phantoms that reconciliation withdraws can never be
+      // alerted on, and wrapped so that a Gmail/Twilio outage — or any bug in
+      // the notification path — cannot fail this cycle or delay the data work
+      // that has already completed above.
+      try {
+        const alertSummary = await runPositionAlertCheck(db, {
+          users: await loadAlertSubscribers(),
+          mailerReady: alertMailerReady(),
+          smsReady: alertSmsReady(),
+          senders: ALERT_SENDERS,
+          now: observedAt,
+        })
+        if (summary) summary.alerts = alertSummary
+      } catch (alertErr) {
+        console.error('Position alert check failed (position history unaffected):', alertErr.message)
+      }
+
       positionHistoryStatus.lastPrune = await prunePositionHistory(db, { retentionDays: POSITION_HISTORY_RETENTION_DAYS })
     }
 
@@ -8353,6 +8414,12 @@ async function ensureRuntimeIndexes() {
   if (!db) return
 
   await migrateConnectionsOnBoot()
+
+  // The unique eventKey index is what makes alert deduplication safe under
+  // overlapping scheduler runs, so it must exist before the first cycle can
+  // fire — not be created lazily by whichever send happens to run first.
+  await ensureAlertEventIndexes(db).catch(err =>
+    console.warn('  Alerts  →  could not ensure alert_events indexes:', err.message))
 
   // Publish the disabled-source list before the first request. The news read
   // path is synchronous and takes what it was last given, so without this a
